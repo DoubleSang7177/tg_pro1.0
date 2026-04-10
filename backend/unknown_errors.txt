@@ -1,0 +1,1 @@
+2026-04-10 22:42:12.931828	[400 CHAT_MEMBER_ADD_FAILED]	channels.InviteToChannel

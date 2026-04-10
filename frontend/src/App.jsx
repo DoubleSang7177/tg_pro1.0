@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 
-const menus = ["拉新", "账号检测", "目标群组", "代理监控", "用户管理"];
+const menus = ["用户增长", "账号检测", "目标群组", "代理监控", "用户管理"];
 
 function Card({ title, children, right, className = "" }) {
   return (
@@ -33,13 +33,18 @@ function displayPhone(account) {
 }
 
 export default function App() {
-  const [tab, setTab] = useState("拉新");
+  const [tab, setTab] = useState("用户增长");
   const [auth, setAuth] = useState({ username: "user", password: "user123" });
   const [profile, setProfile] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [accounts, setAccounts] = useState({ active: [], limited: [], banned: [] });
   const [groups, setGroups] = useState([]);
+  const [proxyData, setProxyData] = useState({ summary: { total: 0, idle: 0, used: 0, dead: 0 }, items: [] });
   const [users, setUsers] = useState([]);
+  const [accountPaths, setAccountPaths] = useState([]);
+  const [showPathModal, setShowPathModal] = useState(false);
+  const [newPath, setNewPath] = useState("");
+  const [editingPathId, setEditingPathId] = useState(null);
   const [selectedGroup, setSelectedGroup] = useState("");
   const [forcedGroups, setForcedGroups] = useState([]);
   const [removedGroups, setRemovedGroups] = useState([]);
@@ -48,7 +53,7 @@ export default function App() {
   const [msg, setMsg] = useState("");
   const logRef = useRef(null);
   const [uploadFile, setUploadFile] = useState(null);
-  const [form, setForm] = useState({ users: "", accounts_path: "" });
+  const [form, setForm] = useState({ users: "" });
 
   const isAdmin = useMemo(() => profile?.role === "admin", [profile]);
   const availableAccounts = useMemo(() => accounts.active || [], [accounts]);
@@ -74,10 +79,18 @@ export default function App() {
 
   const refreshBase = async () => {
     try {
-      const [t, a, g] = await Promise.all([api.listTasks(), api.listAccounts(), api.listGroups()]);
+      const baseCalls = [api.listTasks(), api.listAccounts(), api.listGroups(), api.listAccountPaths()];
+      baseCalls.push(api.listProxies());
+      const results = await Promise.all(baseCalls);
+      const [t, a, g, ap, p] = results;
       setTasks(t.tasks || []);
       setAccounts({ active: a.active || [], limited: a.limited || [], banned: a.banned || [] });
       setGroups(g.groups || []);
+      setAccountPaths(ap.items || []);
+      setProxyData({
+        summary: p?.summary || { total: 0, idle: 0, used: 0, dead: 0 },
+        items: p?.items || [],
+      });
       appendLog("sync ok");
     } catch (e) {
       setMsg(e.message);
@@ -117,6 +130,7 @@ export default function App() {
     setAccounts({ active: [], limited: [], banned: [] });
     setGroups([]);
     setUsers([]);
+      setAccountPaths([]);
       setSelectedGroup("");
       setForcedGroups([]);
       setRemovedGroups([]);
@@ -134,14 +148,34 @@ export default function App() {
   };
 
   const onStartTask = async () => {
+    const parsedUsers = form.users.split("\n").map((x) => x.trim()).filter(Boolean);
+    if (!selectedGroup) {
+      const message = "请先选择目标群组";
+      setMsg(message);
+      appendLog(`task blocked | ${message}`);
+      return;
+    }
+    if (!parsedUsers.length) {
+      const message = "请先填写用户列表（每行一个）";
+      setMsg(message);
+      appendLog(`task blocked | ${message}`);
+      return;
+    }
     try {
-      await api.startTask({
+      const resp = await api.startTask({
         group: selectedGroup,
-        users: form.users.split("\n").map((x) => x.trim()).filter(Boolean),
-        accounts_path: form.accounts_path,
+        users: parsedUsers,
       });
-      appendLog(`task started | group=${selectedGroup} accounts_auto=${availableAccounts.length}`);
-      setMsg("任务已启动");
+      const data = resp?.data || {};
+      const summary = data.summary || { success: 0, skipped: 0, failed: 0 };
+      appendLog(`task finished | group=${selectedGroup} accounts_auto=${availableAccounts.length}`);
+      appendLog(`result summary | success=${summary.success} skipped=${summary.skipped} failed=${summary.failed}`);
+      (data.logs || []).forEach((line) => appendLog(line));
+      if (summary.failed > 0) {
+        setMsg(`任务执行完成：成功${summary.success}，跳过${summary.skipped}，失败${summary.failed}`);
+      } else {
+        setMsg(`任务执行完成：成功${summary.success}，跳过${summary.skipped}，失败0`);
+      }
       await refreshBase();
     } catch (e) {
       setMsg(e.message);
@@ -176,9 +210,41 @@ export default function App() {
     await refreshBase();
   };
 
+  const onAddOrUpdatePath = async () => {
+    if (!newPath.trim()) return;
+    await api.addAccountPath(newPath.trim());
+    setNewPath("");
+    setEditingPathId(null);
+    await refreshBase();
+  };
+
+  const onDeletePath = async (id) => {
+    await api.deleteAccountPath(id);
+    if (editingPathId === id) {
+      setEditingPathId(null);
+      setNewPath("");
+    }
+    await refreshBase();
+  };
+
+  const onEditPath = (item) => {
+    setEditingPathId(item.id);
+    setNewPath(item.path);
+  };
+
   const onLoadUsers = async () => {
     const list = await api.listUsers();
     setUsers(list.users || []);
+  };
+
+  const onMarkProxyDead = async (proxyId) => {
+    await api.markProxyDead(proxyId);
+    await refreshBase();
+  };
+
+  const onUnbindProxy = async (proxyId) => {
+    await api.unbindProxy(proxyId);
+    await refreshBase();
   };
 
   const onChangeRole = async (id, role) => {
@@ -204,7 +270,7 @@ export default function App() {
         <div className="mx-auto flex h-16 max-w-[1500px] items-center justify-between px-6">
           <div className="flex items-center gap-3">
             <div className="grid h-9 w-9 place-items-center rounded-lg bg-blue-600 font-bold text-white">TG</div>
-            <div className="font-semibold tracking-wide">Telegram拉新系统</div>
+            <div className="font-semibold tracking-wide">Telegram用户增长系统</div>
           </div>
           <nav className="hidden items-center gap-2 md:flex">
             {menus.filter((m) => (m === "用户管理" ? isAdmin : true)).map((m) => (
@@ -241,12 +307,12 @@ export default function App() {
         </div>
         {msg ? <p className="mb-4 text-sm text-rose-300">{msg}</p> : null}
 
-        {tab === "拉新" && (
+        {tab === "用户增长" && (
           <>
             <div className="mb-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <Card title="今日拉新人数"><p className="text-3xl font-bold text-blue-300">{stats.todayAdd}</p></Card>
-              <Card title="昨日拉新人数"><p className="text-3xl font-bold text-indigo-300">{stats.yestAdd}</p></Card>
-              <Card title="总拉新人数"><p className="text-3xl font-bold text-cyan-300">{stats.total}</p></Card>
+              <Card title="今日新增用户"><p className="text-3xl font-bold text-blue-300">{stats.todayAdd}</p></Card>
+              <Card title="昨日新增用户"><p className="text-3xl font-bold text-indigo-300">{stats.yestAdd}</p></Card>
+              <Card title="累计新增用户"><p className="text-3xl font-bold text-cyan-300">{stats.total}</p></Card>
               <Card title="可用账号数量"><p className="text-3xl font-bold text-emerald-300">{stats.accounts}</p></Card>
             </div>
             <div className="grid gap-4 xl:grid-cols-12">
@@ -257,8 +323,26 @@ export default function App() {
                       <div>
                         <div className="font-medium">{displayPhone(a)}</div>
                         <div className="text-xs text-slate-400">今日使用 {a.today_used_count || 0}</div>
+                        <div className="text-xs">
+                          <span className="text-slate-400">代理类型: </span>
+                          <span className={a.proxy_type === "direct" ? "text-amber-300" : "text-emerald-300"}>
+                            {a.proxy_type || "direct"}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-400">代理IP: {a.proxy_ip || "-"}</div>
                       </div>
-                      <Badge status="自动顺序使用" />
+                      <div className="text-right">
+                        <Badge status="自动顺序使用" />
+                        <div
+                          className={`mt-1 rounded px-2 py-0.5 text-xs ${
+                            a.proxy_type === "direct"
+                              ? "bg-amber-500/20 text-amber-300"
+                              : "bg-emerald-500/20 text-emerald-300"
+                          }`}
+                        >
+                          {a.proxy_type === "direct" ? "直连 warning" : "代理账号"}
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -297,8 +381,7 @@ export default function App() {
                     </div>
                   </div>
                   <textarea className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2" rows={8} placeholder="用户列表（每行一个）" value={form.users} onChange={(e) => setForm((v) => ({ ...v, users: e.target.value }))} />
-                  <input className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2" placeholder="账号路径 accounts_path" value={form.accounts_path} onChange={(e) => setForm((v) => ({ ...v, accounts_path: e.target.value }))} />
-                  <button className="w-fit rounded-lg bg-blue-600 px-4 py-2 transition hover:bg-blue-500" onClick={onStartTask}>开始拉新</button>
+                  <button className="w-fit rounded-lg bg-blue-600 px-4 py-2 transition hover:bg-blue-500" onClick={onStartTask}>开始增长</button>
                 </div>
               </Card>
             </div>
@@ -337,30 +420,120 @@ export default function App() {
         )}
 
         {tab === "账号检测" && (
-          <div className="grid gap-4 xl:grid-cols-2">
-            <Card title="上传 TDATA (zip)">
-              <input type="file" accept=".zip" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} />
-              <button className="mt-3 rounded-lg bg-blue-600 px-4 py-2 transition hover:bg-blue-500" onClick={onUpload}>上传账号包</button>
-            </Card>
-            <Card title="账号检测结果">
-              <div className="space-y-4 text-sm">
-                <div><p className="mb-2 text-emerald-300">可用账号</p>{(accounts.active || []).map((a) => <div key={a.id}>{displayPhone(a)}</div>)}</div>
-                <div><p className="mb-2 text-amber-300">当日受限</p>{(accounts.limited || []).map((a) => <div key={a.id}>{displayPhone(a)}</div>)}</div>
-                <div>
-                  <p className="mb-2 text-rose-300">长期受限</p>
-                  {(accounts.banned || []).map((a) => (
-                    <div key={a.id} className="mb-1 flex items-center justify-between">
-                      <span>{displayPhone(a)}</span>
-                      <button className="rounded bg-rose-600 px-2 py-1 text-xs" onClick={() => onDeleteAccount(a.phone)}>删除</button>
+          <div className="space-y-4">
+            <div className="flex items-center justify-end gap-2">
+              <button className="rounded bg-indigo-600 px-3 py-2 text-sm" onClick={() => setShowPathModal(true)}>账号路径</button>
+              <input className="max-w-[260px] text-sm" type="file" accept=".zip" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} />
+              <button className="rounded bg-blue-600 px-3 py-2 text-sm" onClick={onUpload}>上传</button>
+              <button className="rounded bg-slate-700 px-3 py-2 text-sm" onClick={refreshBase}>刷新</button>
+            </div>
+            <div className="grid gap-4 xl:grid-cols-3">
+              <Card title="可用账号">
+                <div className="max-h-[500px] space-y-2 overflow-auto">
+                  {(accounts.active || []).map((a) => (
+                    <div key={a.id} className="rounded-xl border border-emerald-500/30 bg-slate-900 p-3">
+                      <div className="font-medium">{displayPhone(a)}</div>
+                      <div className="text-xs text-slate-400">今日使用: {a.today_used_count || 0}</div>
+                      <Badge status="可用" />
                     </div>
                   ))}
                 </div>
+              </Card>
+              <Card title="当日受限">
+                <div className="max-h-[500px] space-y-2 overflow-auto">
+                  {(accounts.limited || []).map((a) => (
+                    <div key={a.id} className="rounded-xl border border-amber-500/30 bg-slate-900 p-3">
+                      <div className="font-medium">{displayPhone(a)}</div>
+                      <div className="text-xs text-slate-400">今日使用: {a.today_used_count || 0}</div>
+                      <Badge status="当日受限" />
+                    </div>
+                  ))}
+                </div>
+              </Card>
+              <Card title="风控账号">
+                <div className="max-h-[500px] space-y-2 overflow-auto">
+                  {(accounts.banned || []).map((a) => (
+                    <div key={a.id} className="rounded-xl border border-rose-500/30 bg-slate-900 p-3">
+                      <div className="mb-1 font-medium">{displayPhone(a)}</div>
+                      <div className="text-xs text-slate-400">今日使用: {a.today_used_count || 0}</div>
+                      <div className="mt-2 flex items-center justify-between">
+                        <Badge status={a.status === "limited_long" ? "长期受限" : "风控"} />
+                        <button className="rounded bg-rose-600 px-2 py-1 text-xs" onClick={() => onDeleteAccount(a.phone)}>删除</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </div>
+          </div>
+        )}
+
+        {tab === "代理监控" && (
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <Card title="代理总数"><p className="text-3xl font-bold text-cyan-300">{proxyData.summary.total}</p></Card>
+              <Card title="已使用数量"><p className="text-3xl font-bold text-emerald-300">{proxyData.summary.used}</p></Card>
+              <Card title="空闲数量"><p className="text-3xl font-bold text-blue-300">{proxyData.summary.idle}</p></Card>
+              <Card title="失效数量"><p className="text-3xl font-bold text-rose-300">{proxyData.summary.dead}</p></Card>
+            </div>
+            <Card title="代理列表">
+              {!isAdmin ? <p className="mb-2 text-sm text-slate-400">当前为只读视图（管理员可操作代理）</p> : null}
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-slate-400">
+                    <tr>
+                      <th className="px-2 py-2 text-left">手机号</th>
+                      <th className="px-2 py-2 text-left">代理类型</th>
+                      <th className="px-2 py-2 text-left">代理值</th>
+                      <th className="px-2 py-2 text-left">状态</th>
+                      <th className="px-2 py-2 text-left">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {proxyData.items.map((p) => (
+                      <tr key={p.id} className="border-t border-slate-800">
+                        <td className="px-2 py-2">{p.phone || "-"}</td>
+                        <td className="px-2 py-2">{p.proxy_type || "-"}</td>
+                        <td className="px-2 py-2 max-w-[380px] truncate">{p.proxy_value || "-"}</td>
+                        <td className="px-2 py-2">
+                          <span
+                            className={`rounded px-2 py-1 text-xs ${
+                              p.status === "idle"
+                                ? "bg-blue-500/20 text-blue-300"
+                                : p.status === "used"
+                                  ? "bg-emerald-500/20 text-emerald-300"
+                                  : "bg-rose-500/20 text-rose-300"
+                            }`}
+                          >
+                            {p.status}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2">
+                          <div className="flex gap-2">
+                            <button
+                              className="rounded bg-rose-600 px-2 py-1 text-xs disabled:opacity-40"
+                              onClick={() => p.proxy_id && onMarkProxyDead(p.proxy_id)}
+                              disabled={!p.proxy_id || !isAdmin}
+                            >
+                              标记失效
+                            </button>
+                            <button
+                              className="rounded bg-amber-600 px-2 py-1 text-xs disabled:opacity-40"
+                              onClick={() => p.proxy_id && onUnbindProxy(p.proxy_id)}
+                              disabled={!p.proxy_id || !isAdmin}
+                            >
+                              解绑账号
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </Card>
           </div>
         )}
-
-        {tab === "代理监控" && <Card title="代理监控"><p className="text-sm text-slate-300">当前为占位面板。</p></Card>}
 
         {tab === "用户管理" && (
           <Card title="用户权限管理" right={isAdmin ? <button onClick={onLoadUsers}>刷新用户</button> : null}>
@@ -380,6 +553,39 @@ export default function App() {
           </Card>
         )}
       </main>
+
+      {showPathModal && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70">
+          <div className="max-h-[80vh] w-[760px] overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-semibold">账号路径管理</h3>
+              <button className="rounded bg-slate-700 px-3 py-1 text-sm" onClick={() => setShowPathModal(false)}>关闭</button>
+            </div>
+            <div className="mb-3 flex items-center gap-2">
+              <input
+                className="flex-1 rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                value={newPath}
+                onChange={(e) => setNewPath(e.target.value)}
+                placeholder="输入账号路径，例如 C:/Users/.../TGTDATAaccount"
+              />
+              <button className="rounded bg-blue-600 px-3 py-2 text-sm" onClick={onAddOrUpdatePath}>
+                {editingPathId ? "保存" : "添加"}
+              </button>
+            </div>
+            <div className="max-h-[55vh] space-y-2 overflow-auto pr-1">
+              {accountPaths.map((item) => (
+                <div key={item.id} className="flex items-center justify-between rounded-xl border border-slate-700 bg-slate-950 p-3">
+                  <div className="truncate pr-3 text-sm">{item.path}</div>
+                  <div className="flex gap-2">
+                    <button className="rounded bg-amber-600 px-2 py-1 text-xs" onClick={() => onEditPath(item)}>编辑</button>
+                    <button className="rounded bg-rose-600 px-2 py-1 text-xs" onClick={() => onDeletePath(item.id)}>删除</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

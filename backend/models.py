@@ -2,7 +2,10 @@ from sqlalchemy import Column, DateTime, ForeignKey, Integer, Text, String
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
-from database import Base
+try:
+    from database import Base
+except ModuleNotFoundError:
+    from backend.database import Base
 
 
 class User(Base):
@@ -24,6 +27,8 @@ class AccountFile(Base):
     id = Column(Integer, primary_key=True, index=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     phone = Column(String(50), nullable=True)
+    proxy_id = Column(Integer, ForeignKey("proxies.id"), nullable=True)
+    proxy_type = Column(String(20), nullable=False, default="direct")
     filename = Column(String(255), nullable=False)
     saved_path = Column(String(500), nullable=False)
     status = Column(String(20), nullable=False, default="active")
@@ -85,4 +90,12 @@ class Proxy(Base):
     password = Column(String(255), nullable=True)
     status = Column(String(20), nullable=False, default="idle")
     assigned_account_id = Column(Integer, ForeignKey("account_files.id"), unique=True, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AccountPath(Base):
+    __tablename__ = "account_paths"
+
+    id = Column(Integer, primary_key=True, index=True)
+    path = Column(String(500), unique=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

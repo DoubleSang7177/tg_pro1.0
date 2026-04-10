@@ -14,7 +14,17 @@ async function request(path, options = {}) {
 
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || data.message || "请求失败");
+  if (!res.ok) {
+    let detail = data?.detail;
+    if (Array.isArray(detail)) {
+      detail = detail
+        .map((item) => item?.msg || JSON.stringify(item))
+        .join("; ");
+    } else if (detail && typeof detail === "object") {
+      detail = detail.msg || JSON.stringify(detail);
+    }
+    throw new Error(detail || data?.message || "请求失败");
+  }
   return data;
 }
 
@@ -41,9 +51,29 @@ export const api = {
   uploadAccount: (file) => {
     const form = new FormData();
     form.append("file", file);
-    return request("/upload_account", { method: "POST", body: form });
+    return request("/accounts/upload", { method: "POST", body: form });
   },
+  listAccountPaths: () => request("/settings/account-paths"),
+  addAccountPath: (path) =>
+    request("/settings/account-paths", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+  deleteAccountPath: (id) =>
+    request("/settings/account-paths", {
+      method: "DELETE",
+      body: JSON.stringify({ id }),
+    }),
   listAccounts: () => request("/accounts"),
+  listProxies: () => request("/proxy"),
+  markProxyDead: (proxyId) =>
+    request(`/proxy/${proxyId}/mark_dead`, {
+      method: "POST",
+    }),
+  unbindProxy: (proxyId) =>
+    request(`/proxy/${proxyId}/unbind`, {
+      method: "POST",
+    }),
   deleteAccount: (phone) =>
     request(`/accounts/${encodeURIComponent(phone)}`, {
       method: "DELETE",

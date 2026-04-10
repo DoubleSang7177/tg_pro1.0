@@ -17,7 +17,6 @@ log = get_logger("task")
 class StartTaskRequest(BaseModel):
     group: str = Field(..., min_length=1, description="目标群组")
     users: list[str] = Field(..., min_length=1, description="用户列表")
-    accounts_path: str = Field(..., min_length=1, description="账号目录路径")
 
 
 @router.post("/start_task")
@@ -32,12 +31,12 @@ async def start_task(
         user.id,
         [payload.group],
         len(payload.users),
-        payload.accounts_path,
+        "auto_scan",
     )
     config = {
         "groups": [payload.group],
         "users": payload.users,
-        "accounts_path": payload.accounts_path,
+        "owner_id": user.id,
     }
     try:
         result = await run_task(config)
@@ -45,7 +44,7 @@ async def start_task(
             owner_id=user.id,
             group_name=payload.group,
             users_text="\n".join(payload.users),
-            accounts_path=payload.accounts_path,
+            accounts_path="auto_scan",
             status=str(result.get("status", "accepted")),
             result_text=str(result),
         )

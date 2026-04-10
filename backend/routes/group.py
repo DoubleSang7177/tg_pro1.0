@@ -17,21 +17,31 @@ class UpdateGroupLimitRequest(BaseModel):
     daily_limit: int = Field(..., ge=1, le=10000)
 
 
+def _as_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 @router.get("/groups")
 def list_groups(_user: User = Depends(require_user_or_admin), db: Session = Depends(get_db)) -> dict:
     perform_daily_reset_if_needed(db)
     now_utc = datetime.now(timezone.utc)
     rows = db.query(Group).order_by(Group.id.asc()).all()
     for g in rows:
-        if g.disabled_until and now_utc >= g.disabled_until:
+        disabled_until_utc = _as_utc(g.disabled_until)
+        if disabled_until_utc and now_utc >= disabled_until_utc:
             g.disabled_until = None
             if g.status == "limited":
                 g.status = "normal"
             db.add(g)
     db.commit()
-    return {
-        "ok": True,
-        "groups": [
+    groups = []
+    for g in rows:
+        disabled_until_utc = _as_utc(g.disabled_until)
+        groups.append(
             {
                 "id": g.id,
                 "username": g.username,
@@ -44,10 +54,12 @@ def list_groups(_user: User = Depends(require_user_or_admin), db: Session = Depe
                 "status": g.status,
                 "daily_limit": g.daily_limit,
                 "disabled_until": g.disabled_until.isoformat() if g.disabled_until else None,
-                "available": not (g.disabled_until and now_utc < g.disabled_until) and g.today_added < g.daily_limit,
+                "available": not (disabled_until_utc and now_utc < disabled_until_utc) and g.today_added < g.daily_limit,
             }
-            for g in rows
-        ],
+        )
+    return {
+        "ok": True,
+        "groups": groups,
     }
 
 

@@ -16,6 +16,7 @@ from routes.settings import router as settings_router
 from routes.task import router as task_router
 from routes.user import router as user_router
 from routes.group import router as group_router
+from routes.proxy import router as proxy_router
 from models import Group, User
 from config.groups import GROUPS
 
@@ -35,6 +36,7 @@ app.include_router(settings_router)
 app.include_router(logs_router)
 app.include_router(user_router)
 app.include_router(group_router)
+app.include_router(proxy_router)
 api_logger = get_logger("api")
 
 

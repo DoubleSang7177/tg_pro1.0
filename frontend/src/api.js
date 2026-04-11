@@ -78,6 +78,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   taskJobStatus: (jobId) => request(`/start_task/status/${encodeURIComponent(jobId)}`),
+  stopTask: () => request("/stop-task", { method: "POST" }),
   uploadAccount: (file) => {
     const form = new FormData();
     form.append("file", file);
@@ -138,13 +139,20 @@ export const api = {
   },
   listScraperTasks: () => request("/scraper/tasks"),
   listInteractionTasks: () => request("/interaction/tasks"),
+  interactionLive: (jobId) => request(`/interaction/live/${encodeURIComponent(jobId)}`),
   startInteractionTask: (payload) =>
     request("/interaction/tasks", {
       method: "POST",
       body: JSON.stringify({
         groups: payload.groups || [],
         scan_limit: Number(payload.scan_limit ?? 300),
+        valid_only: Boolean(payload.valid_only),
       }),
+    }),
+  registerInteractionTargetGroups: (usernames) =>
+    request("/interaction/target-groups/register", {
+      method: "POST",
+      body: JSON.stringify({ usernames: Array.isArray(usernames) ? usernames : [] }),
     }),
 };
 

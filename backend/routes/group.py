@@ -65,6 +65,8 @@ def list_groups(_user: User = Depends(require_user_or_admin), db: Session = Depe
     groups = []
     for g in rows:
         disabled_until_utc = _as_utc(g.disabled_until)
+        y_add = int(g.yesterday_added or 0)
+        y_left = int(g.yesterday_left or 0)
         groups.append(
             {
                 "id": g.id,
@@ -77,6 +79,8 @@ def list_groups(_user: User = Depends(require_user_or_admin), db: Session = Depe
                 "today_added": g.today_added,
                 "yesterday_added": g.yesterday_added,
                 "yesterday_left": g.yesterday_left,
+                "yesterday_leave_count": y_left,
+                "net_growth": y_add - y_left,
                 "status": g.status,
                 "daily_limit": g.daily_limit,
                 "disabled_until": g.disabled_until.isoformat() if g.disabled_until else None,

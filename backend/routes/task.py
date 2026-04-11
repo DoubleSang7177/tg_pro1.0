@@ -21,6 +21,13 @@ from services.task_progress import (
     progress_init,
     progress_snapshot,
 )
+from services.task_run_control import (
+    clear_growth_job,
+    register_growth_job,
+    stop_task_notify,
+    task_run_start,
+    task_run_stop,
+)
 from services.telegram_service import run_task
 
 
@@ -60,21 +67,23 @@ async def _run_task_job(job_id: str, owner_id: int, group: str, users: list[str]
             "progress_job_id": job_id,
         }
         result = await run_task(config)
+        if result.get("stopped"):
+            progress_append(job_id, f"[{cn_hms()}] 已停止")
         task = TaskRecord(
             owner_id=owner_id,
             group_name=group,
             users_text="\n".join(users),
             accounts_path="auto_scan",
-            status=str(result.get("status", "accepted")),
+            status="stopped" if result.get("stopped") else str(result.get("status", "accepted")),
             result_text=str(result),
         )
         local_db.add(task)
         local_db.commit()
         local_db.refresh(task)
-        log.info("task completed job_id=%s task_id=%s user_id=%s", job_id, task.id, owner_id)
+        log.info("task finished job_id=%s task_id=%s user_id=%s stopped=%s", job_id, task.id, owner_id, result.get("stopped"))
         with _jobs_lock:
             if job_id in _jobs:
-                _jobs[job_id]["status"] = "completed"
+                _jobs[job_id]["status"] = "stopped" if result.get("stopped") else "completed"
                 _jobs[job_id]["result"] = result
                 _jobs[job_id]["error"] = None
     except ValueError as exc:
@@ -94,8 +103,17 @@ async def _run_task_job(job_id: str, owner_id: int, group: str, users: list[str]
                 _jobs[job_id]["error"] = f"任务执行失败: {exc}"
                 _jobs[job_id]["result"] = None
     finally:
+        task_run_stop()
+        clear_growth_job()
         if local_db is not None:
             local_db.close()
+
+
+@router.post("/stop-task")
+def stop_task(_user: User = Depends(require_user_or_admin)) -> dict:
+    stop_task_notify()
+    log.info("stop-task requested user_id=%s", _user.id)
+    return {"ok": True, "message": "已发送停止指令"}
 
 
 @router.post("/start_task")
@@ -119,6 +137,8 @@ async def start_task(
             "users_count": len(payload.users),
         }
     progress_init(job_id)
+    task_run_start()
+    register_growth_job(job_id)
     log.info(
         "task queued job_id=%s user_id=%s groups=%s users_count=%s",
         job_id,
@@ -155,7 +175,7 @@ def task_job_status(
         "highlight_previous_phone": hl["previous_phone"],
         "highlight_connecting_phone": hl["connecting_phone"],
     }
-    if status == "completed" and job.get("result") is not None:
+    if status in ("completed", "stopped") and job.get("result") is not None:
         out["data"] = job["result"]
     return out
 

@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { api, downloadScraperFile, downloadScraperTaskById } from "./api";
 import { GlassDropdown } from "./components/GlassDropdown";
-import { GlassMultiSelect } from "./components/GlassMultiSelect";
+import { EngagementGroupPanel } from "./components/EngagementGroupPanel";
 import { UiSpinner } from "./components/UiSpinner";
 
 const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "用户管理"];
@@ -300,6 +300,12 @@ function GroupsHeroCard({ group }) {
   const total = Number(group.total_added) || 0;
   const members = Number(group.members_count) || 0;
   const yest = Number(group.yesterday_added) || 0;
+  const yestLeave = Number(group.yesterday_leave_count ?? group.yesterday_left) || 0;
+  const netGrowth =
+    group.net_growth !== undefined && group.net_growth !== null
+      ? Number(group.net_growth)
+      : yest - yestLeave;
+  const leaveHeroAnomaly = yestLeave > 30;
   const title = group.title || group.username;
   const handle = group.display_handle || group.username;
   const isTodayLeader = today > 0;
@@ -346,7 +352,31 @@ function GroupsHeroCard({ group }) {
               </div>
               <div className="flex items-center gap-1.5 text-xs text-slate-500">
                 <TrendingUp className="h-3.5 w-3.5 text-teal-400/80" aria-hidden />
-                <span>昨日 {yest.toLocaleString("zh-CN")}</span>
+                <span>昨日拉人 {yest.toLocaleString("zh-CN")}</span>
+              </div>
+              <div
+                className={`flex items-center gap-1.5 text-xs ${
+                  leaveHeroAnomaly ? "text-rose-300 drop-shadow-[0_0_10px_rgba(251,113,133,0.45)]" : "text-slate-500"
+                }`}
+              >
+                <span aria-hidden>{leaveHeroAnomaly ? "⚠️" : "↩"}</span>
+                <span>昨日离群 {yestLeave.toLocaleString("zh-CN")}</span>
+                {leaveHeroAnomaly ? (
+                  <span className="rounded-full border border-rose-400/40 bg-rose-950/40 px-1.5 py-0.5 text-[9px] font-bold text-rose-200">
+                    异常
+                  </span>
+                ) : null}
+              </div>
+              <div
+                className={`flex items-center gap-1.5 text-xs font-semibold tabular-nums ${
+                  netGrowth > 0
+                    ? "text-emerald-300 drop-shadow-[0_0_8px_rgba(52,211,153,0.35)]"
+                    : netGrowth < 0
+                      ? "text-rose-300 drop-shadow-[0_0_8px_rgba(251,113,133,0.3)]"
+                      : "text-slate-500"
+                }`}
+              >
+                <span>净增长 {netGrowth > 0 ? "+" : ""}{netGrowth.toLocaleString("zh-CN")}</span>
               </div>
             </div>
           </div>
@@ -359,6 +389,173 @@ function GroupsHeroCard({ group }) {
       </div>
     </section>
   );
+}
+
+function targetGroupAvatarInitial(title) {
+  const t = (title || "").trim();
+  if (!t) return "G";
+  const ch = t[0];
+  return /[a-zA-Z0-9]/.test(ch) ? ch.toUpperCase() : ch;
+}
+
+/** 目标群组 · Web3 / 金融 Dashboard 风格卡片 */
+function TargetGroupDashboardCard({ group, onUpdateDailyLimit }) {
+  const g = group;
+  const title = g.title || g.username;
+  const handleRaw = g.display_handle || g.username;
+  const handle = handleRaw.startsWith("@") ? handleRaw : `@${String(handleRaw).replace(/^@/, "")}`;
+  const members = Number(g.members_count) || 0;
+  const total = Number(g.total_added) || 0;
+  const today = Number(g.today_added) || 0;
+  const yest = Number(g.yesterday_added) || 0;
+  const yesterdayLeave = Number(g.yesterday_leave_count ?? g.yesterday_left) || 0;
+  const netGrowth =
+    g.net_growth !== undefined && g.net_growth !== null ? Number(g.net_growth) : yest - yesterdayLeave;
+  const leaveAnomaly = yesterdayLeave > 30;
+  const limited = g.status === "limited";
+  const initial = targetGroupAvatarInitial(title);
+
+  const netValueClass =
+    netGrowth > 0 ? "tg-dash-net-value--pos" : netGrowth < 0 ? "tg-dash-net-value--neg" : "tg-dash-net-value--zero";
+
+  return (
+    <article className="tg-dash-group-card">
+      <div className="flex gap-3.5">
+        <div className="tg-dash-group-avatar" aria-hidden>
+          <span className="tg-dash-group-avatar-inner">
+            <span className="tg-dash-group-avatar-letter">{initial}</span>
+          </span>
+        </div>
+        <div className="min-w-0 flex-1 pt-0.5">
+          <h3 className="truncate text-[15px] font-bold tracking-tight text-slate-50">{title}</h3>
+          <p className="mt-0.5 truncate text-[12px] font-medium text-slate-500/75">{handle}</p>
+        </div>
+      </div>
+
+      {/* 顶部：当前人数 · 累计拉人 */}
+      <div className="mt-5 grid grid-cols-2 gap-3">
+        <div className="rounded-xl border border-cyan-400/10 bg-[rgba(0,0,0,0.22)] px-3 py-3 backdrop-blur-sm">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500/90">
+            <span aria-hidden>👥</span>
+            <span>当前人数</span>
+          </div>
+          <p className="stat-num-dash-members mt-1.5 text-2xl tabular-nums leading-none sm:text-[1.65rem]">
+            {members.toLocaleString("zh-CN")}
+          </p>
+        </div>
+        <div className="rounded-xl border border-violet-400/10 bg-[rgba(0,0,0,0.22)] px-3 py-3 backdrop-blur-sm">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500/90">
+            <span aria-hidden>📈</span>
+            <span>累计拉人</span>
+          </div>
+          <p className="stat-num-dash-pull mt-1.5 text-xl font-bold tabular-nums leading-none sm:text-2xl">
+            {total.toLocaleString("zh-CN")}
+          </p>
+        </div>
+      </div>
+
+      {/* 拉人 · 离群：无边框数据流（横向 label + value + 渐变分割线） */}
+      <div className="tg-dash-metrics-stream mt-4">
+        <div className="tg-dash-gradient-rule-h" aria-hidden />
+        <p className="tg-dash-stream-head">拉人 · 离群</p>
+        <div className="flex min-h-[3.25rem] w-full items-stretch">
+          <div className="tg-dash-metric-item flex min-w-0 flex-1 flex-col justify-center gap-1 px-1 sm:px-2">
+            <span className="tg-dash-stream-label">今日拉人</span>
+            <span className="tg-dash-stream-value">{today.toLocaleString("zh-CN")}</span>
+          </div>
+          <div className="tg-dash-gradient-rule-v shrink-0" aria-hidden />
+          <div className="tg-dash-metric-item flex min-w-0 flex-1 flex-col justify-center gap-1 px-1 sm:px-2">
+            <span className="tg-dash-stream-label">昨日拉人</span>
+            <span className="tg-dash-stream-value">{yest.toLocaleString("zh-CN")}</span>
+          </div>
+          <div className="tg-dash-gradient-rule-v shrink-0" aria-hidden />
+          <div
+            className={`tg-dash-metric-item relative flex min-w-0 flex-1 flex-col justify-center gap-1 px-1 sm:px-2 ${
+              leaveAnomaly ? "tg-dash-metric-item--anomaly" : ""
+            }`}
+          >
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="tg-dash-stream-label">昨日离群</span>
+              {leaveAnomaly ? (
+                <span className="tg-dash-anomaly-badge" title="昨日离群人数大于 30">
+                  ⚠️ 异常
+                </span>
+              ) : null}
+            </div>
+            <span
+              className={
+                leaveAnomaly ? "tg-dash-stream-value tg-dash-stream-value--anomaly" : "tg-dash-stream-value"
+              }
+            >
+              {yesterdayLeave.toLocaleString("zh-CN")}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* 净增长：单独一行强调（无边框内嵌卡） */}
+      <div className="tg-dash-net-row tg-dash-net-row--emphasis">
+        <div className="tg-dash-gradient-rule-h" aria-hidden />
+        <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
+          <span className="tg-dash-net-label">净增长（昨日拉人 − 昨日离群）</span>
+          <p className={`${netValueClass} tg-dash-net-value-display`}>
+            {netGrowth > 0 ? "+" : ""}
+            {netGrowth.toLocaleString("zh-CN")}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-end justify-between gap-3 border-t border-white/[0.06] pt-4">
+        <label className="min-w-[120px] flex-1">
+          <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-500/75">
+            单日限制
+          </span>
+          <input
+            type="number"
+            min={1}
+            className="tg-dash-group-input w-full"
+            defaultValue={g.daily_limit || 30}
+            onBlur={(e) => onUpdateDailyLimit(g.id, e.target.value)}
+          />
+        </label>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span className="text-[9px] font-semibold uppercase tracking-widest text-slate-600">状态</span>
+          <span className={limited ? "tg-dash-status-pill tg-dash-status-pill--limited" : "tg-dash-status-pill tg-dash-status-pill--active"}>
+            {limited ? "LIMITED" : "ACTIVE"}
+          </span>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+const ENGAGEMENT_LAYER_ZH = { account: "账号", group: "群组", system: "系统" };
+
+function formatEngagementLogLine(entry) {
+  const t = entry.t ?? "";
+  const account = entry.account ?? "";
+  const group = entry.group ?? "";
+  const emoji = entry.emoji ?? "";
+  const message = entry.message ?? "";
+  const layer = entry.layer ?? "";
+  const progress = entry.progress ?? "";
+  const layerZh = ENGAGEMENT_LAYER_ZH[layer] || "";
+  let head = "";
+  if (layerZh || progress) {
+    const bits = [layerZh, progress].filter(Boolean);
+    head = bits.length ? `[${bits.join(" · ")}] ` : "";
+  }
+  const emojiPart = emoji ? `${emoji}\u00A0` : "";
+  const mid = emoji ? `${emojiPart}${group}` : group;
+  const base = `${t}  ${head}${account} ${mid}`;
+  return message ? `${base} · ${message}` : base;
+}
+
+function engagementLiveLogTone(level) {
+  if (level === "success") return "text-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.22)]";
+  if (level === "warn") return "text-amber-300 drop-shadow-[0_0_8px_rgba(251,191,36,0.18)]";
+  if (level === "info") return "text-cyan-200/80 drop-shadow-[0_0_6px_rgba(34,211,238,0.14)]";
+  return "text-rose-400 drop-shadow-[0_0_8px_rgba(251,113,133,0.2)]";
 }
 
 function displayPhone(account) {
@@ -497,8 +694,12 @@ export default function App() {
 
   const [engagementSelectedGroups, setEngagementSelectedGroups] = useState([]);
   const [engagementScanLimit, setEngagementScanLimit] = useState(300);
-  const [engagementTasks, setEngagementTasks] = useState([]);
   const [engagementSubmitting, setEngagementSubmitting] = useState(false);
+  const [engagementJobId, setEngagementJobId] = useState(null);
+  const [engagementLiveLogs, setEngagementLiveLogs] = useState([]);
+  const engagementLogRef = useRef(null);
+  const [engagementGroupResolution, setEngagementGroupResolution] = useState(null);
+  const [engagementRegisterLoading, setEngagementRegisterLoading] = useState(false);
 
   const isAdmin = useMemo(() => profile?.role === "admin", [profile]);
   const availableAccounts = useMemo(() => accounts.active || [], [accounts]);
@@ -578,15 +779,13 @@ export default function App() {
     [accounts.active, accounts.limited],
   );
 
-  const loadEngagementTasks = useCallback(async () => {
-    if (!profile) return;
-    try {
-      const r = await api.listInteractionTasks();
-      setEngagementTasks(r.tasks || []);
-    } catch {
-      setEngagementTasks([]);
-    }
-  }, [profile]);
+  useEffect(() => {
+    const allowed = new Set(engagementGroupOptions.map((o) => o.value));
+    setEngagementSelectedGroups((prev) => {
+      const next = prev.filter((v) => allowed.has(v));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [engagementGroupOptions]);
 
   const appendLog = (message) => {
     const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -742,34 +941,116 @@ export default function App() {
   }, [tab, profile, loadScraperAccount, loadScraperTasks]);
 
   useEffect(() => {
-    if (tab !== "群组互动" || !profile) return undefined;
-    loadEngagementTasks();
-    const t = setInterval(loadEngagementTasks, 2500);
-    return () => clearInterval(t);
-  }, [tab, profile, loadEngagementTasks]);
+    if (!engagementJobId) return undefined;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const data = await api.interactionLive(engagementJobId);
+        if (cancelled) return;
+        setEngagementLiveLogs((data.logs || []).slice(-200));
+        if (data.status === "completed" || data.status === "failed" || data.status === "stopped") {
+          setEngagementSubmitting(false);
+          setEngagementJobId(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setEngagementSubmitting(false);
+          setEngagementJobId(null);
+        }
+      }
+    };
+    poll();
+    const iv = setInterval(poll, 550);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [engagementJobId]);
 
-  const onStartEngagement = async () => {
-    if (!engagementSelectedGroups.length) {
-      setMsg("请至少选择一个目标群组");
-      return;
-    }
-    if (engagementAccountPoolCount < 1) {
-      setMsg("当前没有可用或当日受限的账号");
-      return;
-    }
-    setEngagementSubmitting(true);
-    setMsg("");
+  useEffect(() => {
+    const el = engagementLogRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [engagementLiveLogs]);
+
+  const runEngagementTask = useCallback(
+    async ({ validOnly }) => {
+      if (!engagementSelectedGroups.length) {
+        setMsg("请至少选择一个目标群组");
+        return;
+      }
+      if (engagementAccountPoolCount < 1) {
+        setMsg("当前没有可用或当日受限的账号");
+        return;
+      }
+      setEngagementLiveLogs([]);
+      setEngagementJobId(null);
+      setEngagementSubmitting(true);
+      setEngagementGroupResolution(null);
+      setMsg("");
+      try {
+        const r = await api.startInteractionTask({
+          groups: engagementSelectedGroups,
+          scan_limit: engagementScanLimit,
+          valid_only: validOnly,
+        });
+        if (r && r.ok === false && r.code === "UNKNOWN_GROUPS") {
+          setEngagementGroupResolution({
+            valid: r.valid_groups || [],
+            invalid: r.invalid_groups || [],
+          });
+          setEngagementSubmitting(false);
+          return;
+        }
+        if (!r?.job_id) throw new Error("服务端未返回执行会话");
+        setEngagementJobId(r.job_id);
+      } catch (e) {
+        setMsg(e.message);
+        setEngagementSubmitting(false);
+      }
+    },
+    [engagementAccountPoolCount, engagementScanLimit, engagementSelectedGroups],
+  );
+
+  const onStartEngagement = () => {
+    runEngagementTask({ validOnly: false });
+  };
+
+  const onStopEngagement = async () => {
     try {
-      await api.startInteractionTask({
-        groups: engagementSelectedGroups,
-        scan_limit: engagementScanLimit,
-      });
-      await loadEngagementTasks();
-      setMsg("互动任务已创建，后台执行中");
+      await api.stopTask();
+      setMsg("已发送停止请求");
     } catch (e) {
       setMsg(e.message);
-    } finally {
+    }
+  };
+
+  const onEngagementIgnoreUnknown = () => {
+    const res = engagementGroupResolution;
+    if (!res?.valid?.length) {
+      setMsg("没有已在目标群组库中的项，无法继续");
+      setEngagementGroupResolution(null);
+      return;
+    }
+    runEngagementTask({ validOnly: true });
+  };
+
+  const onEngagementRegisterUnknown = async () => {
+    const res = engagementGroupResolution;
+    if (!res?.invalid?.length) return;
+    setEngagementRegisterLoading(true);
+    setMsg("");
+    try {
+      await api.registerInteractionTargetGroups(res.invalid);
+      await refreshBase();
+      setEngagementGroupResolution(null);
+      setMsg("已写入目标群组库，正在启动任务…");
+      await runEngagementTask({ validOnly: false });
+    } catch (e) {
+      setMsg(e.message);
       setEngagementSubmitting(false);
+    } finally {
+      setEngagementRegisterLoading(false);
     }
   };
 
@@ -807,8 +1088,11 @@ export default function App() {
       setSelectedGroup("");
     setForcedGroups([]);
     setRemovedGroups([]);
-    setEngagementTasks([]);
+    setEngagementLiveLogs([]);
+    setEngagementJobId(null);
     setEngagementSelectedGroups([]);
+    setEngagementGroupResolution(null);
+    setEngagementRegisterLoading(false);
   };
 
   const onUpload = async () => {
@@ -825,6 +1109,15 @@ export default function App() {
     } finally {
       uploadLoadingRef.current = false;
       setUploadLoading(false);
+    }
+  };
+
+  const onStopRunningTask = async () => {
+    try {
+      await api.stopTask();
+      appendLog("stop-task | 已发送停止请求");
+    } catch (e) {
+      setMsg(e.message);
     }
   };
 
@@ -874,7 +1167,7 @@ export default function App() {
           pushLogLine(pl[i]);
         }
         streamed = pl.length;
-        if (st.status === "completed" && st.data) {
+        if ((st.status === "completed" || st.status === "stopped") && st.data) {
           data = st.data;
           const dl = st.data.logs || [];
           for (let i = streamed; i < dl.length; i++) {
@@ -896,14 +1189,19 @@ export default function App() {
         previous: h.previous_phone ?? null,
         connecting: null,
       });
-      if (summary.failed > 0) {
+      if (data.stopped) {
+        appendLog("任务已停止（用户中断）");
+        setMsg("任务已停止");
+      } else if (summary.failed > 0) {
         setMsg(`任务执行完成：成功${summary.success}，跳过${summary.skipped}，失败${summary.failed}`);
       } else {
         setMsg(`任务执行完成：成功${summary.success}，跳过${summary.skipped}，失败0`);
       }
       if (taskPanelPhaseTimerRef.current) clearTimeout(taskPanelPhaseTimerRef.current);
-      setTaskPanelPhase("completed");
-      taskPanelPhaseTimerRef.current = window.setTimeout(() => setTaskPanelPhase("ready"), 6000);
+      setTaskPanelPhase(data.stopped ? "ready" : "completed");
+      if (!data.stopped) {
+        taskPanelPhaseTimerRef.current = window.setTimeout(() => setTaskPanelPhase("ready"), 6000);
+      }
       await refreshBase();
     } catch (e) {
       if (taskPanelPhaseTimerRef.current) clearTimeout(taskPanelPhaseTimerRef.current);
@@ -1507,23 +1805,22 @@ export default function App() {
                     <div className="flex flex-wrap items-center gap-3">
                       <button
                         type="button"
-                        disabled={taskRunning}
-                        onClick={onStartTask}
+                        disabled={false}
+                        onClick={taskRunning ? onStopRunningTask : onStartTask}
                         className={
                           taskRunning
-                            ? "inline-flex items-center justify-center gap-2 rounded-xl px-6 py-2.5 text-sm font-bold text-slate-900 shadow-[0_0_28px_rgba(0,175,255,0.35)] transition-all duration-200 btn-running-shimmer disabled:cursor-not-allowed disabled:opacity-60"
+                            ? "inline-flex items-center justify-center gap-2 rounded-xl border border-rose-400/40 bg-rose-500/20 px-6 py-2.5 text-sm font-bold text-rose-100 shadow-[0_0_20px_rgba(251,113,133,0.25)] transition-all duration-200 hover:bg-rose-500/30"
                             : "task-control-start-btn inline-flex items-center justify-center gap-2"
                         }
                       >
-                        {taskRunning ? (
-                          <>
-                            <UiSpinner tone="primary" />
-                            执行中…
-                          </>
-                        ) : (
-                          "开始增长"
-                        )}
+                        {taskRunning ? "停止" : "开始增长"}
                       </button>
+                      {taskRunning ? (
+                        <span className="inline-flex items-center gap-2 text-xs font-medium text-cyan-300/90">
+                          <UiSpinner tone="primary" />
+                          执行中…
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -1564,42 +1861,17 @@ export default function App() {
           <div className="space-y-5">
             {featuredTargetGroup ? <GroupsHeroCard group={featuredTargetGroup} /> : null}
             <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-            {groups.map((g) => (
-              <Card key={g.id} title={g.title || g.username} shellClass="target-group-list-card">
-                <div className="mb-2 text-sm text-slate-300">{g.display_handle || g.username}</div>
-                <div className="space-y-1 text-xs text-slate-500">
-                  <div>
-                    当前人数:{" "}
-                    <span className="stat-num-growth text-xl tabular-nums">{g.members_count}</span>
-                  </div>
-                  <div>
-                    总拉人: <span className="stat-num-log text-base font-bold tabular-nums">{g.total_added}</span>
-                  </div>
-                  <div>今日拉人: {g.today_added}</div>
-                  <div>昨日拉人: {g.yesterday_added}</div>
-                  <div>昨日退出: {g.yesterday_left}</div>
-                </div>
-                <div className="mt-3">
-                  <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-wider text-slate-500">单日数量限制</label>
-                  <input
-                    type="number"
-                    min={1}
-                    className={INPUT_FIELD}
-                    defaultValue={g.daily_limit || 30}
-                    onBlur={(e) => onUpdateDailyLimit(g.id, e.target.value)}
-                  />
-                </div>
-                <div className="mt-3"><Badge status={g.status === "limited" ? "限制" : "正常"} /></div>
-              </Card>
-            ))}
+              {groups.map((g) => (
+                <TargetGroupDashboardCard key={g.id} group={g} onUpdateDailyLimit={onUpdateDailyLimit} />
+              ))}
             </div>
           </div>
         )}
 
         {tab === "群组互动" && (
-          <div className="grid min-h-0 gap-5 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
+          <div className="grid min-h-0 gap-5 lg:grid-cols-[minmax(0,1fr)_min(420px,42vw)] lg:items-stretch">
             <div
-              className={`${cardShellClass("risk")} relative overflow-hidden !p-0`}
+              className={`${cardShellClass("risk")} relative flex min-h-0 flex-col overflow-hidden !p-0`}
               style={{
                 boxShadow:
                   "0 8px 40px rgba(0,0,0,0.42), 0 0 48px rgba(192,38,211,0.1), 0 0 72px rgba(59,130,246,0.06)",
@@ -1612,13 +1884,13 @@ export default function App() {
                     "radial-gradient(900px 420px at 10% 0%, rgba(192,38,211,0.18), transparent 55%), radial-gradient(700px 380px at 90% 20%, rgba(59,130,246,0.14), transparent 50%)",
                 }}
               />
-              <div className="relative space-y-5 p-5 sm:p-7">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+              <div className="relative flex min-h-0 flex-1 flex-col space-y-4 p-5 sm:p-7">
+                <div className="flex flex-col gap-2 border-b border-white/[0.06] pb-4 sm:flex-row sm:items-end sm:justify-between">
                   <div>
-                    <h2 className="text-lg font-bold tracking-tight text-white">群组互动</h2>
-                    <p className="mt-1 text-xs leading-relaxed text-slate-400">
-                      自动使用<span className="text-fuchsia-200/90"> 可用 + 当日受限 </span>
-                      账号，对今日消息随机表情反应；群与群之间随机等待 5–15 秒
+                    <p className="font-log text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-400/70">exec.terminal</p>
+                    <h2 className="mt-1 text-lg font-bold tracking-tight text-white">群组互动</h2>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                      <span className="text-fuchsia-200/80">可用 + 当日受限</span> 账号 · 今日消息随机表情 · 群间隔 5–15s
                     </p>
                   </div>
                   <div className="rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/[0.06] px-3 py-2 text-center backdrop-blur-md sm:text-right">
@@ -1627,25 +1899,82 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                    目标群组（多选）
-                  </span>
-                  <GlassMultiSelect
+                <div className="min-h-0 flex-1 space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">目标群组</span>
+                  <EngagementGroupPanel
                     values={engagementSelectedGroups}
                     onChange={setEngagementSelectedGroups}
                     options={engagementGroupOptions}
-                    placeholder="搜索并勾选目标群组…"
                     disabled={!profile}
                   />
-                  <p className="text-[11px] text-slate-500">数据来自「目标群组」库（groups 表）</p>
+                  <p className="text-[10px] leading-relaxed text-slate-600">
+                    选项仅来自「目标群组」库（groups 表同步数据），不支持自由输入。
+                  </p>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
+                {engagementGroupResolution ? (
+                  <div
+                    role="alert"
+                    className="shrink-0 rounded-xl border border-amber-400/28 bg-[rgba(20,16,8,0.55)] p-4 shadow-[0_0_32px_rgba(251,191,36,0.12)] backdrop-blur-[16px]"
+                  >
+                    <h4 className="text-sm font-bold text-amber-200/95">部分群组未识别</h4>
+                    <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                      下列标识在目标群组库中不存在。可登记入库后整单执行，或仅对已登记群继续。
+                    </p>
+                    <ul className="mt-2 max-h-28 overflow-y-auto rounded-lg border border-white/[0.06] bg-black/25 px-2 py-1.5 font-mono text-[11px] text-amber-100/90">
+                      {(engagementGroupResolution.invalid || []).map((u) => (
+                        <li key={u} className="py-0.5">
+                          {u}
+                        </li>
+                      ))}
+                    </ul>
+                    {(engagementGroupResolution.valid || []).length > 0 ? (
+                      <p className="mt-2 text-[10px] text-slate-500">
+                        已登记可执行：
+                        <span className="text-slate-400"> {(engagementGroupResolution.valid || []).join(" · ")}</span>
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-[10px] text-rose-300/90">当前勾选项均不在库中，请先「加入目标群组」。</p>
+                    )}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={engagementRegisterLoading || !(engagementGroupResolution.invalid || []).length}
+                        onClick={onEngagementRegisterUnknown}
+                        className="rounded-xl border border-emerald-400/35 bg-emerald-500/15 px-3 py-2 text-xs font-semibold text-emerald-200 shadow-[0_0_16px_rgba(52,211,153,0.15)] transition hover:border-emerald-400/50 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        {engagementRegisterLoading ? (
+                          <span className="inline-flex items-center gap-2">
+                            <UiSpinner tone="primary" />
+                            写入中…
+                          </span>
+                        ) : (
+                          "加入目标群组"
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!(engagementGroupResolution.valid || []).length || engagementRegisterLoading}
+                        onClick={onEngagementIgnoreUnknown}
+                        className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition hover:border-cyan-400/45 hover:bg-cyan-500/18 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        忽略并继续
+                      </button>
+                      <button
+                        type="button"
+                        disabled={engagementRegisterLoading}
+                        onClick={() => setEngagementGroupResolution(null)}
+                        className="rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-xs font-medium text-slate-400 transition hover:border-white/15 hover:text-slate-200 disabled:opacity-45"
+                      >
+                        关闭
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="grid shrink-0 gap-4 border-t border-white/[0.06] pt-4 sm:grid-cols-2">
                   <label className="flex flex-col gap-1.5">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                      消息扫描条数
-                    </span>
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">扫描条数</span>
                     <input
                       type="number"
                       min={10}
@@ -1655,82 +1984,70 @@ export default function App() {
                       onChange={(e) => setEngagementScanLimit(Number(e.target.value) || 300)}
                     />
                   </label>
-                  <div className="flex flex-col justify-end rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] px-3 py-2 text-xs text-slate-400 backdrop-blur-md">
-                    <span className="font-medium text-slate-300">群组间隔</span>
-                    <span className="mt-1 tabular-nums text-fuchsia-200/90">5–15 秒（随机）</span>
+                  <div className="flex flex-col justify-end rounded-xl border border-white/[0.08] bg-[rgba(0,0,0,0.2)] px-3 py-2 text-xs text-slate-500 backdrop-blur-md">
+                    <span className="font-medium text-slate-400">群组间隔</span>
+                    <span className="mt-1 tabular-nums text-cyan-200/80">5–15 秒随机</span>
                   </div>
                 </div>
 
                 <button
                   type="button"
-                  disabled={!profile || engagementSubmitting}
-                  onClick={onStartEngagement}
-                  className="w-full rounded-2xl bg-[linear-gradient(135deg,#e879f9,#60efff)] px-5 py-3 text-sm font-bold text-slate-900 shadow-[0_0_28px_rgba(217,70,239,0.45),0_8px_28px_rgba(0,0,0,0.35)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_42px_rgba(96,239,255,0.35),0_12px_36px_rgba(217,70,239,0.25)] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 sm:w-auto sm:min-w-[200px]"
+                  disabled={!profile}
+                  onClick={engagementSubmitting ? onStopEngagement : onStartEngagement}
+                  className={
+                    engagementSubmitting
+                      ? "shrink-0 w-full rounded-2xl border border-rose-400/40 bg-rose-500/25 px-5 py-3 text-sm font-bold text-rose-100 shadow-[0_0_24px_rgba(251,113,133,0.3)] transition-all duration-200 hover:bg-rose-500/35 sm:w-auto sm:min-w-[220px]"
+                      : "shrink-0 w-full rounded-2xl bg-[linear-gradient(135deg,#e879f9,#60efff)] px-5 py-3 text-sm font-bold text-slate-900 shadow-[0_0_28px_rgba(217,70,239,0.45),0_8px_28px_rgba(0,0,0,0.35)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_42px_rgba(96,239,255,0.35),0_12px_36px_rgba(217,70,239,0.25)] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 sm:w-auto sm:min-w-[220px]"
+                  }
                 >
-                  {engagementSubmitting ? (
-                    <span className="inline-flex items-center justify-center gap-2">
-                      <UiSpinner tone="primary" />
-                      提交中…
-                    </span>
-                  ) : (
-                    "开始互动"
-                  )}
+                  {engagementSubmitting ? "停止" : "开始互动"}
                 </button>
+                {engagementSubmitting ? (
+                  <div className="flex items-center justify-center gap-2 text-xs font-medium text-cyan-200/90 sm:justify-start">
+                    <UiSpinner tone="primary" />
+                    执行中…
+                  </div>
+                ) : null}
               </div>
             </div>
 
-            <aside className={`${cardShellClass("log")} min-h-[280px] !p-4`}>
-              <div className="mb-3 flex items-center justify-between gap-2 border-b border-blue-400/10 pb-3">
-                <h3 className="text-sm font-semibold text-slate-100">任务列表</h3>
-                <span className="rounded-full border border-cyan-400/25 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-cyan-200/90">
-                  live
+            <aside className="engagement-live-terminal flex min-h-[min(520px,72vh)] flex-col overflow-hidden rounded-2xl border border-cyan-400/15 bg-[rgba(6,10,18,0.72)] shadow-[0_8px_40px_rgba(0,0,0,0.5),0_0_48px_rgba(34,211,238,0.08)] backdrop-blur-[20px]">
+              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-cyan-400/12 bg-[rgba(0,255,200,0.04)] px-4 py-3 backdrop-blur-md">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`h-2 w-2 rounded-full ${engagementSubmitting ? "animate-pulse bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]" : "bg-slate-600"}`}
+                    aria-hidden
+                  />
+                  <h3 className="text-sm font-bold tracking-tight text-slate-100">Live Log</h3>
+                  <span className="font-log text-[9px] font-medium uppercase tracking-widest text-slate-500">stream</span>
+                </div>
+                <span className="rounded border border-white/10 bg-black/30 px-2 py-0.5 font-mono text-[10px] tabular-nums text-slate-400">
+                  {Math.min(engagementLiveLogs.length, 200)} / 200
                 </span>
               </div>
-              <div className="growth-scroll max-h-[min(560px,70vh)] space-y-3 overflow-y-auto pr-1">
-                {engagementTasks.length === 0 ? (
-                  <p className="py-8 text-center text-xs text-slate-500">暂无任务，提交后将在此显示</p>
+              <div
+                ref={engagementLogRef}
+                role="log"
+                aria-live="polite"
+                className="engagement-live-terminal-body growth-scroll min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono"
+              >
+                {engagementLiveLogs.length === 0 ? (
+                  <p className="py-12 text-center text-[11px] leading-relaxed text-slate-600">
+                    等待执行…
+                    <br />
+                    <span className="text-slate-500">点击「开始互动」后实时输出</span>
+                  </p>
                 ) : (
-                  engagementTasks.map((t) => (
-                    <div
-                      key={t.id}
-                      className="rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.04)] p-3 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-[16px] transition hover:border-cyan-400/20"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <span className="font-mono text-[11px] text-slate-500">#{t.id}</span>
-                        <span
-                          className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide backdrop-blur-sm ${
-                            t.status === "completed"
-                              ? "border-emerald-400/35 bg-emerald-500/15 text-emerald-300 shadow-[0_0_14px_rgba(52,211,153,0.25)]"
-                              : t.status === "running"
-                                ? "border-cyan-400/35 bg-cyan-500/15 text-cyan-200 shadow-[0_0_14px_rgba(34,211,238,0.3)]"
-                                : t.status === "failed"
-                                  ? "border-rose-400/35 bg-rose-500/15 text-rose-300 shadow-[0_0_14px_rgba(251,113,133,0.25)]"
-                                  : "border-amber-400/30 bg-amber-500/10 text-amber-200 shadow-[0_0_12px_rgba(251,191,36,0.2)]"
-                          }`}
-                        >
-                          {t.status}
-                        </span>
-                      </div>
-                      <div className="mt-2 grid grid-cols-3 gap-2 text-center text-[11px]">
-                        <div>
-                          <p className="text-slate-500">群组</p>
-                          <p className="font-bold tabular-nums text-slate-100">{t.group_count}</p>
-                        </div>
-                        <div>
-                          <p className="text-slate-500">账号</p>
-                          <p className="font-semibold tabular-nums text-slate-200">{t.account_count}</p>
-                        </div>
-                        <div>
-                          <p className="text-slate-500">成功</p>
-                          <p className="font-bold tabular-nums text-emerald-300">{t.success_count}</p>
-                        </div>
-                      </div>
-                      <p className="mt-2 truncate text-[10px] text-slate-500" title={(t.groups || []).join(", ")}>
-                        {(t.groups || []).slice(0, 3).join(" · ")}
-                        {(t.groups || []).length > 3 ? " …" : ""}
-                      </p>
-                    </div>
-                  ))
+                  <ul className="space-y-1">
+                    {engagementLiveLogs.map((line, idx) => (
+                      <li
+                        key={`${idx}-${line.t}-${line.layer}-${line.progress}-${line.account}-${line.group}-${line.message}`}
+                        className={`break-words text-[11px] leading-snug ${engagementLiveLogTone(line.level)}`}
+                      >
+                        {formatEngagementLogLine(line)}
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
             </aside>

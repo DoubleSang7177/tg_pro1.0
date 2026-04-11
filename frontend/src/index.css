@@ -295,69 +295,361 @@ body::after {
   }
 }
 
-/* 目标群组列表卡：弱于 Hero 的玻璃 + 蓝绿紫混合，hover 上浮发光 */
-.target-group-list-card {
+/* ========== 目标群组 · Web3 / 金融 Dashboard 卡片 ========== */
+.tg-dash-group-card {
   position: relative;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
-  border-radius: 1rem;
-  border: 1px solid rgba(255, 255, 255, 0.065);
-  padding: 1.25rem;
+  border-radius: 1.125rem;
+  padding: 1.15rem 1.2rem 1.2rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
   background:
-    radial-gradient(ellipse 100% 80% at 100% -10%, rgba(59, 130, 246, 0.11), transparent 52%),
-    radial-gradient(ellipse 90% 70% at -5% 105%, rgba(139, 92, 246, 0.09), transparent 48%),
-    radial-gradient(circle at 85% 88%, rgba(16, 185, 129, 0.07), transparent 42%),
-    rgba(255, 255, 255, 0.028);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+    radial-gradient(ellipse 120% 90% at 100% -20%, rgba(56, 189, 248, 0.14), transparent 55%),
+    radial-gradient(ellipse 100% 80% at -15% 110%, rgba(139, 92, 246, 0.12), transparent 50%),
+    radial-gradient(circle at 72% 88%, rgba(16, 185, 129, 0.08), transparent 45%),
+    linear-gradient(165deg, rgba(15, 23, 42, 0.72) 0%, rgba(8, 12, 22, 0.88) 100%);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   box-shadow:
-    0 6px 26px rgba(0, 0, 0, 0.36),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 0 22px rgba(59, 130, 246, 0.04),
-    0 0 28px rgba(16, 185, 129, 0.03);
-  transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 280ms ease, border-color 280ms ease;
+    0 8px 32px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.055),
+    0 0 28px rgba(59, 130, 246, 0.06),
+    0 0 36px rgba(16, 185, 129, 0.04),
+    0 0 40px rgba(139, 92, 246, 0.05);
+  transition:
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 320ms ease,
+    border-color 320ms ease;
 }
 
-.target-group-list-card::before {
+.tg-dash-group-card::before {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
   background: linear-gradient(
-    125deg,
-    rgba(96, 165, 250, 0.06) 0%,
-    transparent 38%,
-    transparent 62%,
-    rgba(52, 211, 153, 0.045) 100%
+    118deg,
+    rgba(34, 211, 238, 0.07) 0%,
+    transparent 42%,
+    transparent 58%,
+    rgba(167, 139, 250, 0.06) 100%
   );
   pointer-events: none;
   z-index: 0;
 }
 
-.target-group-list-card > * {
+.tg-dash-group-card > * {
   position: relative;
   z-index: 1;
 }
 
-.target-group-list-card:hover {
-  transform: translateY(-4px);
-  border-color: rgba(99, 102, 241, 0.2);
+.tg-dash-group-card:hover {
+  transform: translateY(-5px);
+  border-color: rgba(129, 140, 248, 0.28);
   box-shadow:
-    0 14px 38px rgba(0, 0, 0, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 32px rgba(59, 130, 246, 0.1),
-    0 0 40px rgba(16, 185, 129, 0.07),
-    0 0 36px rgba(139, 92, 246, 0.08);
+    0 20px 48px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 40px rgba(56, 189, 248, 0.14),
+    0 0 52px rgba(16, 185, 129, 0.1),
+    0 0 56px rgba(139, 92, 246, 0.12),
+    0 0 0 1px rgba(34, 211, 238, 0.12);
 }
 
-.target-group-list-card h3 {
-  color: rgba(241, 245, 249, 0.88);
+/* 群组头像：16px 圆角、渐变、外发光 */
+.tg-dash-group-avatar {
+  width: 3.25rem;
+  height: 3.25rem;
+  flex-shrink: 0;
+  border-radius: 16px;
+  padding: 2px;
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.55), rgba(139, 92, 246, 0.5), rgba(16, 185, 129, 0.45));
+  box-shadow:
+    0 0 20px rgba(56, 189, 248, 0.35),
+    0 0 32px rgba(139, 92, 246, 0.22),
+    0 0 24px rgba(16, 185, 129, 0.15);
+}
+
+.tg-dash-group-avatar-inner {
+  display: grid;
+  height: 100%;
+  width: 100%;
+  place-items: center;
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(30, 41, 59, 0.95) 0%, rgba(15, 23, 42, 0.98) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.tg-dash-group-avatar-letter {
+  font-size: 1.15rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  background: linear-gradient(160deg, #7dd3fc 0%, #a78bfa 45%, #5eead4 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.45));
+}
+
+/* Dashboard 主数字：当前人数 */
+.stat-num-dash-members {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(125deg, #22d3ee 0%, #38bdf8 35%, #a78bfa 70%, #34d399 100%);
+  background-size: 140% 140%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.4)) drop-shadow(0 0 20px rgba(167, 139, 250, 0.25));
+}
+
+/* 累计拉人 */
+.stat-num-dash-pull {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(120deg, #93c5fd 0%, #818cf8 40%, #c4b5fd 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 12px rgba(129, 140, 248, 0.35));
+}
+
+.tg-dash-group-input {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.28);
+  padding: 0.5rem 0.65rem;
+  font-size: 0.8125rem;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(226, 232, 240, 0.95);
+  outline: none;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.target-group-list-card .stat-num-growth,
-.target-group-list-card .stat-num-log {
-  opacity: 0.82;
-  filter: drop-shadow(0 0 6px rgba(52, 211, 153, 0.2)) drop-shadow(0 0 8px rgba(56, 189, 248, 0.12));
+.tg-dash-group-input:hover {
+  border-color: rgba(56, 189, 248, 0.2);
+}
+
+.tg-dash-group-input:focus {
+  border-color: rgba(34, 211, 238, 0.4);
+  box-shadow:
+    0 0 0 2px rgba(34, 211, 238, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.tg-dash-status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.tg-dash-status-pill--active {
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.18), rgba(34, 211, 238, 0.1));
+  color: rgba(167, 243, 208, 0.95);
+  box-shadow: 0 0 18px rgba(52, 211, 153, 0.25), 0 0 28px rgba(34, 211, 238, 0.08);
+}
+
+/* 目标群组 · 数据流：渐变分割线（透明 → 亮 → 透明） */
+.tg-dash-gradient-rule-h {
+  height: 1px;
+  width: 100%;
+  margin-bottom: 0.75rem;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 18%,
+    rgba(255, 255, 255, 0.18) 50%,
+    rgba(255, 255, 255, 0.06) 82%,
+    transparent 100%
+  );
+}
+
+.tg-dash-gradient-rule-v {
+  width: 1px;
+  align-self: stretch;
+  min-height: 2.5rem;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.05) 22%,
+    rgba(255, 255, 255, 0.16) 50%,
+    rgba(255, 255, 255, 0.05) 78%,
+    transparent 100%
+  );
+}
+
+.tg-dash-metrics-stream {
+  position: relative;
+  z-index: 1;
+}
+
+.tg-dash-stream-head {
+  margin: 0 0 0.65rem;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(100, 116, 139, 0.88);
+}
+
+.tg-dash-stream-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.58);
+}
+
+/* 数据流数值：高亮渐变（非异常列） */
+.tg-dash-stream-value {
+  font-size: 0.9375rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  background: linear-gradient(118deg, #e0f2fe 0%, #7dd3fc 38%, #93c5fd 72%, #a5b4fc 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 12px rgba(56, 189, 248, 0.28)) drop-shadow(0 0 20px rgba(129, 140, 248, 0.12));
+}
+
+.tg-dash-stream-value--anomaly {
+  background: none !important;
+  -webkit-background-clip: unset !important;
+  background-clip: unset !important;
+  color: rgb(254, 202, 202) !important;
+  filter: drop-shadow(0 0 14px rgba(248, 113, 113, 0.55)) drop-shadow(0 0 24px rgba(239, 68, 68, 0.22));
+}
+
+/* 异常列：无子卡片边框，仅轻微光晕衬底 */
+.tg-dash-metric-item--anomaly::before {
+  content: "";
+  position: absolute;
+  inset: -2px -4px;
+  border-radius: 10px;
+  background: radial-gradient(ellipse 85% 120% at 50% 50%, rgba(248, 113, 113, 0.11), transparent 68%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.tg-dash-metric-item--anomaly > * {
+  position: relative;
+  z-index: 1;
+}
+
+.tg-dash-anomaly-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  border-radius: 9999px;
+  padding: 0.12rem 0.4rem;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  background: rgba(127, 29, 29, 0.28);
+  color: rgb(254, 202, 202);
+  box-shadow: 0 0 12px rgba(248, 113, 113, 0.28);
+}
+
+/* 净增长：独立强调行（无边框内嵌块） */
+.tg-dash-net-row {
+  margin-top: 1rem;
+  padding-top: 0;
+}
+
+.tg-dash-net-row--emphasis {
+  margin-top: 1.1rem;
+}
+
+.tg-dash-net-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.62);
+}
+
+.tg-dash-net-value-display {
+  font-size: 1.375rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  text-align: left;
+}
+
+@media (min-width: 640px) {
+  .tg-dash-net-value-display {
+    text-align: right;
+  }
+}
+
+.tg-dash-net-value--pos.tg-dash-net-value-display {
+  background: linear-gradient(120deg, #a7f3d0 0%, #34d399 45%, #5eead4 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 14px rgba(52, 211, 153, 0.42)) drop-shadow(0 0 26px rgba(16, 185, 129, 0.18));
+}
+
+.tg-dash-net-value--neg.tg-dash-net-value-display {
+  background: linear-gradient(115deg, #fecaca 0%, #f87171 50%, #fb923c 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 12px rgba(248, 113, 113, 0.45)) drop-shadow(0 0 22px rgba(239, 68, 68, 0.18));
+}
+
+.tg-dash-net-value--zero.tg-dash-net-value-display {
+  color: rgba(186, 198, 214, 0.92);
+  text-shadow: 0 0 14px rgba(148, 163, 184, 0.15);
+}
+
+/* 兼容：旧类名（若其它处引用） */
+.tg-dash-net-value--pos:not(.tg-dash-net-value-display) {
+  font-size: 1.125rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: rgb(167, 243, 208);
+  text-shadow:
+    0 0 14px rgba(52, 211, 153, 0.45),
+    0 0 28px rgba(16, 185, 129, 0.2);
+}
+
+.tg-dash-net-value--neg:not(.tg-dash-net-value-display) {
+  font-size: 1.125rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: rgb(254, 202, 202);
+  text-shadow:
+    0 0 12px rgba(248, 113, 113, 0.45),
+    0 0 22px rgba(239, 68, 68, 0.2);
+}
+
+.tg-dash-net-value--zero:not(.tg-dash-net-value-display) {
+  font-size: 1.125rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: rgba(148, 163, 184, 0.85);
+}
+
+.tg-dash-status-pill--limited {
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(251, 113, 133, 0.08));
+  color: rgba(253, 230, 138, 0.95);
+  box-shadow: 0 0 16px rgba(251, 191, 36, 0.2);
 }
 
 /* ========== 账号检测 · 控制台 ========== */

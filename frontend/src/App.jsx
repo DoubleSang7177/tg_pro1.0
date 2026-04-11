@@ -32,12 +32,17 @@ function displayPhone(account) {
   return digits ? `+${digits}` : "+unknown";
 }
 
+function normalizePhoneKey(phone) {
+  return String(phone || "").replace(/\D/g, "");
+}
+
 export default function App() {
   const [tab, setTab] = useState("用户增长");
   const [auth, setAuth] = useState({ username: "user", password: "user123" });
   const [profile, setProfile] = useState(null);
   const [tasks, setTasks] = useState([]);
-  const [accounts, setAccounts] = useState({ active: [], limited: [], banned: [] });
+  const [accounts, setAccounts] = useState({ active: [], limited: [], banned: [], recent_limited_sidebar: [] });
+  const [taskHighlight, setTaskHighlight] = useState({ active: null, previous: null, connecting: null });
   const [groups, setGroups] = useState([]);
   const [proxyData, setProxyData] = useState({ summary: { total: 0, idle: 0, used: 0, dead: 0 }, items: [] });
   const [users, setUsers] = useState([]);
@@ -54,9 +59,20 @@ export default function App() {
   const logRef = useRef(null);
   const [uploadFile, setUploadFile] = useState(null);
   const [form, setForm] = useState({ users: "" });
+  const [lastGroupMetadataSync, setLastGroupMetadataSync] = useState(null);
+  const [taskRunning, setTaskRunning] = useState(false);
 
   const isAdmin = useMemo(() => profile?.role === "admin", [profile]);
   const availableAccounts = useMemo(() => accounts.active || [], [accounts]);
+  const sidebarQueueAccounts = useMemo(() => {
+    const act = accounts.active || [];
+    const recent = accounts.recent_limited_sidebar || [];
+    const phones = new Set(act.map((a) => a.phone));
+    return [
+      ...act.map((a) => ({ ...a, _queueKind: "active" })),
+      ...recent.filter((a) => a.phone && !phones.has(a.phone)).map((a) => ({ ...a, _queueKind: "echo" })),
+    ];
+  }, [accounts.active, accounts.recent_limited_sidebar]);
   const hiddenGroups = useMemo(
     () => groups.filter((g) => !g.available && !removedGroups.includes(g.username)),
     [groups, removedGroups]
@@ -73,19 +89,59 @@ export default function App() {
     setLogs((prev) => [...prev.slice(-300), `[${ts}] ${line}`]);
   };
 
+  const pushLogLine = (line) => {
+    if (/^\[\d{1,2}:\d{2}:\d{2}\]\s/.test(line)) {
+      setLogs((prev) => [...prev.slice(-300), line]);
+    } else {
+      appendLog(line);
+    }
+  };
+
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [logs]);
 
-  const refreshBase = async () => {
+  useEffect(() => {
+    const { active, previous, connecting } = taskHighlight;
+    if (!active && !previous && !connecting) return undefined;
+    const t = setTimeout(
+      () => setTaskHighlight({ active: null, previous: null, connecting: null }),
+      60000,
+    );
+    return () => clearTimeout(t);
+  }, [taskHighlight.active, taskHighlight.previous, taskHighlight.connecting]);
+
+  const refreshBase = async (opts = {}) => {
+    const { skipMetadataSync = false, forceMetadataSync = false } = opts;
     try {
+      if (!skipMetadataSync) {
+        try {
+          const sr = await api.syncGroupMetadata({ force: forceMetadataSync });
+          if (sr?.skipped && sr?.reason === "recently_synced") {
+            appendLog("群组元数据：24 小时内已同步，跳过");
+          } else if (sr?.ok && !sr?.skipped) {
+            appendLog(`群组元数据已同步（更新 ${sr.updated ?? 0} 条）`);
+            (sr.logs || []).slice(-20).forEach((line) => appendLog(`tg-sync | ${line}`));
+          } else if (sr?.ok === false) {
+            appendLog(`群组元数据同步失败 | ${sr.message || "unknown"}`);
+          }
+        } catch (e) {
+          appendLog(`群组元数据同步请求失败 | ${e.message}`);
+        }
+      }
       const baseCalls = [api.listTasks(), api.listAccounts(), api.listGroups(), api.listAccountPaths()];
       baseCalls.push(api.listProxies());
       const results = await Promise.all(baseCalls);
       const [t, a, g, ap, p] = results;
       setTasks(t.tasks || []);
-      setAccounts({ active: a.active || [], limited: a.limited || [], banned: a.banned || [] });
+      setAccounts({
+        active: a.active || [],
+        limited: a.limited || [],
+        banned: a.banned || [],
+        recent_limited_sidebar: a.recent_limited_sidebar || [],
+      });
       setGroups(g.groups || []);
+      setLastGroupMetadataSync(g.last_metadata_sync || null);
       setAccountPaths(ap.items || []);
       setProxyData({
         summary: p?.summary || { total: 0, idle: 0, used: 0, dead: 0 },
@@ -98,12 +154,21 @@ export default function App() {
     }
   };
 
+  const onForceSyncGroups = async () => {
+    try {
+      await refreshBase({ skipMetadataSync: false, forceMetadataSync: true });
+      setMsg("已从 Telegram 强制同步群组信息");
+    } catch (e) {
+      setMsg(e.message);
+    }
+  };
+
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) return;
     api.me()
       .then((r) => setProfile({ username: r.username, role: r.role }))
-      .then(refreshBase)
+      .then(() => refreshBase())
       .catch(() => localStorage.removeItem("token"));
   }, []);
 
@@ -127,7 +192,8 @@ export default function App() {
     localStorage.removeItem("token");
     setProfile(null);
     setTasks([]);
-    setAccounts({ active: [], limited: [], banned: [] });
+    setAccounts({ active: [], limited: [], banned: [], recent_limited_sidebar: [] });
+    setTaskHighlight({ active: null, previous: null, connecting: null });
     setGroups([]);
     setUsers([]);
       setAccountPaths([]);
@@ -161,16 +227,59 @@ export default function App() {
       appendLog(`task blocked | ${message}`);
       return;
     }
+    setTaskRunning(true);
+    setMsg("");
+    appendLog(
+      `开始执行用户增长 | 群组=${selectedGroup} | 用户数=${parsedUsers.length} | 正在提交后台任务…`,
+    );
     try {
       const resp = await api.startTask({
         group: selectedGroup,
         users: parsedUsers,
       });
-      const data = resp?.data || {};
+      const jobId = resp?.job_id;
+      if (!jobId) {
+        throw new Error("服务端未返回任务编号");
+      }
+      appendLog(
+        `任务已排队 job=${jobId}，后台执行中；约每秒拉取进度，下方将实时显示 Telegram 步骤日志`,
+      );
+      let data = null;
+      let streamed = 0;
+      for (;;) {
+        const st = await api.taskJobStatus(jobId);
+        setTaskHighlight({
+          active: st.highlight_active_phone ?? null,
+          previous: st.highlight_previous_phone ?? null,
+          connecting: st.highlight_connecting_phone ?? null,
+        });
+        const pl = st.progress_logs || [];
+        for (let i = streamed; i < pl.length; i++) {
+          pushLogLine(pl[i]);
+        }
+        streamed = pl.length;
+        if (st.status === "completed" && st.data) {
+          data = st.data;
+          const dl = st.data.logs || [];
+          for (let i = streamed; i < dl.length; i++) {
+            pushLogLine(dl[i]);
+          }
+          break;
+        }
+        if (st.status === "failed") {
+          throw new Error(st.error || "任务失败");
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
       const summary = data.summary || { success: 0, skipped: 0, failed: 0 };
       appendLog(`task finished | group=${selectedGroup} accounts_auto=${availableAccounts.length}`);
       appendLog(`result summary | success=${summary.success} skipped=${summary.skipped} failed=${summary.failed}`);
-      (data.logs || []).forEach((line) => appendLog(line));
+      const h = data.highlight || {};
+      setTaskHighlight({
+        active: h.active_phone ?? null,
+        previous: h.previous_phone ?? null,
+        connecting: null,
+      });
       if (summary.failed > 0) {
         setMsg(`任务执行完成：成功${summary.success}，跳过${summary.skipped}，失败${summary.failed}`);
       } else {
@@ -178,7 +287,10 @@ export default function App() {
       }
       await refreshBase();
     } catch (e) {
+      appendLog(`任务失败 | ${e.message}`);
       setMsg(e.message);
+    } finally {
+      setTaskRunning(false);
     }
   };
 
@@ -301,9 +413,27 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-[1500px] px-6 pb-8 pt-24">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-xl font-semibold">{tab}</h2>
-          <button className="rounded-lg bg-slate-800 px-3 py-2 text-sm transition hover:bg-slate-700" onClick={refreshBase}>刷新数据</button>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-xl font-semibold">{tab}</h2>
+            {tab === "目标群组" && lastGroupMetadataSync ? (
+              <p className="mt-1 text-xs text-slate-500">上次 Telegram 同步：{lastGroupMetadataSync}</p>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {tab === "目标群组" ? (
+              <button
+                className="rounded-lg bg-indigo-600 px-3 py-2 text-sm transition hover:bg-indigo-500"
+                type="button"
+                onClick={onForceSyncGroups}
+              >
+                强制同步群组信息
+              </button>
+            ) : null}
+            <button className="rounded-lg bg-slate-800 px-3 py-2 text-sm transition hover:bg-slate-700" type="button" onClick={() => refreshBase()}>
+              刷新数据
+            </button>
+          </div>
         </div>
         {msg ? <p className="mb-4 text-sm text-rose-300">{msg}</p> : null}
 
@@ -316,35 +446,49 @@ export default function App() {
               <Card title="可用账号数量"><p className="text-3xl font-bold text-emerald-300">{stats.accounts}</p></Card>
             </div>
             <div className="grid gap-4 xl:grid-cols-12">
-              <Card title="账号列表（仅可用）" className="xl:col-span-3">
+              <Card title="账号队列" className="xl:col-span-3">
+                <p className="mb-2 text-xs text-slate-500">
+                  列表分两类：① 默认边框行 = 当前<strong className="text-slate-300">真正可用</strong>、会按顺序参与拉人；②
+                  <strong className="text-slate-400">灰色描边行</strong> =
+                  数据库已是「当日受限」、仅在<strong className="text-slate-400">刚受限后约 1 分钟</strong>内挂在队列旁做提示，<strong className="text-slate-300">不会</strong>
+                  再被任务使用。琥珀色：正在连接；绿色：正在拉人；蓝色：上一个拉人号。代理见「代理监控」。
+                </p>
                 <div className="max-h-[420px] space-y-2 overflow-auto pr-1">
-                  {availableAccounts.map((a) => (
-                    <div key={a.id} className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm">
-                      <div>
-                        <div className="font-medium">{displayPhone(a)}</div>
-                        <div className="text-xs text-slate-400">今日使用 {a.today_used_count || 0}</div>
-                        <div className="text-xs">
+                  {sidebarQueueAccounts.map((a) => {
+                    const pk = normalizePhoneKey(a.phone);
+                    const isActiveHighlight = taskHighlight.active && pk === normalizePhoneKey(taskHighlight.active);
+                    const isConnectingHighlight =
+                      taskHighlight.connecting && pk === normalizePhoneKey(taskHighlight.connecting);
+                    const isPrevHighlight = taskHighlight.previous && pk === normalizePhoneKey(taskHighlight.previous);
+                    const isEcho = a._queueKind === "echo";
+                    let phoneCls = "font-medium";
+                    if (isActiveHighlight) phoneCls += " text-emerald-400";
+                    else if (isConnectingHighlight) phoneCls += " text-amber-300";
+                    else if (isPrevHighlight) phoneCls += " text-sky-400";
+                    else if (isEcho) phoneCls += " text-slate-400";
+                    else phoneCls += " text-slate-100";
+                    return (
+                      <div
+                        key={`${a.id}-${a._queueKind || "x"}`}
+                        className={`rounded-lg border px-3 py-2 text-sm ${
+                          isEcho ? "border-slate-600/60 bg-slate-900/60" : "border-slate-700 bg-slate-900"
+                        }`}
+                      >
+                        <div className={phoneCls}>{displayPhone(a)}</div>
+                        {isEcho ? (
+                          <p className="mt-1 text-[11px] leading-snug text-amber-200/85">
+                            当日受限（与库内 limited_today 一致）· 仅提示 · 约 1 分钟内消失 · 不参与拉人
+                          </p>
+                        ) : null}
+                        <div className="mt-1 text-xs">
                           <span className="text-slate-400">代理类型: </span>
                           <span className={a.proxy_type === "direct" ? "text-amber-300" : "text-emerald-300"}>
                             {a.proxy_type || "direct"}
                           </span>
                         </div>
-                        <div className="text-xs text-slate-400">代理IP: {a.proxy_ip || "-"}</div>
                       </div>
-                      <div className="text-right">
-                        <Badge status="自动顺序使用" />
-                        <div
-                          className={`mt-1 rounded px-2 py-0.5 text-xs ${
-                            a.proxy_type === "direct"
-                              ? "bg-amber-500/20 text-amber-300"
-                              : "bg-emerald-500/20 text-emerald-300"
-                          }`}
-                        >
-                          {a.proxy_type === "direct" ? "直连 warning" : "代理账号"}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </Card>
               <Card title="任务控制面板" className="xl:col-span-9">
@@ -358,11 +502,17 @@ export default function App() {
                         onChange={(e) => setSelectedGroup(e.target.value)}
                       >
                         <option value="">请选择目标群组</option>
-                        {availableGroups.map((username) => (
-                          <option key={username} value={username}>
-                            {username}
-                          </option>
-                        ))}
+                        {availableGroups.map((username) => {
+                          const gi = groups.find((x) => x.username === username);
+                          const label = gi
+                            ? `${gi.title || gi.username} (${gi.display_handle || gi.username})`
+                            : username;
+                          return (
+                            <option key={username} value={username}>
+                              {label}
+                            </option>
+                          );
+                        })}
                       </select>
                       <select
                         className="min-w-[220px] rounded border border-slate-700 bg-slate-950 px-2 py-2 text-sm"
@@ -372,7 +522,7 @@ export default function App() {
                         <option value="">选择强制加入群组</option>
                         {hiddenGroups.map((g) => (
                           <option key={`hidden-${g.id}`} value={g.username}>
-                            {g.username}
+                            {`${g.title || g.username} (${g.display_handle || g.username})`}
                           </option>
                         ))}
                       </select>
@@ -381,7 +531,18 @@ export default function App() {
                     </div>
                   </div>
                   <textarea className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2" rows={8} placeholder="用户列表（每行一个）" value={form.users} onChange={(e) => setForm((v) => ({ ...v, users: e.target.value }))} />
-                  <button className="w-fit rounded-lg bg-blue-600 px-4 py-2 transition hover:bg-blue-500" onClick={onStartTask}>开始增长</button>
+                  <button
+                    type="button"
+                    disabled={taskRunning}
+                    className={`w-fit rounded-lg px-4 py-2 transition ${
+                      taskRunning
+                        ? "cursor-not-allowed bg-slate-600 text-slate-300"
+                        : "bg-blue-600 hover:bg-blue-500"
+                    }`}
+                    onClick={onStartTask}
+                  >
+                    {taskRunning ? "正在执行中…" : "开始增长"}
+                  </button>
                 </div>
               </Card>
             </div>
@@ -396,8 +557,8 @@ export default function App() {
         {tab === "目标群组" && (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {groups.map((g) => (
-              <Card key={g.id} title={g.title}>
-                <div className="mb-2 text-sm text-slate-300">{g.username}</div>
+              <Card key={g.id} title={g.title || g.username}>
+                <div className="mb-2 text-sm text-slate-300">{g.display_handle || g.username}</div>
                 <div className="text-xs text-slate-400">当前人数: {g.members_count}</div>
                 <div className="text-xs text-slate-400">总拉人: {g.total_added}</div>
                 <div className="text-xs text-slate-400">今日拉人: {g.today_added}</div>
@@ -425,7 +586,7 @@ export default function App() {
               <button className="rounded bg-indigo-600 px-3 py-2 text-sm" onClick={() => setShowPathModal(true)}>账号路径</button>
               <input className="max-w-[260px] text-sm" type="file" accept=".zip" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} />
               <button className="rounded bg-blue-600 px-3 py-2 text-sm" onClick={onUpload}>上传</button>
-              <button className="rounded bg-slate-700 px-3 py-2 text-sm" onClick={refreshBase}>刷新</button>
+              <button className="rounded bg-slate-700 px-3 py-2 text-sm" type="button" onClick={() => refreshBase()}>刷新</button>
             </div>
             <div className="grid gap-4 xl:grid-cols-3">
               <Card title="可用账号">

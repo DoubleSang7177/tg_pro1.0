@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 
 from auth import require_user_or_admin
 from database import get_db
-from models import Group, User
+from models import Group, Setting, User
 from services.daily_reset import perform_daily_reset_if_needed
+from services.telegram_service import GROUP_METADATA_SYNC_KEY, sync_groups_metadata
 
 
 router = APIRouter(tags=["groups"])
@@ -15,6 +16,10 @@ router = APIRouter(tags=["groups"])
 
 class UpdateGroupLimitRequest(BaseModel):
     daily_limit: int = Field(..., ge=1, le=10000)
+
+
+class SyncGroupMetadataRequest(BaseModel):
+    force: bool = False
 
 
 def _as_utc(dt: datetime | None) -> datetime | None:
@@ -25,10 +30,29 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def _display_handle(g: Group) -> str:
+    if getattr(g, "public_username", None):
+        return f"@{g.public_username}"
+    return g.username
+
+
+@router.post("/groups/sync-metadata")
+async def sync_group_metadata(
+    payload: SyncGroupMetadataRequest,
+    user: User = Depends(require_user_or_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    owner_id = None if user.role == "admin" else user.id
+    result = await sync_groups_metadata(owner_id, payload.force, db)
+    return {"ok": result.get("ok", False), **{k: v for k, v in result.items() if k != "ok"}}
+
+
 @router.get("/groups")
 def list_groups(_user: User = Depends(require_user_or_admin), db: Session = Depends(get_db)) -> dict:
     perform_daily_reset_if_needed(db)
     now_utc = datetime.now(timezone.utc)
+    sync_row = db.query(Setting).filter(Setting.key == GROUP_METADATA_SYNC_KEY).first()
+    last_metadata_sync = sync_row.value if sync_row else None
     rows = db.query(Group).order_by(Group.id.asc()).all()
     for g in rows:
         disabled_until_utc = _as_utc(g.disabled_until)
@@ -46,6 +70,8 @@ def list_groups(_user: User = Depends(require_user_or_admin), db: Session = Depe
                 "id": g.id,
                 "username": g.username,
                 "title": g.title,
+                "public_username": getattr(g, "public_username", None),
+                "display_handle": _display_handle(g),
                 "members_count": g.members_count,
                 "total_added": g.total_added,
                 "today_added": g.today_added,
@@ -60,6 +86,7 @@ def list_groups(_user: User = Depends(require_user_or_admin), db: Session = Depe
     return {
         "ok": True,
         "groups": groups,
+        "last_metadata_sync": last_metadata_sync,
     }
 
 

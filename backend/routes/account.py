@@ -19,6 +19,7 @@ from services.proxy_service import assign_proxy_to_account
 router = APIRouter(tags=["accounts"])
 BASE_TDATA_DIR = Path(__file__).resolve().parent.parent / "data" / "tdata"
 log = get_logger("account")
+RECENT_LIMITED_SIDEBAR_SECONDS = 60
 
 
 def _safe_extract_zip(zip_path: Path, extract_to: Path) -> None:
@@ -197,6 +198,7 @@ def list_accounts(
         proxy_map = {p.id: f"{p.host}:{p.port}" for p in proxy_rows}
     log.info("accounts list user_id=%s role=%s count=%s", user.id, user.role, len(rows))
     grouped = {"active": [], "limited": [], "banned": []}
+    recent_limited_sidebar: list[dict] = []
     now_utc = datetime.now(timezone.utc)
     for row in rows:
         status = (row.status or "active").lower()
@@ -215,7 +217,12 @@ def list_accounts(
             status = "banned"
         elif status not in grouped:
             status = "active"
-        grouped[status].append(_account_payload(row, proxy_map.get(row.proxy_id)))
+        payload = _account_payload(row, proxy_map.get(row.proxy_id))
+        grouped[status].append(payload)
+        if status == "limited":
+            last_u = _as_utc(row.last_used_time)
+            if last_u and (now_utc - last_u).total_seconds() <= RECENT_LIMITED_SIDEBAR_SECONDS:
+                recent_limited_sidebar.append({**payload, "sidebar_echo": True})
     db.commit()
     flat_accounts = []
     for item in grouped["active"] + grouped["limited"] + grouped["banned"]:
@@ -227,6 +234,7 @@ def list_accounts(
         "active": grouped["active"],
         "limited": grouped["limited"],
         "banned": grouped["banned"],
+        "recent_limited_sidebar": recent_limited_sidebar,
     }
 
 

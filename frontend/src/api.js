@@ -37,6 +37,11 @@ export const api = {
   me: () => request("/auth/me"),
   systemStatus: () => request("/"),
   listGroups: () => request("/groups"),
+  syncGroupMetadata: (payload = {}) =>
+    request("/groups/sync-metadata", {
+      method: "POST",
+      body: JSON.stringify({ force: Boolean(payload.force) }),
+    }),
   updateGroupLimit: (groupId, dailyLimit) =>
     request(`/groups/${groupId}/limit`, {
       method: "PUT",
@@ -48,6 +53,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  taskJobStatus: (jobId) => request(`/start_task/status/${encodeURIComponent(jobId)}`),
   uploadAccount: (file) => {
     const form = new FormData();
     form.append("file", file);

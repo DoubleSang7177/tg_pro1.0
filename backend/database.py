@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 
@@ -20,5 +20,14 @@ def get_db():
         db.close()
 
 
+def _ensure_group_columns() -> None:
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(groups)")).fetchall()
+        col_names = {r[1] for r in rows}
+        if "public_username" not in col_names:
+            conn.execute(text("ALTER TABLE groups ADD COLUMN public_username VARCHAR(255)"))
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    _ensure_group_columns()

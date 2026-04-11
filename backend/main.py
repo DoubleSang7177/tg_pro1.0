@@ -1,3 +1,5 @@
+import asyncio
+import threading
 import time
 from uuid import uuid4
 
@@ -95,6 +97,20 @@ def startup() -> None:
         db.commit()
     finally:
         db.close()
+
+    def _background_group_metadata_sync() -> None:
+        from database import SessionLocal
+        from services.telegram_service import sync_groups_metadata
+
+        db = SessionLocal()
+        try:
+            asyncio.run(sync_groups_metadata(None, False, db))
+        except Exception:
+            api_logger.exception("startup group metadata sync failed")
+        finally:
+            db.close()
+
+    threading.Thread(target=_background_group_metadata_sync, name="group-metadata-sync", daemon=True).start()
 
 
 @app.get("/")

@@ -69,6 +69,8 @@ class Group(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(255), unique=True, nullable=False, index=True)
     title = Column(String(255), nullable=False)
+    # Telegram 公开用户名（不含 @），用于展示为 @xxx；无公开链接的群组为空
+    public_username = Column(String(255), nullable=True)
     members_count = Column(Integer, default=0, nullable=False)
     total_added = Column(Integer, default=0, nullable=False)
     today_added = Column(Integer, default=0, nullable=False)

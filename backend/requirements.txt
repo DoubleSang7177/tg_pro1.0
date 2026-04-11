@@ -2,5 +2,6 @@ fastapi
 uvicorn
 sqlalchemy
 pyrogram
+telethon
 tgcrypto
 python-multipart

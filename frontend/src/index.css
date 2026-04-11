@@ -2,6 +2,979 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 应用根节点叠在 body 环境光之上 */
+#root {
+  position: relative;
+  z-index: 1;
+  isolation: isolate;
+  min-height: 100dvh;
+}
+
 body {
-  @apply bg-slate-100 text-slate-800;
+  @apply min-h-screen min-h-[100dvh] antialiased text-slate-200;
+  position: relative;
+  background-color: #0b0f14;
+  background-image:
+    radial-gradient(circle at 20% 20%, rgba(0, 150, 255, 0.15), transparent 55%),
+    radial-gradient(circle at 80% 20%, rgba(0, 255, 200, 0.15), transparent 55%),
+    radial-gradient(circle at 20% 80%, rgba(180, 100, 255, 0.1), transparent 50%),
+    radial-gradient(circle at 92% 78%, rgba(0, 140, 255, 0.08), transparent 42%);
+  background-attachment: fixed;
+}
+
+/* 环境光伪元素：大尺度模糊，增强层次与动感 */
+body::before {
+  content: "";
+  position: fixed;
+  pointer-events: none;
+  z-index: 0;
+  width: min(140vw, 1280px);
+  height: min(140vw, 1280px);
+  left: -28%;
+  top: -22%;
+  background: radial-gradient(circle, rgba(0, 150, 255, 0.26) 0%, transparent 62%);
+  filter: blur(88px);
+  opacity: 0.82;
+  animation: ambient-float-a 20s ease-in-out infinite alternate;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  pointer-events: none;
+  z-index: 0;
+  width: min(130vw, 1100px);
+  height: min(130vw, 1100px);
+  right: -24%;
+  bottom: -18%;
+  background:
+    radial-gradient(circle at 55% 35%, rgba(0, 255, 180, 0.2) 0%, transparent 58%),
+    radial-gradient(circle at 25% 70%, rgba(180, 100, 255, 0.18) 0%, transparent 52%);
+  filter: blur(96px);
+  opacity: 0.72;
+  animation: ambient-float-b 24s ease-in-out infinite alternate;
+}
+
+@keyframes ambient-float-a {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.65;
+  }
+  100% {
+    transform: translate(4%, 5%) scale(1.06);
+    opacity: 0.92;
+  }
+}
+
+@keyframes ambient-float-b {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.58;
+  }
+  100% {
+    transform: translate(-5%, -3%) scale(1.07);
+    opacity: 0.88;
+  }
+}
+
+/* 终端日志行淡入 */
+@keyframes log-line-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.log-line {
+  animation: log-line-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 渐变数字（配合 bg-clip-text） */
+.stat-num-growth {
+  @apply bg-gradient-to-br from-emerald-300 via-lime-300 to-emerald-400 bg-clip-text font-bold text-transparent;
+  filter: drop-shadow(0 0 14px rgba(52, 211, 153, 0.35));
+}
+
+.stat-num-log {
+  @apply bg-gradient-to-br from-sky-300 via-blue-400 to-cyan-300 bg-clip-text font-bold text-transparent;
+  filter: drop-shadow(0 0 14px rgba(56, 189, 248, 0.35));
+}
+
+.stat-num-risk {
+  @apply bg-gradient-to-br from-fuchsia-400 via-rose-400 to-orange-400 bg-clip-text font-bold text-transparent;
+  filter: drop-shadow(0 0 14px rgba(244, 114, 182, 0.35));
+}
+
+.stat-num-scraper {
+  @apply bg-gradient-to-br from-teal-300 via-cyan-300 to-emerald-400 bg-clip-text font-bold text-transparent;
+  filter: drop-shadow(0 0 14px rgba(45, 212, 191, 0.35));
+}
+
+.stat-num-warn {
+  @apply bg-gradient-to-br from-amber-200 via-yellow-300 to-amber-400 bg-clip-text font-bold text-transparent;
+  filter: drop-shadow(0 0 14px rgba(251, 191, 36, 0.42));
+}
+
+/* 目标群组 · Hero 焦点卡：多层径向 + 中心能量核 + 整体呼吸 + hover 增亮 */
+.group-hero-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  background:
+    radial-gradient(ellipse 90% 70% at 50% 45%, rgba(0, 255, 200, 0.2), transparent 58%),
+    radial-gradient(circle at 18% 22%, rgba(0, 150, 255, 0.14), transparent 42%),
+    radial-gradient(circle at center, rgba(0, 255, 200, 0.22), transparent 52%),
+    radial-gradient(circle at 100% 0%, rgba(0, 150, 255, 0.16), transparent 50%),
+    radial-gradient(circle at 0% 100%, rgba(180, 100, 255, 0.14), transparent 46%),
+    radial-gradient(circle at 92% 72%, rgba(99, 102, 241, 0.1), transparent 40%),
+    rgba(15, 23, 30, 0.82);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  box-shadow:
+    0 0 50px rgba(0, 255, 200, 0.1),
+    0 0 80px rgba(0, 150, 255, 0.06),
+    0 0 100px rgba(139, 92, 246, 0.05),
+    0 12px 48px rgba(0, 0, 0, 0.5);
+  transition: border-color 400ms ease, box-shadow 400ms ease, transform 400ms ease, filter 400ms ease;
+  animation: group-hero-breathe 10s ease-in-out infinite;
+}
+
+.group-hero-card:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 72px rgba(0, 255, 200, 0.16),
+    0 0 96px rgba(0, 150, 255, 0.11),
+    0 0 120px rgba(139, 92, 246, 0.09),
+    0 16px 56px rgba(0, 0, 0, 0.52);
+  filter: brightness(1.05);
+  animation: none;
+}
+
+@keyframes group-hero-breathe {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.035);
+  }
+}
+
+.group-hero-card::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  width: min(100%, 440px);
+  height: min(100vw, 440px);
+  max-height: 75%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(0, 255, 200, 0.46) 0%,
+    rgba(96, 239, 255, 0.16) 36%,
+    rgba(129, 140, 248, 0.08) 52%,
+    transparent 70%
+  );
+  filter: blur(44px);
+  pointer-events: none;
+  z-index: 0;
+  animation: group-hero-core-pulse 5s ease-in-out infinite;
+}
+
+/* 次要漂移光斑：蓝紫慢移，增强层次 */
+.group-hero-card::after {
+  content: "";
+  position: absolute;
+  right: -15%;
+  top: -10%;
+  width: min(55%, 320px);
+  height: min(55vw, 320px);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.2) 0%, rgba(139, 92, 246, 0.12) 45%, transparent 68%);
+  filter: blur(56px);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.75;
+  animation: group-hero-drift 16s ease-in-out infinite alternate;
+}
+
+@keyframes group-hero-drift {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.55;
+  }
+  100% {
+    transform: translate(-8%, 12%) scale(1.12);
+    opacity: 0.88;
+  }
+}
+
+@keyframes group-hero-core-pulse {
+  0%,
+  100% {
+    opacity: 0.52;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    opacity: 0.95;
+    transform: translate(-50%, -50%) scale(1.12);
+  }
+}
+
+.group-hero-halo {
+  animation: group-hero-halo-pulse 3.2s ease-in-out infinite;
+}
+
+@keyframes group-hero-halo-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.88;
+    transform: scale(1.06);
+  }
+}
+
+.group-hero-orbit {
+  transform-origin: center;
+  animation: group-hero-orbit 22s linear infinite;
+}
+
+@keyframes group-hero-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.group-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: linear-gradient(135deg, #5eead4, #60a5fa, #c4b5fd);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.group-hero-metric-xl {
+  font-size: clamp(2.5rem, 6vw, 3.25rem);
+  line-height: 1;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(118deg, #7dd3fc 0%, #5eead4 28%, #4ade80 52%, #a78bfa 78%, #5eead4 100%);
+  background-size: 160% 160%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 22px rgba(52, 211, 153, 0.5)) drop-shadow(0 0 28px rgba(96, 165, 250, 0.35))
+    drop-shadow(0 0 20px rgba(167, 139, 250, 0.25));
+  animation: group-hero-metric-shimmer 12s ease-in-out infinite;
+}
+
+@keyframes group-hero-metric-shimmer {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+/* 目标群组列表卡：弱于 Hero 的玻璃 + 蓝绿紫混合，hover 上浮发光 */
+.target-group-list-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  padding: 1.25rem;
+  background:
+    radial-gradient(ellipse 100% 80% at 100% -10%, rgba(59, 130, 246, 0.11), transparent 52%),
+    radial-gradient(ellipse 90% 70% at -5% 105%, rgba(139, 92, 246, 0.09), transparent 48%),
+    radial-gradient(circle at 85% 88%, rgba(16, 185, 129, 0.07), transparent 42%),
+    rgba(255, 255, 255, 0.028);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow:
+    0 6px 26px rgba(0, 0, 0, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 22px rgba(59, 130, 246, 0.04),
+    0 0 28px rgba(16, 185, 129, 0.03);
+  transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 280ms ease, border-color 280ms ease;
+}
+
+.target-group-list-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    125deg,
+    rgba(96, 165, 250, 0.06) 0%,
+    transparent 38%,
+    transparent 62%,
+    rgba(52, 211, 153, 0.045) 100%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+.target-group-list-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.target-group-list-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(99, 102, 241, 0.2);
+  box-shadow:
+    0 14px 38px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 32px rgba(59, 130, 246, 0.1),
+    0 0 40px rgba(16, 185, 129, 0.07),
+    0 0 36px rgba(139, 92, 246, 0.08);
+}
+
+.target-group-list-card h3 {
+  color: rgba(241, 245, 249, 0.88);
+  font-weight: 600;
+}
+
+.target-group-list-card .stat-num-growth,
+.target-group-list-card .stat-num-log {
+  opacity: 0.82;
+  filter: drop-shadow(0 0 6px rgba(52, 211, 153, 0.2)) drop-shadow(0 0 8px rgba(56, 189, 248, 0.12));
+}
+
+/* ========== 账号检测 · 控制台 ========== */
+.account-console-hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 1.25rem 1.5rem;
+  background:
+    radial-gradient(ellipse 85% 90% at 0% -20%, rgba(59, 130, 246, 0.22), transparent 58%),
+    radial-gradient(ellipse 75% 80% at 100% 0%, rgba(16, 185, 129, 0.16), transparent 52%),
+    radial-gradient(circle at 40% 100%, rgba(96, 165, 250, 0.1), transparent 45%),
+    radial-gradient(circle at 85% 60%, rgba(52, 211, 153, 0.08), transparent 40%),
+    rgba(14, 20, 30, 0.82);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.42),
+    0 0 48px rgba(59, 130, 246, 0.1),
+    0 0 40px rgba(16, 185, 129, 0.07);
+}
+
+.account-console-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    rgba(96, 165, 250, 0.04) 40%,
+    transparent 55%,
+    rgba(52, 211, 153, 0.035) 100%
+  );
+  pointer-events: none;
+  animation: account-console-hero-sheen 14s ease-in-out infinite alternate;
+}
+
+@keyframes account-console-hero-sheen {
+  0% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.account-console-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+.account-console-title-en {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, rgba(148, 197, 255, 0.95), rgba(110, 231, 183, 0.9));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.account-console-btn-primary {
+  border-radius: 0.75rem;
+  padding: 0.5rem 1.1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #0b0f14;
+  background: linear-gradient(135deg, #00ff87, #60efff);
+  box-shadow: 0 0 22px rgba(0, 255, 150, 0.32), 0 4px 16px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+.account-console-btn-primary:hover:not(:disabled) {
+  transform: scale(1.03) translateY(-1px);
+  box-shadow: 0 0 32px rgba(0, 255, 180, 0.45), 0 8px 22px rgba(96, 239, 255, 0.2);
+}
+
+.account-console-btn-primary:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.account-console-btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.account-console-column {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.38);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.account-console-column:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.42);
+}
+
+.account-console-column--active {
+  border-color: rgba(52, 211, 153, 0.22);
+  background:
+    radial-gradient(ellipse 100% 70% at 100% -5%, rgba(52, 211, 153, 0.14), transparent 55%),
+    radial-gradient(circle at 0% 100%, rgba(16, 185, 129, 0.1), transparent 48%),
+    radial-gradient(circle at 50% 50%, rgba(59, 130, 246, 0.06), transparent 60%),
+    rgba(255, 255, 255, 0.03);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.38),
+    0 0 36px rgba(16, 185, 129, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.account-console-column--limited {
+  border-color: rgba(251, 191, 36, 0.22);
+  background:
+    radial-gradient(ellipse 100% 70% at 0% 0%, rgba(251, 191, 36, 0.12), transparent 52%),
+    radial-gradient(circle at 100% 80%, rgba(245, 158, 11, 0.1), transparent 45%),
+    radial-gradient(circle at 40% 40%, rgba(251, 146, 60, 0.05), transparent 55%),
+    rgba(255, 255, 255, 0.028);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.38),
+    0 0 32px rgba(251, 191, 36, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.account-console-column--risk {
+  border-color: rgba(192, 38, 211, 0.22);
+  background:
+    radial-gradient(ellipse 100% 75% at 100% 0%, rgba(192, 38, 211, 0.12), transparent 52%),
+    radial-gradient(circle at 0% 100%, rgba(244, 63, 94, 0.11), transparent 48%),
+    radial-gradient(circle at 30% 60%, rgba(139, 92, 246, 0.08), transparent 50%),
+    rgba(255, 255, 255, 0.028);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.38),
+    0 0 36px rgba(217, 70, 239, 0.08),
+    0 0 28px rgba(244, 63, 94, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.account-console-column-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1.1rem 1.25rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.account-console-column-body {
+  padding: 0.75rem 1rem 1rem;
+  min-height: 200px;
+}
+
+/* 账号行 · 玻璃 + hover 光 + 头像光圈 */
+.account-inspect-row {
+  position: relative;
+  display: flex;
+  gap: 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.035);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.28s ease, border-color 0.28s ease;
+}
+
+.account-inspect-row:hover {
+  transform: translateY(-3px);
+}
+
+.account-inspect-row--active {
+  border-color: rgba(52, 211, 153, 0.2);
+}
+
+.account-inspect-row--active:hover {
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.35), 0 0 28px rgba(52, 211, 153, 0.15), 0 0 20px rgba(59, 130, 246, 0.08);
+}
+
+.account-inspect-row--limited {
+  border-color: rgba(251, 191, 36, 0.18);
+}
+
+.account-inspect-row--limited:hover {
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.35), 0 0 26px rgba(251, 191, 36, 0.14);
+}
+
+.account-inspect-row--banned {
+  border-color: rgba(244, 63, 94, 0.2);
+}
+
+.account-inspect-row--banned:hover {
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.35), 0 0 28px rgba(244, 63, 94, 0.14), 0 0 24px rgba(192, 38, 211, 0.1);
+}
+
+.account-inspect-avatar-wrap {
+  position: relative;
+  display: grid;
+  height: 2.75rem;
+  width: 2.75rem;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 0.75rem;
+}
+
+.account-inspect-avatar-wrap::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 9999px;
+  border: 1px solid currentColor;
+  opacity: 0.45;
+  animation: account-inspect-halo 2.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.account-inspect-avatar-wrap--active {
+  color: rgba(52, 211, 153, 0.65);
+}
+
+.account-inspect-avatar-wrap--limited {
+  color: rgba(251, 191, 36, 0.6);
+}
+
+.account-inspect-avatar-wrap--banned {
+  color: rgba(244, 114, 182, 0.55);
+}
+
+@keyframes account-inspect-halo {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.35;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.75;
+  }
+}
+
+.account-inspect-avatar-inner {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  height: 2.5rem;
+  width: 2.5rem;
+  place-items: center;
+  border-radius: 0.65rem;
+}
+
+.account-inspect-avatar-inner--active {
+  background: linear-gradient(145deg, rgba(52, 211, 153, 0.2), rgba(59, 130, 246, 0.12));
+  box-shadow: 0 0 16px rgba(52, 211, 153, 0.25);
+  color: rgb(167, 243, 208);
+}
+
+.account-inspect-avatar-inner--limited {
+  background: linear-gradient(145deg, rgba(251, 191, 36, 0.22), rgba(245, 158, 11, 0.1));
+  box-shadow: 0 0 14px rgba(251, 191, 36, 0.22);
+  color: rgb(253, 230, 138);
+}
+
+.account-inspect-avatar-inner--banned {
+  background: linear-gradient(145deg, rgba(244, 63, 94, 0.2), rgba(168, 85, 247, 0.12));
+  box-shadow: 0 0 16px rgba(244, 63, 94, 0.22);
+  color: rgb(251, 207, 232);
+}
+
+.badge-glow-available {
+  box-shadow: 0 0 14px rgba(52, 211, 153, 0.45), 0 0 24px rgba(16, 185, 129, 0.2);
+}
+
+.badge-glow-risk {
+  box-shadow: 0 0 14px rgba(244, 63, 94, 0.4), 0 0 20px rgba(192, 38, 211, 0.2);
+}
+
+.badge-glow-warn {
+  box-shadow: 0 0 14px rgba(251, 191, 36, 0.4), 0 0 18px rgba(245, 158, 11, 0.15);
+}
+
+/* ========== 用户增长 · 任务控制面板 ========== */
+.task-control-panel {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  padding: 1.25rem 1.35rem 1.35rem;
+  background:
+    radial-gradient(ellipse 90% 80% at 0% -10%, rgba(16, 185, 129, 0.14), transparent 55%),
+    radial-gradient(ellipse 85% 70% at 100% 0%, rgba(0, 175, 255, 0.12), transparent 52%),
+    radial-gradient(circle at 50% 100%, rgba(122, 92, 255, 0.1), transparent 48%),
+    radial-gradient(circle at 70% 40%, rgba(0, 175, 255, 0.06), transparent 45%),
+    rgba(255, 255, 255, 0.028);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  box-shadow:
+    0 8px 36px rgba(0, 0, 0, 0.38),
+    0 0 40px rgba(16, 185, 129, 0.06),
+    0 0 48px rgba(0, 175, 255, 0.05),
+    0 0 36px rgba(122, 92, 255, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.task-control-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    125deg,
+    rgba(16, 185, 129, 0.04) 0%,
+    transparent 35%,
+    transparent 50%,
+    rgba(0, 175, 255, 0.035) 70%,
+    rgba(122, 92, 255, 0.04) 100%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+.task-control-panel-inner {
+  position: relative;
+  z-index: 1;
+}
+
+.task-control-panel-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  background: linear-gradient(90deg, #6ee7b7, #00afff 45%, #7a5cff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 14px rgba(0, 175, 255, 0.25));
+}
+
+.task-control-field {
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(0, 175, 255, 0.22);
+  background: rgba(255, 255, 255, 0.045);
+  padding: 0.65rem 0.85rem;
+  font-size: 0.875rem;
+  color: rgb(241 245 249);
+  outline: none;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 0 0 1px rgba(122, 92, 255, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.task-control-field::placeholder {
+  color: rgb(100 116 139);
+}
+
+.task-control-field:hover {
+  border-color: rgba(0, 175, 255, 0.32);
+  box-shadow: 0 0 18px rgba(0, 175, 255, 0.08), 0 0 24px rgba(122, 92, 255, 0.06);
+}
+
+.task-control-field:focus {
+  border-color: rgba(122, 92, 255, 0.45);
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow:
+    0 0 0 2px rgba(0, 175, 255, 0.2),
+    0 0 24px rgba(0, 175, 255, 0.15),
+    0 0 32px rgba(122, 92, 255, 0.12);
+}
+
+.task-control-start-btn {
+  border-radius: 0.75rem;
+  padding: 0.65rem 1.5rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #0b0f14;
+  background: linear-gradient(125deg, #22c55e, #00afff 55%, #5eead4);
+  box-shadow: 0 0 24px rgba(34, 197, 94, 0.35), 0 0 32px rgba(0, 175, 255, 0.25), 0 6px 20px rgba(0, 0, 0, 0.3);
+  transition: transform 0.25s ease, box-shadow 0.25s ease, filter 0.25s ease;
+}
+
+.task-control-start-btn:hover:not(:disabled) {
+  transform: scale(1.04) translateY(-2px);
+  box-shadow: 0 0 36px rgba(34, 197, 94, 0.45), 0 0 48px rgba(0, 175, 255, 0.35), 0 0 28px rgba(122, 92, 255, 0.2), 0 10px 28px rgba(0, 0, 0, 0.35);
+  filter: brightness(1.05);
+}
+
+.task-control-start-btn:active:not(:disabled) {
+  transform: scale(0.98) translateY(0);
+}
+
+.task-control-start-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.task-status-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  border-radius: 9999px;
+  padding: 0.35rem 0.65rem;
+  min-width: 4.75rem;
+  transition: opacity 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease, color 0.25s ease;
+}
+
+.task-status-chip--dim {
+  opacity: 0.36;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgb(148 163 184);
+}
+
+.task-status-on-ready {
+  opacity: 1;
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  box-shadow: 0 0 16px rgba(52, 211, 153, 0.28);
+  color: rgb(167 243 208);
+}
+
+.task-status-on-running {
+  opacity: 1;
+  border: 1px solid rgba(0, 175, 255, 0.5);
+  box-shadow: 0 0 20px rgba(0, 175, 255, 0.38);
+  color: rgb(125 211 252);
+}
+
+.task-status-on-completed {
+  opacity: 1;
+  border: 1px solid rgba(122, 92, 255, 0.5);
+  box-shadow: 0 0 22px rgba(122, 92, 255, 0.38);
+  color: rgb(196 181 253);
+}
+
+/* 任务控制 · GlassDropdown 科技变体 */
+.glass-dd-task-trigger {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(0, 175, 255, 0.22);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+  font-size: 0.875rem;
+  color: rgb(241 245 249);
+  box-shadow: 0 0 14px rgba(0, 175, 255, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(14px);
+  outline: none;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.glass-dd-task-trigger:hover:not(:disabled) {
+  border-color: rgba(122, 92, 255, 0.35);
+  box-shadow: 0 0 20px rgba(0, 175, 255, 0.12), 0 0 24px rgba(122, 92, 255, 0.08);
+}
+
+.glass-dd-task-trigger:focus-visible {
+  border-color: rgba(122, 92, 255, 0.5);
+  box-shadow: 0 0 0 2px rgba(0, 175, 255, 0.2), 0 0 24px rgba(122, 92, 255, 0.15);
+}
+
+.glass-dd-task-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.glass-dd-task-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 100;
+  transform-origin: top center;
+  overflow: hidden;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(0, 175, 255, 0.18);
+  background: rgba(12, 18, 28, 0.94);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 40px rgba(0, 175, 255, 0.08), 0 0 48px rgba(122, 92, 255, 0.06);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  transition:
+    opacity 0.32s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.32s cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0.32s;
+}
+
+.glass-dd-task-panel--open {
+  pointer-events: auto;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.glass-dd-task-panel--closed {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-8px) scale(0.97);
+}
+
+.glass-dd-task-search {
+  width: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(0, 175, 255, 0.2);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.45rem 0.6rem;
+  font-size: 0.75rem;
+  color: rgb(241 245 249);
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.glass-dd-task-search:focus {
+  border-color: rgba(122, 92, 255, 0.45);
+  box-shadow: 0 0 16px rgba(0, 175, 255, 0.12), 0 0 20px rgba(122, 92, 255, 0.1);
+}
+
+.glass-dd-task-option {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  font-size: 0.875rem;
+  color: rgb(203 213 225);
+  transition: background 0.2s ease, box-shadow 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.glass-dd-task-option:hover {
+  background: linear-gradient(90deg, rgba(0, 175, 255, 0.1), rgba(122, 92, 255, 0.08));
+  box-shadow: inset 0 0 20px rgba(0, 175, 255, 0.06);
+  color: rgb(248 250 252);
+}
+
+.glass-dd-task-option--active {
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.15), rgba(0, 175, 255, 0.1));
+  font-weight: 600;
+  color: rgb(167 243 208);
+  box-shadow: 0 0 14px rgba(0, 175, 255, 0.12);
+}
+
+/* 按钮加载 spinner */
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ui-spinner {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  border-style: solid;
+  border-width: 2px;
+  animation: ui-spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+
+.ui-spinner--primary {
+  border-color: rgba(11, 15, 20, 0.45);
+  border-top-color: #0b0f14;
+}
+
+.ui-spinner--muted {
+  border-color: rgba(148, 163, 184, 0.35);
+  border-top-color: #60efff;
+}
+
+/* 执行中按钮 — 霓虹流动 */
+@keyframes btn-shimmer-neon {
+  0% {
+    background-position: 200% 50%;
+  }
+  100% {
+    background-position: -200% 50%;
+  }
+}
+
+.btn-running-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 255, 135, 0.85) 0%,
+    rgba(96, 239, 255, 0.92) 50%,
+    rgba(0, 255, 135, 0.85) 100%
+  );
+  background-size: 200% 100%;
+  animation: btn-shimmer-neon 2.2s linear infinite;
+}
+
+/* 深色滚动条 */
+.growth-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 255, 180, 0.25) rgba(255, 255, 255, 0.04);
+}
+
+.growth-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.growth-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+}
+
+.growth-scroll::-webkit-scrollbar-thumb {
+  background: rgba(96, 239, 255, 0.22);
+  border-radius: 4px;
+}
+
+.growth-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 180, 0.35);
 }

@@ -19,6 +19,8 @@ from routes.task import router as task_router
 from routes.user import router as user_router
 from routes.group import router as group_router
 from routes.proxy import router as proxy_router
+from routes.scraper import router as scraper_router
+from routes.interaction import router as interaction_router
 from models import Group, User
 from config.groups import GROUPS
 
@@ -39,6 +41,8 @@ app.include_router(logs_router)
 app.include_router(user_router)
 app.include_router(group_router)
 app.include_router(proxy_router)
+app.include_router(scraper_router)
+app.include_router(interaction_router)
 api_logger = get_logger("api")
 
 

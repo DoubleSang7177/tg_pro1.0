@@ -48,7 +48,7 @@ def list_proxies(
             idle += 1
         else:
             used += 1
-        if a.status in {"banned", "limited_long"}:
+        if a.status in {"banned", "limited_long", "risk_suspected"}:
             dead += 1
 
         proxy_value = "-"

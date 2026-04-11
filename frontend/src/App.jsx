@@ -1,13 +1,275 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  AlertCircle,
+  BarChart3,
+  CalendarClock,
+  CheckCircle,
+  Download,
+  Globe,
+  Info,
+  Layers,
+  Loader,
+  MessageCircle,
+  Network,
+  Server,
+  Shield,
+  Sparkles,
+  Upload,
+  TrendingUp,
+  UserCheck,
+  UserCircle,
+  UserCog,
+  UserSearch,
+  Users,
+  Users2,
+  XCircle,
+} from "lucide-react";
+import { api, downloadScraperFile, downloadScraperTaskById } from "./api";
+import { GlassDropdown } from "./components/GlassDropdown";
+import { GlassMultiSelect } from "./components/GlassMultiSelect";
+import { UiSpinner } from "./components/UiSpinner";
 
-const menus = ["用户增长", "账号检测", "目标群组", "代理监控", "用户管理"];
+const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "用户管理"];
 
-function Card({ title, children, right, className = "" }) {
+/** 玻璃基底（无纯白/纯黑底板） */
+const CARD_GLASS_CORE =
+  "rounded-2xl bg-[rgba(255,255,255,0.03)] backdrop-blur-[20px] transition-all duration-[250ms] ease-out hover:-translate-y-0.5";
+
+/** 模块分色光晕：增长绿 / 日志蓝 / 风控紫红 / 采集青绿 / 警告琥珀 / 默认薄荷 */
+const MODULE_CARD = {
+  default:
+    "border border-white/[0.08] p-5 shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(0,255,200,0.08)] hover:border-white/[0.14] hover:shadow-[0_20px_56px_rgba(0,0,0,0.48),0_0_52px_rgba(0,255,200,0.14)]",
+  growth:
+    "border border-emerald-400/14 p-5 shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_42px_rgba(34,197,94,0.11)] hover:border-emerald-400/28 hover:shadow-[0_20px_56px_rgba(0,0,0,0.45),0_0_56px_rgba(52,211,153,0.16)]",
+  log: "border border-blue-400/14 p-5 shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_42px_rgba(59,130,246,0.12)] hover:border-blue-400/26 hover:shadow-[0_20px_56px_rgba(0,0,0,0.45),0_0_56px_rgba(96,165,250,0.15)]",
+  risk:
+    "border border-fuchsia-500/16 p-5 shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_48px_rgba(192,38,211,0.1),0_0_60px_rgba(244,63,94,0.07)] hover:border-fuchsia-400/32 hover:shadow-[0_20px_56px_rgba(0,0,0,0.45),0_0_64px_rgba(217,70,239,0.14)]",
+  scraper:
+    "border border-teal-400/15 p-5 shadow-[0_8px_40px_rgba(0,0,0,0.4),0_0_44px_rgba(0,255,200,0.09),0_0_64px_rgba(34,211,238,0.07)] hover:border-cyan-400/28 hover:shadow-[0_20px_56px_rgba(0,0,0,0.42),0_0_58px_rgba(45,212,191,0.15)]",
+  warn: "border border-amber-400/15 p-5 shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_42px_rgba(251,146,60,0.1)] hover:border-amber-400/28 hover:shadow-[0_20px_56px_rgba(0,0,0,0.45),0_0_52px_rgba(251,191,36,0.12)]",
+};
+
+function cardShellClass(accent = "default") {
+  return `${CARD_GLASS_CORE} ${MODULE_CARD[accent] ?? MODULE_CARD.default}`;
+}
+
+const CARD_SHELL = cardShellClass("default");
+
+const MODAL_SHELL =
+  "rounded-2xl border border-blue-400/18 bg-[rgba(12,20,36,0.88)] shadow-[0_24px_80px_rgba(0,0,0,0.55),0_0_60px_rgba(59,130,246,0.14)] backdrop-blur-[22px]";
+
+const INPUT_FIELD =
+  "rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm text-slate-100 outline-none backdrop-blur-[16px] transition placeholder:text-slate-500 hover:border-white/[0.12] focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/15";
+
+const BTN_SECONDARY =
+  "rounded-xl border border-white/[0.1] bg-[rgba(255,255,255,0.05)] px-4 py-2 text-sm font-medium text-slate-200 shadow-[0_4px_24px_rgba(0,0,0,0.3)] backdrop-blur-[16px] transition-all duration-200 hover:-translate-y-0.5 hover:border-white/[0.14] hover:bg-[rgba(255,255,255,0.08)] hover:text-white hover:shadow-[0_8px_32px_rgba(96,239,255,0.12)] active:translate-y-0";
+
+const BTN_PRIMARY =
+  "rounded-xl bg-[linear-gradient(135deg,#00ff87,#60efff)] px-4 py-2 text-sm font-semibold text-slate-900 shadow-[0_0_20px_rgba(0,255,150,0.3),0_6px_20px_rgba(0,0,0,0.25)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_36px_rgba(0,255,180,0.48),0_10px_28px_rgba(96,239,255,0.28)] active:translate-y-0 active:shadow-[0_0_16px_rgba(0,255,150,0.28)]";
+
+/** 账号队列滚动区与终端日志滚动区统一高度 */
+const CONSOLE_PANEL_HEIGHT_PX = 500;
+
+/** 内嵌终端：用户增长队列 = 绿色光，实时日志 = 蓝色光 */
+const GLASS_PANEL_GROWTH =
+  "flex flex-col overflow-hidden rounded-2xl border border-emerald-400/14 bg-[rgba(255,255,255,0.03)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(34,197,94,0.08)] backdrop-blur-[20px]";
+
+const GLASS_PANEL_LOG =
+  "flex flex-col overflow-hidden rounded-2xl border border-blue-400/14 bg-[rgba(255,255,255,0.03)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_42px_rgba(59,130,246,0.1)] backdrop-blur-[20px]";
+
+const GLASS_PANEL_CHROME_GROWTH =
+  "flex shrink-0 items-center gap-2 border-b border-emerald-400/10 bg-emerald-500/[0.05] px-3 py-2 backdrop-blur-[12px]";
+
+const GLASS_PANEL_CHROME_LOG =
+  "flex shrink-0 items-center gap-2 border-b border-blue-400/12 bg-blue-500/[0.06] px-3 py-2 backdrop-blur-[12px]";
+
+/** 代理监控表格：蓝色信息光晕 */
+const TABLE_WRAP =
+  "overflow-x-auto overflow-hidden rounded-xl border border-blue-400/12 bg-[rgba(255,255,255,0.03)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(59,130,246,0.09)] backdrop-blur-[20px]";
+
+/** 用户采集：青绿双色环境光 */
+const SCRAPER_PAGE =
+  "relative overflow-hidden rounded-2xl border border-teal-400/18 bg-[rgba(255,255,255,0.025)] p-5 shadow-[0_8px_40px_rgba(0,0,0,0.38),0_0_48px_rgba(0,255,200,0.1),0_0_72px_rgba(34,211,238,0.07)] backdrop-blur-[16px] sm:p-7";
+const SCRAPER_GLASS_CARD = cardShellClass("scraper");
+const SCRAPER_FIELD = INPUT_FIELD;
+const SCRAPER_BTN_GLOW =
+  "inline-flex items-center justify-center gap-2 rounded-2xl bg-[linear-gradient(135deg,#00ff87,#60efff)] px-5 py-2.5 text-sm font-semibold text-slate-900 shadow-[0_0_20px_rgba(0,255,150,0.3),0_6px_24px_rgba(0,0,0,0.28)] transition-all duration-[250ms] ease-out hover:-translate-y-0.5 hover:shadow-[0_0_36px_rgba(0,255,180,0.45),0_10px_32px_rgba(96,239,255,0.22)] active:scale-[0.98] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-[0_0_18px_rgba(0,255,150,0.2)]";
+const SCRAPER_BTN_GLOW_SM =
+  "inline-flex items-center justify-center gap-2 rounded-2xl bg-[linear-gradient(135deg,#00ff87,#60efff)] px-3 py-2 text-xs font-semibold text-slate-900 shadow-[0_0_18px_rgba(0,255,150,0.28)] transition-all duration-[250ms] ease-out hover:-translate-y-0.5 hover:shadow-[0_0_30px_rgba(96,239,255,0.38)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0";
+const SCRAPER_BTN_GLOW_BLOCK = `${SCRAPER_BTN_GLOW} w-full`;
+const SCRAPER_HISTORY_CARD =
+  "group rounded-2xl border border-teal-400/14 bg-[rgba(255,255,255,0.03)] p-4 shadow-[0_8px_32px_rgba(0,0,0,0.38),0_0_40px_rgba(0,255,200,0.08),0_0_56px_rgba(34,211,238,0.06)] backdrop-blur-[20px] transition-all duration-[250ms] ease-out will-change-transform hover:-translate-y-0.5 hover:border-cyan-400/25 hover:shadow-[0_18px_48px_rgba(0,0,0,0.42),0_0_52px_rgba(45,212,191,0.14)] active:scale-[0.99]";
+
+/** 最多保留日志条数（FIFO 丢弃最早） */
+const MAX_LOG_ENTRIES = 500;
+/** 距底部小于等于该像素视为「在底部」，恢复自动跟随滚动 */
+const LOG_SCROLL_BOTTOM_THRESHOLD_PX = 56;
+
+function capLogEntries(prev, entry) {
+  const next = [...prev, entry];
+  return next.length > MAX_LOG_ENTRIES ? next.slice(-MAX_LOG_ENTRIES) : next;
+}
+
+const MENU_ICONS = {
+  用户增长: BarChart3,
+  账号检测: UserCheck,
+  目标群组: Users2,
+  群组互动: MessageCircle,
+  代理监控: Network,
+  用户采集: UserSearch,
+  用户管理: UserCog,
+};
+
+function SidebarMenuIcon({ name, className }) {
+  const Icon = MENU_ICONS[name];
+  if (!Icon) return null;
+  return <Icon className={className} size={20} strokeWidth={2} aria-hidden />;
+}
+
+const TAB_HEADER_ICONS = {
+  用户增长: BarChart3,
+  账号检测: UserCheck,
+  目标群组: Users2,
+  群组互动: MessageCircle,
+  代理监控: Network,
+  用户采集: UserSearch,
+  用户管理: UserCog,
+};
+
+const STAT_ICON_BOX = {
+  growth: "bg-emerald-500/12 text-emerald-300 ring-1 ring-emerald-400/25 shadow-[0_0_20px_rgba(52,211,153,0.12)]",
+  info: "bg-cyan-500/12 text-cyan-300 ring-1 ring-cyan-400/25 shadow-[0_0_20px_rgba(34,211,238,0.12)]",
+  risk: "bg-rose-500/12 text-rose-300 ring-1 ring-rose-400/25 shadow-[0_0_20px_rgba(251,113,133,0.12)]",
+};
+
+/** 与卡片模块色一致：增长绿 / 日志蓝 / 风控紫红渐变数字 */
+const STAT_NUM_CLASS = {
+  growth: "stat-num-growth mt-1 text-3xl",
+  info: "stat-num-log mt-1 text-3xl",
+  risk: "stat-num-risk mt-1 text-3xl",
+};
+
+const STAT_NUM_CLASS_LG = {
+  growth: "stat-num-growth mt-1 text-4xl",
+  info: "stat-num-log mt-1 text-4xl",
+  risk: "stat-num-risk mt-1 text-4xl",
+};
+
+const STAT_CARD_ACCENT = { growth: "growth", info: "log", risk: "risk" };
+
+function StatTile({ title, value, icon: Icon, tone = "growth" }) {
+  const accent = STAT_CARD_ACCENT[tone] || "default";
   return (
-    <div className={`rounded-2xl border border-slate-700/60 bg-slate-900/70 p-4 shadow-xl ${className}`}>
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="font-semibold text-slate-100">{title}</h3>
+    <div className={`${cardShellClass(accent)} !p-4`}>
+      <div className="flex items-start gap-3">
+        <div className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${STAT_ICON_BOX[tone]}`}>
+          <Icon size={22} strokeWidth={2} aria-hidden />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{title}</p>
+          <p className={STAT_NUM_CLASS[tone] || STAT_NUM_CLASS.growth}>{value}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatTileLg({ title, value, icon: Icon, tone = "growth" }) {
+  const accent = STAT_CARD_ACCENT[tone] || "default";
+  return (
+    <div className={`${cardShellClass(accent)} !p-4`}>
+      <div className="flex items-start gap-3">
+        <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-xl ${STAT_ICON_BOX[tone]}`}>
+          <Icon size={24} strokeWidth={2} aria-hidden />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{title}</p>
+          <p className={STAT_NUM_CLASS_LG[tone] || STAT_NUM_CLASS_LG.growth}>{value}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 账号检测列表行：玻璃卡 + 头像脉冲光圈 + 标签可发光 */
+function AccountInspectRow({ phoneLine, subLine, badge, variant, right }) {
+  const rowMod = variant === "active" ? "active" : variant === "limited" ? "limited" : "banned";
+  const wrapMod =
+    variant === "active" ? "account-inspect-avatar-wrap--active" : variant === "limited" ? "account-inspect-avatar-wrap--limited" : "account-inspect-avatar-wrap--banned";
+  const innerMod =
+    variant === "active"
+      ? "account-inspect-avatar-inner--active"
+      : variant === "limited"
+        ? "account-inspect-avatar-inner--limited"
+        : "account-inspect-avatar-inner--banned";
+  return (
+    <div className={`account-inspect-row account-inspect-row--${rowMod}`}>
+      <div className={`account-inspect-avatar-wrap ${wrapMod}`}>
+        <div className={`account-inspect-avatar-inner ${innerMod}`}>
+          <UserCircle size={20} strokeWidth={1.75} aria-hidden />
+        </div>
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="font-medium text-slate-100">{phoneLine}</div>
+        {subLine ? <div className="mt-0.5 text-xs text-slate-500">{subLine}</div> : null}
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          {badge}
+          {right}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 账号检测 · 状态列容器（渐变玻璃 + 头部统计） */
+function AccountMonitorColumn({ variant, title, titleEn, count, countClassName, children }) {
+  const colClass =
+    variant === "active"
+      ? "account-console-column account-console-column--active"
+      : variant === "limited"
+        ? "account-console-column account-console-column--limited"
+        : "account-console-column account-console-column--risk";
+  return (
+    <section className={colClass}>
+      <div className="account-console-column-head">
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold tracking-tight text-slate-100">{title}</h3>
+          <p className="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">{titleEn}</p>
+        </div>
+        <span className={`shrink-0 tabular-nums leading-none ${countClassName}`}>{count}</span>
+      </div>
+      <div className="account-console-column-body growth-scroll max-h-[500px] space-y-2.5 overflow-y-auto pr-0.5">{children}</div>
+    </section>
+  );
+}
+
+/** 任务控制 · READY / RUNNING / COMPLETED 状态条 */
+function TaskControlStatusBar({ phase }) {
+  const Item = ({ match, en, zh }) => {
+    const on = phase === match;
+    return (
+      <span className={`task-status-chip ${on ? `task-status-on-${match}` : "task-status-chip--dim"}`}>
+        <span className="font-log text-[9px] font-bold tracking-widest">{en}</span>
+        <span className="text-[10px] font-medium leading-tight">{zh}</span>
+      </span>
+    );
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-2 sm:justify-end" role="status" aria-live="polite">
+      <Item match="ready" en="READY" zh="就绪" />
+      <Item match="running" en="RUNNING" zh="执行中" />
+      <Item match="completed" en="COMPLETED" zh="已完成" />
+    </div>
+  );
+}
+
+function Card({ title, children, right, className = "", accent = "default", shellClass = null }) {
+  const shell = shellClass ?? cardShellClass(accent);
+  return (
+    <div className={`${shell} ${className}`}>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h3 className="text-[15px] font-semibold tracking-tight text-slate-100">{title}</h3>
         {right}
       </div>
       {children}
@@ -15,15 +277,88 @@ function Card({ title, children, right, className = "" }) {
   );
 }
 
-function Badge({ status }) {
+function Badge({ status, glow = false }) {
   const s = (status || "").toLowerCase();
   const cls =
-    s.includes("正常") || s === "normal" || s === "active"
-      ? "bg-emerald-500/20 text-emerald-300 border-emerald-400/30"
-      : s.includes("风控") || s === "banned" || s.includes("受限")
-        ? "bg-rose-500/20 text-rose-300 border-rose-400/30"
-        : "bg-amber-500/20 text-amber-300 border-amber-400/30";
-  return <span className={`rounded-full border px-2 py-0.5 text-xs ${cls}`}>{status}</span>;
+    s.includes("正常") || s === "normal" || s === "active" || s.includes("可用")
+      ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-200"
+      : s.includes("风控") || s === "banned" || s.includes("疑似") || s.includes("长期受限")
+        ? "border-rose-400/35 bg-rose-500/10 text-rose-200"
+        : "border-amber-400/35 bg-amber-500/10 text-amber-200";
+  let glowCls = "";
+  if (glow) {
+    if (s.includes("正常") || s === "normal" || s === "active" || s.includes("可用")) glowCls = "badge-glow-available";
+    else if (s.includes("风控") || s === "banned" || s.includes("疑似") || s.includes("长期受限")) glowCls = "badge-glow-risk";
+    else glowCls = "badge-glow-warn";
+  }
+  return <span className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${cls} ${glowCls}`}>{status}</span>;
+}
+
+/** 目标群组页 · 视觉焦点 Hero（多层光、中心伪元素光核、光圈 + 图标） */
+function GroupsHeroCard({ group }) {
+  const today = Number(group.today_added) || 0;
+  const total = Number(group.total_added) || 0;
+  const members = Number(group.members_count) || 0;
+  const yest = Number(group.yesterday_added) || 0;
+  const title = group.title || group.username;
+  const handle = group.display_handle || group.username;
+  const isTodayLeader = today > 0;
+  return (
+    <section className="group-hero-card w-full" aria-label="重点群组">
+      <div className="relative z-[1] flex flex-col gap-8 p-6 md:flex-row md:items-center md:justify-between md:gap-12 md:px-10 md:py-9">
+        <div className="flex min-w-0 flex-1 flex-col gap-6 sm:flex-row sm:items-center">
+          <div className="relative mx-auto grid h-[132px] w-[132px] shrink-0 place-items-center sm:mx-0" aria-hidden>
+            <div className="pointer-events-none absolute inset-0 grid place-items-center">
+              <div className="group-hero-orbit h-[118px] w-[118px] rounded-full border border-dashed border-emerald-400/35 opacity-60" />
+            </div>
+            <div
+              className="pointer-events-none absolute inset-[14px] rounded-full border border-cyan-400/25 group-hero-halo"
+              style={{ animationDelay: "0.6s" }}
+            />
+            <div className="pointer-events-none absolute inset-[26px] rounded-full border border-white/12 opacity-90" />
+            <div className="relative z-[2] grid h-[52px] w-[52px] place-items-center rounded-full bg-gradient-to-br from-emerald-400/45 to-cyan-500/35 shadow-[0_0_36px_rgba(0,255,200,0.45)] ring-1 ring-white/25">
+              <Users2 className="h-6 w-6 text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.45)]" strokeWidth={2} />
+            </div>
+          </div>
+          <div className="min-w-0 flex-1 text-center sm:text-left">
+            <div className="mb-2 flex flex-wrap items-center justify-center gap-2 sm:justify-start">
+              <span className="inline-flex items-center gap-1.5">
+                <Sparkles
+                  className="h-3.5 w-3.5 shrink-0 animate-pulse text-cyan-400 drop-shadow-[0_0_10px_rgba(34,211,238,0.55)]"
+                  aria-hidden
+                />
+                <span className="group-hero-badge">{isTodayLeader ? "今日增长最快" : "推荐群组"}</span>
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-medium text-slate-400">
+                {isTodayLeader ? "按今日拉人" : "按累计拉人"}
+              </span>
+            </div>
+            <h2 className="truncate text-xl font-bold tracking-tight text-white md:text-2xl">{title}</h2>
+            <p className="mt-1 truncate font-log text-sm text-slate-400">{handle}</p>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-4 sm:justify-start">
+              <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                <Users className="h-3.5 w-3.5 text-emerald-400/80" aria-hidden />
+                <span>成员 {members.toLocaleString("zh-CN")}</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                <BarChart3 className="h-3.5 w-3.5 text-sky-400/80" aria-hidden />
+                <span>累计拉人 {total.toLocaleString("zh-CN")}</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                <TrendingUp className="h-3.5 w-3.5 text-teal-400/80" aria-hidden />
+                <span>昨日 {yest.toLocaleString("zh-CN")}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-col items-center gap-1 border-t border-white/[0.08] pt-6 md:border-l md:border-t-0 md:pl-10 md:pt-0">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">今日拉人</span>
+          <p className="group-hero-metric-xl tabular-nums">{today.toLocaleString("zh-CN")}</p>
+          <span className="text-xs text-slate-500">核心增长指标</span>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function displayPhone(account) {
@@ -34,6 +369,50 @@ function displayPhone(account) {
 
 function normalizePhoneKey(phone) {
   return String(phone || "").replace(/\D/g, "");
+}
+
+/** 根据全文推断 type：info | success | error | warn */
+function inferLogType(text) {
+  const s = String(text);
+  if (/\[ERROR\]|登录超时|Internal Server Error|500|sync failed|任务失败/i.test(s)) return "error";
+  if (/\[WARN(ING)?\]|告警|\[WARN\]/.test(s)) return "warn";
+  if (/\[SUCCESS\]|登录成功|任务已排队|同步成功|执行成功|成功拉入|✓/i.test(s)) return "success";
+  return "info";
+}
+
+const LOG_TYPE_CLASS = {
+  error: "text-rose-400",
+  warn: "text-amber-400",
+  success: "text-emerald-400",
+  info: "text-cyan-400",
+};
+
+/** 行级图标：成功 / 错误 / 加载 / 警告 / 信息 */
+function inferLogRowKind(message, type) {
+  if (type === "error") return "error";
+  if (type === "success") return "success";
+  if (type === "warn") return "warn";
+  const s = String(message);
+  if (/正在|加载|排队|执行中|拉取|提交|Connecting|登录中|\.\.\.|pending|同步中|刷新中|上传中|处理中/i.test(s)) return "loading";
+  return "info";
+}
+
+function LogLineRow({ time, message, type }) {
+  const cls = LOG_TYPE_CLASS[type] || LOG_TYPE_CLASS.info;
+  const kind = inferLogRowKind(message, type);
+  let rowIcon = null;
+  if (kind === "error") rowIcon = <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-400" aria-hidden />;
+  else if (kind === "success") rowIcon = <CheckCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" aria-hidden />;
+  else if (kind === "loading") rowIcon = <Loader className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-cyan-400" aria-hidden />;
+  else if (kind === "warn") rowIcon = <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" aria-hidden />;
+  else rowIcon = <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-300" aria-hidden />;
+  return (
+    <div className={`log-line flex gap-2 border-b border-white/[0.06] py-2 font-log text-[11px] leading-6 ${cls}`}>
+      <span className="w-[76px] shrink-0 tabular-nums text-slate-500">{time}</span>
+      {rowIcon}
+      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{message}</span>
+    </div>
+  );
 }
 
 export default function App() {
@@ -54,13 +433,72 @@ export default function App() {
   const [forcedGroups, setForcedGroups] = useState([]);
   const [removedGroups, setRemovedGroups] = useState([]);
   const [forceCandidate, setForceCandidate] = useState("");
-  const [logs, setLogs] = useState(["[system] dashboard initialized"]);
+  const logIdRef = useRef(0);
+  const [logs, setLogs] = useState(() => {
+    const id = logIdRef.current++;
+    return [
+      {
+        id,
+        time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+        message: "dashboard initialized",
+        type: "info",
+      },
+    ];
+  });
   const [msg, setMsg] = useState("");
   const logRef = useRef(null);
+  const stickToBottomRef = useRef(true);
   const [uploadFile, setUploadFile] = useState(null);
   const [form, setForm] = useState({ users: "" });
   const [lastGroupMetadataSync, setLastGroupMetadataSync] = useState(null);
   const [taskRunning, setTaskRunning] = useState(false);
+  /** 任务控制面板：就绪 / 执行中 / 已完成（成功后可短暂显示 Completed） */
+  const [taskPanelPhase, setTaskPanelPhase] = useState("ready");
+  const taskPanelPhaseTimerRef = useRef(null);
+
+  const refreshLoadingRef = useRef(false);
+  const [refreshLoading, setRefreshLoading] = useState(false);
+  /** 区分顶栏「刷新数据」与「强制同步」文案 */
+  const [refreshPhase, setRefreshPhase] = useState(null);
+
+  const authLoadingRef = useRef(false);
+  const [authLoading, setAuthLoading] = useState(false);
+
+  const uploadLoadingRef = useRef(false);
+  const [uploadLoading, setUploadLoading] = useState(false);
+
+  const loadUsersLoadingRef = useRef(false);
+  const [loadUsersLoading, setLoadUsersLoading] = useState(false);
+
+  const pathSubmitRef = useRef(false);
+  const [pathSubmitLoading, setPathSubmitLoading] = useState(false);
+
+  const [scraperForm, setScraperForm] = useState({ group_id: "", days: 7, max_messages: 5000 });
+  const scraperLoadingRef = useRef(false);
+  const [scraperLoading, setScraperLoading] = useState(false);
+  const [scraperResult, setScraperResult] = useState(null);
+  const [scraperTasks, setScraperTasks] = useState([]);
+  const [scraperHistoryLoading, setScraperHistoryLoading] = useState(false);
+  const [scraperDownloadTaskId, setScraperDownloadTaskId] = useState(null);
+  const [scraperResultDownloadLoading, setScraperResultDownloadLoading] = useState(false);
+  const [scraperAccount, setScraperAccount] = useState(null);
+  const [showScraperAccountModal, setShowScraperAccountModal] = useState(false);
+  const [scraperBindPhone, setScraperBindPhone] = useState("");
+  const [scraperBindCode, setScraperBindCode] = useState("");
+  const [scraperPhoneCodeHash, setScraperPhoneCodeHash] = useState("");
+  const scraperSendCodeRef = useRef(false);
+  const [scraperSendCodeLoading, setScraperSendCodeLoading] = useState(false);
+  const scraperBindLoginRef = useRef(false);
+  const [scraperBindLoginLoading, setScraperBindLoginLoading] = useState(false);
+  /** 弹窗内状态条：success | error | loading | info */
+  const [scraperModalBanner, setScraperModalBanner] = useState(null);
+  const [scraperNeedPassword, setScraperNeedPassword] = useState(false);
+  const [scraperBindPassword, setScraperBindPassword] = useState("");
+
+  const [engagementSelectedGroups, setEngagementSelectedGroups] = useState([]);
+  const [engagementScanLimit, setEngagementScanLimit] = useState(300);
+  const [engagementTasks, setEngagementTasks] = useState([]);
+  const [engagementSubmitting, setEngagementSubmitting] = useState(false);
 
   const isAdmin = useMemo(() => profile?.role === "admin", [profile]);
   const availableAccounts = useMemo(() => accounts.active || [], [accounts]);
@@ -84,21 +522,108 @@ export default function App() {
     return Array.from(new Set(base));
   }, [groups, forcedGroups, removedGroups]);
 
-  const appendLog = (line) => {
-    const ts = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-    setLogs((prev) => [...prev.slice(-300), `[${ts}] ${line}`]);
+  const selectedGroupDropdownOptions = useMemo(
+    () => [
+      { value: "", label: "选择群组…" },
+      ...availableGroups.map((username) => {
+        const gi = groups.find((x) => x.username === username);
+        const label = gi
+          ? `${gi.title || gi.username} (${gi.display_handle || gi.username})`
+          : username;
+        return { value: username, label };
+      }),
+    ],
+    [availableGroups, groups],
+  );
+
+  const forceCandidateDropdownOptions = useMemo(
+    () => [
+      { value: "", label: "隐藏群组…" },
+      ...hiddenGroups.map((g) => ({
+        value: g.username,
+        label: `${g.title || g.username} (${g.display_handle || g.username})`,
+      })),
+    ],
+    [hiddenGroups],
+  );
+
+  const scraperDaysDropdownOptions = useMemo(
+    () =>
+      [1, 3, 7, 14, 30, 90].map((d) => ({
+        value: String(d),
+        label: `最近 ${d} 天`,
+      })),
+    [],
+  );
+
+  const userRoleDropdownOptions = useMemo(
+    () => [
+      { value: "user", label: "user" },
+      { value: "admin", label: "admin" },
+    ],
+    [],
+  );
+
+  const engagementGroupOptions = useMemo(
+    () =>
+      (groups || []).map((g) => ({
+        value: g.username,
+        label: `${g.title || g.username} (${g.display_handle || g.username})`,
+      })),
+    [groups],
+  );
+
+  const engagementAccountPoolCount = useMemo(
+    () => (accounts.active?.length || 0) + (accounts.limited?.length || 0),
+    [accounts.active, accounts.limited],
+  );
+
+  const loadEngagementTasks = useCallback(async () => {
+    if (!profile) return;
+    try {
+      const r = await api.listInteractionTasks();
+      setEngagementTasks(r.tasks || []);
+    } catch {
+      setEngagementTasks([]);
+    }
+  }, [profile]);
+
+  const appendLog = (message) => {
+    const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    const type = inferLogType(message);
+    const id = logIdRef.current++;
+    setLogs((prev) => capLogEntries(prev, { id, time, message, type }));
   };
 
   const pushLogLine = (line) => {
-    if (/^\[\d{1,2}:\d{2}:\d{2}\]\s/.test(line)) {
-      setLogs((prev) => [...prev.slice(-300), line]);
+    const raw = String(line);
+    const m = raw.match(/^\[(\d{1,2}:\d{2}:\d{2})\]\s*(.*)$/);
+    if (m) {
+      const id = logIdRef.current++;
+      const time = m[1];
+      const message = m[2];
+      const type = inferLogType(raw);
+      setLogs((prev) => capLogEntries(prev, { id, time, message, type }));
     } else {
-      appendLog(line);
+      appendLog(raw);
     }
   };
 
+  const handleLogScroll = useCallback(() => {
+    const el = logRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= LOG_SCROLL_BOTTOM_THRESHOLD_PX;
+  }, []);
+
   useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+    if (!stickToBottomRef.current) return;
+    const el = logRef.current;
+    if (!el) return;
+    const idRaf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(idRaf);
   }, [logs]);
 
   useEffect(() => {
@@ -154,9 +679,23 @@ export default function App() {
     }
   };
 
+  const triggerRefresh = async (opts = {}, intent = "header") => {
+    if (refreshLoadingRef.current) return;
+    refreshLoadingRef.current = true;
+    setRefreshPhase(intent);
+    setRefreshLoading(true);
+    try {
+      await refreshBase(opts);
+    } finally {
+      refreshLoadingRef.current = false;
+      setRefreshLoading(false);
+      setRefreshPhase(null);
+    }
+  };
+
   const onForceSyncGroups = async () => {
     try {
-      await refreshBase({ skipMetadataSync: false, forceMetadataSync: true });
+      await triggerRefresh({ skipMetadataSync: false, forceMetadataSync: true }, "force");
       setMsg("已从 Telegram 强制同步群组信息");
     } catch (e) {
       setMsg(e.message);
@@ -172,7 +711,72 @@ export default function App() {
       .catch(() => localStorage.removeItem("token"));
   }, []);
 
+  useEffect(() => () => clearTimeout(taskPanelPhaseTimerRef.current), []);
+
+  const loadScraperAccount = useCallback(async () => {
+    try {
+      const r = await api.getScraperAccount();
+      setScraperAccount(r);
+    } catch {
+      setScraperAccount({ status: "not_logged" });
+    }
+  }, []);
+
+  const loadScraperTasks = useCallback(async () => {
+    if (!profile) return;
+    setScraperHistoryLoading(true);
+    try {
+      const list = await api.listScraperTasks();
+      setScraperTasks(Array.isArray(list) ? list : []);
+    } catch {
+      setScraperTasks([]);
+    } finally {
+      setScraperHistoryLoading(false);
+    }
+  }, [profile]);
+
+  useEffect(() => {
+    if (tab !== "用户采集" || !profile) return;
+    loadScraperAccount();
+    loadScraperTasks();
+  }, [tab, profile, loadScraperAccount, loadScraperTasks]);
+
+  useEffect(() => {
+    if (tab !== "群组互动" || !profile) return undefined;
+    loadEngagementTasks();
+    const t = setInterval(loadEngagementTasks, 2500);
+    return () => clearInterval(t);
+  }, [tab, profile, loadEngagementTasks]);
+
+  const onStartEngagement = async () => {
+    if (!engagementSelectedGroups.length) {
+      setMsg("请至少选择一个目标群组");
+      return;
+    }
+    if (engagementAccountPoolCount < 1) {
+      setMsg("当前没有可用或当日受限的账号");
+      return;
+    }
+    setEngagementSubmitting(true);
+    setMsg("");
+    try {
+      await api.startInteractionTask({
+        groups: engagementSelectedGroups,
+        scan_limit: engagementScanLimit,
+      });
+      await loadEngagementTasks();
+      setMsg("互动任务已创建，后台执行中");
+    } catch (e) {
+      setMsg(e.message);
+    } finally {
+      setEngagementSubmitting(false);
+    }
+  };
+
   const login = async () => {
+    if (authLoadingRef.current) return;
+    authLoadingRef.current = true;
+    setAuthLoading(true);
     try {
       const res = await api.login(auth.username, auth.password);
       localStorage.setItem("token", res.token);
@@ -185,6 +789,9 @@ export default function App() {
       setMsg(`登录成功：${res.username}`);
     } catch (e) {
       setMsg(e.message);
+    } finally {
+      authLoadingRef.current = false;
+      setAuthLoading(false);
     }
   };
 
@@ -198,18 +805,26 @@ export default function App() {
     setUsers([]);
       setAccountPaths([]);
       setSelectedGroup("");
-      setForcedGroups([]);
-      setRemovedGroups([]);
+    setForcedGroups([]);
+    setRemovedGroups([]);
+    setEngagementTasks([]);
+    setEngagementSelectedGroups([]);
   };
 
   const onUpload = async () => {
     if (!uploadFile) return setMsg("请选择 zip 文件");
+    if (uploadLoadingRef.current) return;
+    uploadLoadingRef.current = true;
+    setUploadLoading(true);
     try {
       await api.uploadAccount(uploadFile);
       setMsg("上传成功");
       await refreshBase();
     } catch (e) {
       setMsg(e.message);
+    } finally {
+      uploadLoadingRef.current = false;
+      setUploadLoading(false);
     }
   };
 
@@ -228,6 +843,7 @@ export default function App() {
       return;
     }
     setTaskRunning(true);
+    setTaskPanelPhase("running");
     setMsg("");
     appendLog(
       `开始执行用户增长 | 群组=${selectedGroup} | 用户数=${parsedUsers.length} | 正在提交后台任务…`,
@@ -285,8 +901,13 @@ export default function App() {
       } else {
         setMsg(`任务执行完成：成功${summary.success}，跳过${summary.skipped}，失败0`);
       }
+      if (taskPanelPhaseTimerRef.current) clearTimeout(taskPanelPhaseTimerRef.current);
+      setTaskPanelPhase("completed");
+      taskPanelPhaseTimerRef.current = window.setTimeout(() => setTaskPanelPhase("ready"), 6000);
       await refreshBase();
     } catch (e) {
+      if (taskPanelPhaseTimerRef.current) clearTimeout(taskPanelPhaseTimerRef.current);
+      setTaskPanelPhase("ready");
       appendLog(`任务失败 | ${e.message}`);
       setMsg(e.message);
     } finally {
@@ -324,10 +945,18 @@ export default function App() {
 
   const onAddOrUpdatePath = async () => {
     if (!newPath.trim()) return;
-    await api.addAccountPath(newPath.trim());
-    setNewPath("");
-    setEditingPathId(null);
-    await refreshBase();
+    if (pathSubmitRef.current) return;
+    pathSubmitRef.current = true;
+    setPathSubmitLoading(true);
+    try {
+      await api.addAccountPath(newPath.trim());
+      setNewPath("");
+      setEditingPathId(null);
+      await refreshBase();
+    } finally {
+      pathSubmitRef.current = false;
+      setPathSubmitLoading(false);
+    }
   };
 
   const onDeletePath = async (id) => {
@@ -344,9 +973,21 @@ export default function App() {
     setNewPath(item.path);
   };
 
-  const onLoadUsers = async () => {
+  const loadUsersData = async () => {
     const list = await api.listUsers();
     setUsers(list.users || []);
+  };
+
+  const onLoadUsers = async () => {
+    if (loadUsersLoadingRef.current) return;
+    loadUsersLoadingRef.current = true;
+    setLoadUsersLoading(true);
+    try {
+      await loadUsersData();
+    } finally {
+      loadUsersLoadingRef.current = false;
+      setLoadUsersLoading(false);
+    }
   };
 
   const onMarkProxyDead = async (proxyId) => {
@@ -361,7 +1002,158 @@ export default function App() {
 
   const onChangeRole = async (id, role) => {
     await api.updateUserRole(id, role);
-    await onLoadUsers();
+    await loadUsersData();
+  };
+
+  const onRunScraper = async () => {
+    if (!scraperForm.group_id.trim() || scraperLoadingRef.current) return;
+    scraperLoadingRef.current = true;
+    setScraperLoading(true);
+    setMsg("");
+    try {
+      const data = await api.runScraper(scraperForm);
+      setScraperResult(data);
+      await loadScraperTasks();
+    } catch (e) {
+      setScraperResult(null);
+      setMsg(e?.message || "采集失败");
+    } finally {
+      scraperLoadingRef.current = false;
+      setScraperLoading(false);
+    }
+  };
+
+  const onDownloadScrape = async () => {
+    if (scraperResultDownloadLoading) return;
+    setMsg("");
+    setScraperResultDownloadLoading(true);
+    try {
+      if (scraperResult?.task_id != null) {
+        await downloadScraperTaskById(scraperResult.task_id);
+        await loadScraperTasks();
+        return;
+      }
+      const url = scraperResult?.file_url;
+      if (!url) return;
+      const fn = url.split("/").filter(Boolean).pop();
+      if (!fn) return;
+      await downloadScraperFile(fn);
+    } catch (e) {
+      setMsg(e?.message || "下载失败");
+    } finally {
+      setScraperResultDownloadLoading(false);
+    }
+  };
+
+  const onDownloadScraperHistoryTask = async (taskId) => {
+    if (scraperDownloadTaskId != null) return;
+    setScraperDownloadTaskId(taskId);
+    setMsg("");
+    try {
+      await downloadScraperTaskById(taskId);
+      await loadScraperTasks();
+    } catch (e) {
+      setMsg(e?.message || "下载失败");
+    } finally {
+      setScraperDownloadTaskId(null);
+    }
+  };
+
+  const closeScraperAccountModal = () => {
+    setShowScraperAccountModal(false);
+    setScraperModalBanner(null);
+    setScraperNeedPassword(false);
+    setScraperBindPassword("");
+  };
+
+  const openScraperAccountModal = () => {
+    setScraperBindCode("");
+    setScraperPhoneCodeHash("");
+    setScraperBindPassword("");
+    setScraperModalBanner(null);
+    setScraperNeedPassword(false);
+    setScraperBindPhone(scraperAccount?.phone || "");
+    setShowScraperAccountModal(true);
+  };
+
+  const onScraperSendCode = async () => {
+    if (!scraperBindPhone.trim() || scraperSendCodeRef.current) return;
+    scraperSendCodeRef.current = true;
+    setScraperSendCodeLoading(true);
+    setScraperModalBanner({ kind: "loading", text: "正在发送验证码…" });
+    try {
+      const r = await api.sendScraperCode(scraperBindPhone.trim());
+      if (r.ok) {
+        setScraperPhoneCodeHash(r.phone_code_hash || "");
+        if (r.phone) setScraperBindPhone(r.phone);
+        setScraperModalBanner({ kind: "success", text: "验证码已发送" });
+      } else {
+        setScraperModalBanner({ kind: "error", text: r.error || "发送失败" });
+      }
+    } catch (e) {
+      setScraperModalBanner({ kind: "error", text: e?.message || "发送失败" });
+    } finally {
+      scraperSendCodeRef.current = false;
+      setScraperSendCodeLoading(false);
+    }
+  };
+
+  const onScraperBindLogin = async () => {
+    const phone = scraperBindPhone.trim();
+    if (!phone || scraperBindLoginRef.current) return;
+    if (scraperNeedPassword) {
+      if (!scraperBindPassword.trim()) return;
+    } else if (!scraperBindCode.trim() || !scraperPhoneCodeHash) return;
+
+    scraperBindLoginRef.current = true;
+    setScraperBindLoginLoading(true);
+    setScraperModalBanner({ kind: "loading", text: "正在登录…" });
+    try {
+      const r = scraperNeedPassword
+        ? await api.loginScraperAccount({
+            phone,
+            code: "",
+            phone_code_hash: "",
+            password: scraperBindPassword.trim(),
+          })
+        : await api.loginScraperAccount({
+            phone,
+            code: scraperBindCode.trim(),
+            phone_code_hash: scraperPhoneCodeHash,
+          });
+
+      if (r.need_password) {
+        setScraperNeedPassword(true);
+        setScraperModalBanner({
+          kind: "info",
+          text: "该账号开启了二步验证，请输入密码",
+        });
+        return;
+      }
+      if (r.ok) {
+        setScraperModalBanner({ kind: "success", text: "登录成功 ✅" });
+        setTimeout(() => {
+          closeScraperAccountModal();
+          setScraperBindCode("");
+          setScraperPhoneCodeHash("");
+          loadScraperAccount();
+        }, 1000);
+        return;
+      }
+      const err = r.error || "登录失败";
+      if (err.includes("验证码")) {
+        setScraperModalBanner({ kind: "error", text: "验证码错误 ❌" });
+      } else if (err.includes("密码")) {
+        setScraperModalBanner({ kind: "error", text: "密码错误 ❌" });
+      } else {
+        setScraperModalBanner({ kind: "error", text: err });
+      }
+    } catch (e) {
+      setScraperModalBanner({ kind: "error", text: e?.message || "登录失败" });
+    } finally {
+      scraperBindLoginRef.current = false;
+      setScraperBindLoginLoading(false);
+    }
   };
 
   const stats = useMemo(() => {
@@ -376,310 +1168,771 @@ export default function App() {
     };
   }, [tasks, availableAccounts]);
 
+  const TabHeaderIcon = TAB_HEADER_ICONS[tab];
+
+  const scraperTasksVisible = useMemo(
+    () => scraperTasks.filter((item) => (Number(item.user_count) || 0) > 0),
+    [scraperTasks],
+  );
+
+  /** 目标群组 Hero：今日拉人优先，否则按累计拉人、人数 */
+  const featuredTargetGroup = useMemo(() => {
+    const list = groups || [];
+    if (!list.length) return null;
+    return [...list].sort((a, b) => {
+      const t = (Number(b.today_added) || 0) - (Number(a.today_added) || 0);
+      if (t !== 0) return t;
+      const u = (Number(b.total_added) || 0) - (Number(a.total_added) || 0);
+      if (u !== 0) return u;
+      return (Number(b.members_count) || 0) - (Number(a.members_count) || 0);
+    })[0];
+  }, [groups]);
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200">
-      <header className="fixed left-0 top-0 z-20 w-full border-b border-slate-800 bg-slate-950/90 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-[1500px] items-center justify-between px-6">
+    <div className="flex min-h-screen min-h-[100dvh] bg-transparent text-slate-200">
+      <aside className="sticky top-0 flex h-screen w-[220px] shrink-0 flex-col border-r border-white/[0.06] bg-[rgba(10,15,20,0.8)] shadow-[4px_0_48px_rgba(0,0,0,0.5)] backdrop-blur-[20px]">
+        <div className="border-b border-white/[0.06] px-4 py-5">
           <div className="flex items-center gap-3">
-            <div className="grid h-9 w-9 place-items-center rounded-lg bg-blue-600 font-bold text-white">TG</div>
-            <div className="font-semibold tracking-wide">Telegram用户增长系统</div>
+            <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-[#00ff87] to-[#60efff] text-sm font-bold text-slate-900 shadow-[0_0_24px_rgba(0,255,150,0.35)] transition duration-200 hover:scale-105 hover:shadow-[0_0_32px_rgba(96,239,255,0.45)]">
+              TG
+            </div>
+            <div>
+              <div className="text-sm font-semibold tracking-tight text-slate-100">TG Pro</div>
+              <div className="text-[10px] font-medium uppercase tracking-wider text-slate-500">Growth Console</div>
+            </div>
           </div>
-          <nav className="hidden items-center gap-2 md:flex">
-            {menus.filter((m) => (m === "用户管理" ? isAdmin : true)).map((m) => (
+        </div>
+        <nav className="growth-scroll flex flex-1 flex-col gap-1 overflow-y-auto p-3">
+          {menus
+            .filter((m) => (m === "用户管理" ? isAdmin : true))
+            .map((m) => (
               <button
                 key={m}
+                type="button"
                 onClick={() => setTab(m)}
-                className={`rounded-lg px-4 py-2 text-sm transition ${tab === m ? "bg-blue-600 text-white" : "text-slate-300 hover:bg-slate-800"}`}
+                className={`group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition-all duration-[250ms] ease-out ${
+                  tab === m
+                    ? "border border-white/[0.1] bg-gradient-to-r from-emerald-500/20 via-cyan-500/15 to-transparent text-white shadow-[0_0_28px_rgba(0,255,180,0.12)]"
+                    : "border border-transparent text-slate-400 hover:border-white/[0.06] hover:bg-white/[0.04] hover:text-slate-200"
+                }`}
               >
+                <span
+                  className={
+                    tab === m
+                      ? "text-[#5eead4]"
+                      : "text-slate-500 transition group-hover:text-[#5eead4]"
+                  }
+                >
+                  <SidebarMenuIcon name={m} className="h-5 w-5 shrink-0" />
+                </span>
                 {m}
               </button>
             ))}
-          </nav>
-          <div className="flex items-center gap-2 text-sm">
-            {!profile ? (
-              <>
-                <input className="w-28 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1" value={auth.username} onChange={(e) => setAuth((v) => ({ ...v, username: e.target.value }))} />
-                <input type="password" className="w-28 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1" value={auth.password} onChange={(e) => setAuth((v) => ({ ...v, password: e.target.value }))} />
-                <button className="rounded-lg bg-blue-600 px-3 py-1.5 transition hover:bg-blue-500" onClick={login}>登录 / 注册</button>
-              </>
-            ) : (
-              <>
-                <span>{profile.username} ({profile.role})</span>
-                <button className="rounded-lg bg-slate-800 px-3 py-1.5 transition hover:bg-slate-700" onClick={logout}>退出</button>
-              </>
-            )}
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-[1500px] px-6 pb-8 pt-24">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="text-xl font-semibold">{tab}</h2>
-            {tab === "目标群组" && lastGroupMetadataSync ? (
-              <p className="mt-1 text-xs text-slate-500">上次 Telegram 同步：{lastGroupMetadataSync}</p>
-            ) : null}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {tab === "目标群组" ? (
+        </nav>
+        <div className="border-t border-white/[0.06] p-3">
+          {!profile ? (
+            <div className="space-y-2 rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] p-3 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-[20px]">
+              <input
+                className="w-full rounded-lg border border-white/[0.08] bg-[rgba(255,255,255,0.04)] px-2.5 py-1.5 text-xs text-slate-100 outline-none backdrop-blur-[12px] transition placeholder:text-slate-500 focus:border-cyan-400/35 focus:ring-2 focus:ring-cyan-400/15"
+                placeholder="用户名"
+                value={auth.username}
+                onChange={(e) => setAuth((v) => ({ ...v, username: e.target.value }))}
+              />
+              <input
+                type="password"
+                className="w-full rounded-lg border border-white/[0.08] bg-[rgba(255,255,255,0.04)] px-2.5 py-1.5 text-xs text-slate-100 outline-none backdrop-blur-[12px] transition placeholder:text-slate-500 focus:border-cyan-400/35 focus:ring-2 focus:ring-cyan-400/15"
+                placeholder="密码"
+                value={auth.password}
+                onChange={(e) => setAuth((v) => ({ ...v, password: e.target.value }))}
+              />
               <button
-                className="rounded-lg bg-indigo-600 px-3 py-2 text-sm transition hover:bg-indigo-500"
                 type="button"
-                onClick={onForceSyncGroups}
+                disabled={authLoading}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[linear-gradient(135deg,#00ff87,#60efff)] py-2 text-xs font-semibold text-slate-900 shadow-[0_0_20px_rgba(0,255,150,0.3)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_32px_rgba(0,255,180,0.45)] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                onClick={login}
               >
-                强制同步群组信息
+                {authLoading ? (
+                  <>
+                    <UiSpinner tone="primary" />
+                    登录中...
+                  </>
+                ) : (
+                  "登录 / 注册"
+                )}
               </button>
-            ) : null}
-            <button className="rounded-lg bg-slate-800 px-3 py-2 text-sm transition hover:bg-slate-700" type="button" onClick={() => refreshBase()}>
-              刷新数据
-            </button>
-          </div>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] p-3 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-[20px]">
+              <div className="truncate text-xs font-semibold text-slate-100">{profile.username}</div>
+              <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-500">{profile.role}</div>
+              <button
+                type="button"
+                className="mt-3 w-full rounded-xl border border-white/[0.1] bg-[rgba(255,255,255,0.05)] py-2 text-xs font-medium text-slate-300 shadow-[0_4px_20px_rgba(0,0,0,0.25)] transition hover:border-cyan-400/25 hover:bg-white/[0.08] hover:text-white"
+                onClick={logout}
+              >
+                退出
+              </button>
+            </div>
+          )}
         </div>
-        {msg ? <p className="mb-4 text-sm text-rose-300">{msg}</p> : null}
+      </aside>
+
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="shrink-0 border-b border-white/[0.06] bg-[rgba(10,15,20,0.55)] px-6 py-4 shadow-[0_8px_40px_rgba(0,0,0,0.35)] backdrop-blur-[20px]">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-3">
+                {TabHeaderIcon ? (
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/[0.1] bg-gradient-to-br from-emerald-500/20 to-cyan-500/15 text-cyan-300 shadow-[0_0_20px_rgba(0,255,180,0.15)] ring-1 ring-white/[0.06]">
+                    <TabHeaderIcon size={22} strokeWidth={2} aria-hidden />
+                  </span>
+                ) : null}
+                <h1 className="text-lg font-semibold tracking-tight text-slate-100">{tab}</h1>
+              </div>
+              {tab === "目标群组" && lastGroupMetadataSync ? (
+                <p className="mt-1 text-xs text-slate-500">上次 Telegram 同步：{lastGroupMetadataSync}</p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {tab === "目标群组" ? (
+                <button
+                  type="button"
+                  disabled={refreshLoading}
+                  className={`${BTN_PRIMARY} inline-flex items-center justify-center gap-2 px-4 py-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0`}
+                  onClick={onForceSyncGroups}
+                >
+                  {refreshLoading && refreshPhase === "force" ? (
+                    <>
+                      <UiSpinner tone="primary" />
+                      同步中...
+                    </>
+                  ) : (
+                    "强制同步群组信息"
+                  )}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                disabled={refreshLoading}
+                className={`${BTN_SECONDARY} inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0`}
+                onClick={() => triggerRefresh({}, "header")}
+              >
+                {refreshLoading && refreshPhase === "header" ? (
+                  <>
+                    <UiSpinner tone="muted" />
+                    刷新中...
+                  </>
+                ) : (
+                  "刷新数据"
+                )}
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="growth-scroll flex-1 overflow-y-auto px-6 pb-10 pt-6 lg:px-8">
+        {msg ? <p className="mb-6 text-sm font-medium text-rose-400 drop-shadow-[0_0_8px_rgba(251,113,133,0.35)]">{msg}</p> : null}
 
         {tab === "用户增长" && (
-          <>
-            <div className="mb-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <Card title="今日新增用户"><p className="text-3xl font-bold text-blue-300">{stats.todayAdd}</p></Card>
-              <Card title="昨日新增用户"><p className="text-3xl font-bold text-indigo-300">{stats.yestAdd}</p></Card>
-              <Card title="累计新增用户"><p className="text-3xl font-bold text-cyan-300">{stats.total}</p></Card>
-              <Card title="可用账号数量"><p className="text-3xl font-bold text-emerald-300">{stats.accounts}</p></Card>
-            </div>
-            <div className="grid gap-4 xl:grid-cols-12">
-              <Card title="账号队列" className="xl:col-span-3">
-                <p className="mb-2 text-xs text-slate-500">
-                  列表分两类：① 默认边框行 = 当前<strong className="text-slate-300">真正可用</strong>、会按顺序参与拉人；②
-                  <strong className="text-slate-400">灰色描边行</strong> =
-                  数据库已是「当日受限」、仅在<strong className="text-slate-400">刚受限后约 1 分钟</strong>内挂在队列旁做提示，<strong className="text-slate-300">不会</strong>
-                  再被任务使用。琥珀色：正在连接；绿色：正在拉人；蓝色：上一个拉人号。代理见「代理监控」。
+          <div className="grid min-h-0 grid-cols-1 gap-5 lg:grid-cols-[300px_minmax(0,1fr)] lg:items-stretch">
+            <aside className="flex h-full min-h-0 min-w-0 flex-col">
+              <Card title="账号队列" accent="growth" className="flex h-full min-h-0 flex-col !pb-4">
+                <p className="mb-3 text-[11px] leading-relaxed text-slate-500">
+                  ① 默认 = <span className="text-slate-300">可用</span> · ② 灰边 ={" "}
+                  <span className="text-slate-400">刚受限提示</span>（约 1 分钟）· 琥珀 / 绿 / 青 = 任务高亮
                 </p>
-                <div className="max-h-[420px] space-y-2 overflow-auto pr-1">
-                  {sidebarQueueAccounts.map((a) => {
-                    const pk = normalizePhoneKey(a.phone);
-                    const isActiveHighlight = taskHighlight.active && pk === normalizePhoneKey(taskHighlight.active);
-                    const isConnectingHighlight =
-                      taskHighlight.connecting && pk === normalizePhoneKey(taskHighlight.connecting);
-                    const isPrevHighlight = taskHighlight.previous && pk === normalizePhoneKey(taskHighlight.previous);
-                    const isEcho = a._queueKind === "echo";
-                    let phoneCls = "font-medium";
-                    if (isActiveHighlight) phoneCls += " text-emerald-400";
-                    else if (isConnectingHighlight) phoneCls += " text-amber-300";
-                    else if (isPrevHighlight) phoneCls += " text-sky-400";
-                    else if (isEcho) phoneCls += " text-slate-400";
-                    else phoneCls += " text-slate-100";
-                    return (
-                      <div
-                        key={`${a.id}-${a._queueKind || "x"}`}
-                        className={`rounded-lg border px-3 py-2 text-sm ${
-                          isEcho ? "border-slate-600/60 bg-slate-900/60" : "border-slate-700 bg-slate-900"
-                        }`}
-                      >
-                        <div className={phoneCls}>{displayPhone(a)}</div>
-                        {isEcho ? (
-                          <p className="mt-1 text-[11px] leading-snug text-amber-200/85">
-                            当日受限（与库内 limited_today 一致）· 仅提示 · 约 1 分钟内消失 · 不参与拉人
-                          </p>
-                        ) : null}
-                        <div className="mt-1 text-xs">
-                          <span className="text-slate-400">代理类型: </span>
-                          <span className={a.proxy_type === "direct" ? "text-amber-300" : "text-emerald-300"}>
-                            {a.proxy_type || "direct"}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </Card>
-              <Card title="任务控制面板" className="xl:col-span-9">
-                <div className="grid gap-3">
-                  <div className="rounded-lg border border-slate-700 bg-slate-900 p-3">
-                    <p className="mb-2 text-sm text-slate-300">目标群组（单选）</p>
-                    <div className="flex items-center gap-2">
-                      <select
-                        className="min-w-[360px] rounded border border-slate-700 bg-slate-950 px-2 py-2 text-sm"
-                        value={selectedGroup}
-                        onChange={(e) => setSelectedGroup(e.target.value)}
-                      >
-                        <option value="">请选择目标群组</option>
-                        {availableGroups.map((username) => {
-                          const gi = groups.find((x) => x.username === username);
-                          const label = gi
-                            ? `${gi.title || gi.username} (${gi.display_handle || gi.username})`
-                            : username;
-                          return (
-                            <option key={username} value={username}>
-                              {label}
-                            </option>
-                          );
-                        })}
-                      </select>
-                      <select
-                        className="min-w-[220px] rounded border border-slate-700 bg-slate-950 px-2 py-2 text-sm"
-                        value={forceCandidate}
-                        onChange={(e) => setForceCandidate(e.target.value)}
-                      >
-                        <option value="">选择强制加入群组</option>
-                        {hiddenGroups.map((g) => (
-                          <option key={`hidden-${g.id}`} value={g.username}>
-                            {`${g.title || g.username} (${g.display_handle || g.username})`}
-                          </option>
-                        ))}
-                      </select>
-                      <button className="rounded bg-blue-600 px-3 py-1 text-sm" onClick={onForceAddGroup}>+</button>
-                      <button className="rounded bg-rose-600 px-3 py-1 text-sm" onClick={onRemoveGroup}>-</button>
+                <p className="mb-3 text-[11px] text-slate-500">
+                  列表区固定 {CONSOLE_PANEL_HEIGHT_PX}px · 与右侧终端同高 · 内部滚动
+                </p>
+                <div className={`${GLASS_PANEL_GROWTH} min-h-0 shrink-0`}>
+                  <div className={GLASS_PANEL_CHROME_GROWTH}>
+                    <span className="h-2 w-2 rounded-full bg-rose-400 shadow-sm" />
+                    <span className="h-2 w-2 rounded-full bg-amber-400 shadow-sm" />
+                    <span className="h-2 w-2 rounded-full bg-[#22c55e] shadow-sm shadow-emerald-400/50" />
+                    <span className="ml-1 font-log text-[10px] uppercase tracking-[0.2em] text-slate-500">accounts.queue</span>
+                    <span className="ml-auto font-log text-[10px] text-slate-400">{sidebarQueueAccounts.length}</span>
+                  </div>
+                  <div
+                    className="growth-scroll scroll-smooth shrink-0 overflow-y-auto overflow-x-hidden px-3 py-2.5"
+                    style={{ height: CONSOLE_PANEL_HEIGHT_PX }}
+                  >
+                    <div className="flex flex-col gap-2.5 pr-0.5">
+                      {sidebarQueueAccounts.map((a) => {
+                        const pk = normalizePhoneKey(a.phone);
+                        const isActiveHighlight = taskHighlight.active && pk === normalizePhoneKey(taskHighlight.active);
+                        const isConnectingHighlight =
+                          taskHighlight.connecting && pk === normalizePhoneKey(taskHighlight.connecting);
+                        const isPrevHighlight = taskHighlight.previous && pk === normalizePhoneKey(taskHighlight.previous);
+                        const isEcho = a._queueKind === "echo";
+                        let phoneCls = "font-medium tracking-tight";
+                        if (isActiveHighlight) phoneCls += " text-emerald-400";
+                        else if (isConnectingHighlight) phoneCls += " text-amber-400";
+                        else if (isPrevHighlight) phoneCls += " text-cyan-400";
+                        else if (isEcho) phoneCls += " text-slate-500";
+                        else phoneCls += " text-slate-100";
+                        let avatarShell =
+                          "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-400/25";
+                        if (isActiveHighlight)
+                          avatarShell =
+                            "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/35";
+                        else if (isConnectingHighlight)
+                          avatarShell =
+                            "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-amber-500/20 text-amber-300 ring-1 ring-amber-400/35";
+                        else if (isPrevHighlight)
+                          avatarShell =
+                            "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-400/30";
+                        else if (isEcho)
+                          avatarShell =
+                            "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/[0.04] text-slate-500 ring-1 ring-white/[0.08]";
+                        return (
+                          <div
+                            key={`${a.id}-${a._queueKind || "x"}`}
+                            className={`flex gap-2.5 rounded-xl border px-3 py-2.5 text-sm shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-[16px] transition-all duration-[250ms] ease-out will-change-transform hover:translate-x-1 hover:border-cyan-400/20 hover:shadow-[0_8px_32px_rgba(0,255,180,0.06)] ${
+                              isEcho
+                                ? "border-white/[0.06] bg-[rgba(255,255,255,0.03)]"
+                                : "border-white/[0.08] bg-[rgba(255,255,255,0.04)]"
+                            }`}
+                          >
+                            <div className={avatarShell}>
+                              <UserCircle size={18} strokeWidth={1.75} aria-hidden />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className={phoneCls}>{displayPhone(a)}</div>
+                              <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                                {isEcho ? "状态 · 受限提示" : "状态 · 可用"}
+                              </div>
+                              {isEcho ? (
+                                <p className="mt-1 text-[10px] leading-snug text-amber-400/90">
+                                  daily_limited · 不参与拉人
+                                </p>
+                              ) : null}
+                              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-500">
+                                <Globe className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
+                                <span
+                                  className={
+                                    a.proxy_type === "direct"
+                                      ? "font-medium text-amber-400"
+                                      : "font-medium text-emerald-400"
+                                  }
+                                >
+                                  {a.proxy_type || "direct"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
-                  <textarea className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2" rows={8} placeholder="用户列表（每行一个）" value={form.users} onChange={(e) => setForm((v) => ({ ...v, users: e.target.value }))} />
-                  <button
-                    type="button"
-                    disabled={taskRunning}
-                    className={`w-fit rounded-lg px-4 py-2 transition ${
-                      taskRunning
-                        ? "cursor-not-allowed bg-slate-600 text-slate-300"
-                        : "bg-blue-600 hover:bg-blue-500"
-                    }`}
-                    onClick={onStartTask}
+                </div>
+              </Card>
+            </aside>
+
+            <div className="flex h-full min-h-0 min-w-0 flex-col gap-4">
+              <div className="grid shrink-0 grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatTile title="今日新增" value={stats.todayAdd} icon={TrendingUp} tone="growth" />
+                <StatTile title="昨日新增" value={stats.yestAdd} icon={CalendarClock} tone="info" />
+                <StatTile title="累计新增" value={stats.total} icon={Layers} tone="info" />
+                <StatTile title="可用账号" value={stats.accounts} icon={Users} tone="growth" />
+              </div>
+
+              <section className="task-control-panel shrink-0" aria-label="任务控制面板">
+                <div className="task-control-panel-inner">
+                  <div className="mb-5 flex flex-col gap-4 border-b border-white/[0.08] pb-5 lg:flex-row lg:items-end lg:justify-between lg:gap-6">
+                    <div className="min-w-0">
+                      <h3 className="task-control-panel-title">TASK CONTROL PANEL</h3>
+                      <p className="mt-2 text-xs leading-relaxed text-slate-400">
+                        实时任务配置 <span className="text-[#00AFFF]/80">/</span> 自动执行系统
+                      </p>
+                    </div>
+                    <TaskControlStatusBar phase={taskPanelPhase} />
+                  </div>
+                  <div className="flex flex-col gap-5">
+                    <div className="flex flex-wrap items-end gap-2 gap-y-3">
+                      <div className="flex min-w-[200px] flex-1 flex-col gap-1.5">
+                        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                          目标群组
+                        </span>
+                        <GlassDropdown
+                          variant="task"
+                          value={selectedGroup}
+                          onChange={setSelectedGroup}
+                          options={selectedGroupDropdownOptions}
+                          placeholder="选择群组…"
+                          searchable
+                          className="w-full"
+                        />
+                      </div>
+                      <div className="flex min-w-[160px] flex-1 flex-col gap-1.5">
+                        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                          强制加入
+                        </span>
+                        <GlassDropdown
+                          variant="task"
+                          value={forceCandidate}
+                          onChange={setForceCandidate}
+                          options={forceCandidateDropdownOptions}
+                          placeholder="隐藏群组…"
+                          searchable
+                          className="w-full"
+                        />
+                      </div>
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
+                          className="rounded-xl border border-[#00AFFF]/35 bg-[rgba(0,175,255,0.1)] px-3 py-2 text-sm font-bold text-sky-200 shadow-[0_0_16px_rgba(0,175,255,0.2)] transition hover:scale-105 hover:border-[#7A5CFF]/40 hover:shadow-[0_0_22px_rgba(122,92,255,0.25)] active:scale-95"
+                          onClick={onForceAddGroup}
+                        >
+                          +
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-300 shadow-[0_0_12px_rgba(251,113,133,0.15)] transition hover:scale-105 hover:shadow-[0_0_20px_rgba(251,113,133,0.22)] active:scale-95"
+                          onClick={onRemoveGroup}
+                        >
+                          −
+                        </button>
+                      </div>
+                    </div>
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">用户列表</span>
+                      <textarea
+                        className="growth-scroll task-control-field max-h-[200px] min-h-[80px] resize-y"
+                        rows={4}
+                        placeholder="每行一个 @username 或用户标识…"
+                        value={form.users}
+                        onChange={(e) => setForm((v) => ({ ...v, users: e.target.value }))}
+                      />
+                    </label>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        disabled={taskRunning}
+                        onClick={onStartTask}
+                        className={
+                          taskRunning
+                            ? "inline-flex items-center justify-center gap-2 rounded-xl px-6 py-2.5 text-sm font-bold text-slate-900 shadow-[0_0_28px_rgba(0,175,255,0.35)] transition-all duration-200 btn-running-shimmer disabled:cursor-not-allowed disabled:opacity-60"
+                            : "task-control-start-btn inline-flex items-center justify-center gap-2"
+                        }
+                      >
+                        {taskRunning ? (
+                          <>
+                            <UiSpinner tone="primary" />
+                            执行中…
+                          </>
+                        ) : (
+                          "开始增长"
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <Card title="实时日志" accent="log" className="!pb-4">
+                <p className="mb-3 text-[11px] text-slate-500">
+                  可视区固定 {CONSOLE_PANEL_HEIGHT_PX}px（与账号队列同高）· 最多 {MAX_LOG_ENTRIES} 条（先进先出）· 上滑暂停自动滚底，回到底部恢复
+                </p>
+                <div className={`${GLASS_PANEL_LOG} shrink-0`}>
+                  <div className={GLASS_PANEL_CHROME_LOG}>
+                    <span className="h-2 w-2 rounded-full bg-rose-400 shadow-sm" />
+                    <span className="h-2 w-2 rounded-full bg-amber-400 shadow-sm" />
+                    <span className="h-2 w-2 rounded-full bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.6)]" />
+                    <span className="ml-1 font-log text-[10px] uppercase tracking-[0.2em] text-slate-500">session.log</span>
+                    <span className="ml-auto font-log text-[10px] text-slate-400">live</span>
+                  </div>
+                  <div
+                    ref={logRef}
+                    role="log"
+                    aria-live="polite"
+                    aria-relevant="additions"
+                    onScroll={handleLogScroll}
+                    className="growth-scroll log-container shrink-0 overflow-y-auto overflow-x-hidden px-3 py-2 font-log"
+                    style={{ height: CONSOLE_PANEL_HEIGHT_PX }}
                   >
-                    {taskRunning ? "正在执行中…" : "开始增长"}
-                  </button>
+                    {logs.map(({ id, time, message, type }) => (
+                      <LogLineRow key={id} time={time} message={message} type={type} />
+                    ))}
+                  </div>
                 </div>
               </Card>
             </div>
-            <Card title="实时日志面板" className="mt-4">
-              <div ref={logRef} className="h-52 overflow-auto rounded-lg bg-black p-3 font-mono text-xs text-emerald-300">
-                {logs.map((line, idx) => <div key={`${idx}-${line}`}>{line}</div>)}
-              </div>
-            </Card>
-          </>
+          </div>
         )}
 
         {tab === "目标群组" && (
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="space-y-5">
+            {featuredTargetGroup ? <GroupsHeroCard group={featuredTargetGroup} /> : null}
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             {groups.map((g) => (
-              <Card key={g.id} title={g.title || g.username}>
+              <Card key={g.id} title={g.title || g.username} shellClass="target-group-list-card">
                 <div className="mb-2 text-sm text-slate-300">{g.display_handle || g.username}</div>
-                <div className="text-xs text-slate-400">当前人数: {g.members_count}</div>
-                <div className="text-xs text-slate-400">总拉人: {g.total_added}</div>
-                <div className="text-xs text-slate-400">今日拉人: {g.today_added}</div>
-                <div className="text-xs text-slate-400">昨日拉人: {g.yesterday_added}</div>
-                <div className="text-xs text-slate-400">昨日退出: {g.yesterday_left}</div>
-                <div className="mt-2">
-                  <label className="mb-1 block text-xs text-slate-400">单日数量限制</label>
+                <div className="space-y-1 text-xs text-slate-500">
+                  <div>
+                    当前人数:{" "}
+                    <span className="stat-num-growth text-xl tabular-nums">{g.members_count}</span>
+                  </div>
+                  <div>
+                    总拉人: <span className="stat-num-log text-base font-bold tabular-nums">{g.total_added}</span>
+                  </div>
+                  <div>今日拉人: {g.today_added}</div>
+                  <div>昨日拉人: {g.yesterday_added}</div>
+                  <div>昨日退出: {g.yesterday_left}</div>
+                </div>
+                <div className="mt-3">
+                  <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-wider text-slate-500">单日数量限制</label>
                   <input
                     type="number"
                     min={1}
-                    className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+                    className={INPUT_FIELD}
                     defaultValue={g.daily_limit || 30}
                     onBlur={(e) => onUpdateDailyLimit(g.id, e.target.value)}
                   />
                 </div>
-                <div className="mt-2"><Badge status={g.status === "limited" ? "限制" : "正常"} /></div>
+                <div className="mt-3"><Badge status={g.status === "limited" ? "限制" : "正常"} /></div>
               </Card>
             ))}
+            </div>
+          </div>
+        )}
+
+        {tab === "群组互动" && (
+          <div className="grid min-h-0 gap-5 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
+            <div
+              className={`${cardShellClass("risk")} relative overflow-hidden !p-0`}
+              style={{
+                boxShadow:
+                  "0 8px 40px rgba(0,0,0,0.42), 0 0 48px rgba(192,38,211,0.1), 0 0 72px rgba(59,130,246,0.06)",
+              }}
+            >
+              <div
+                className="pointer-events-none absolute inset-0 opacity-[0.35]"
+                style={{
+                  background:
+                    "radial-gradient(900px 420px at 10% 0%, rgba(192,38,211,0.18), transparent 55%), radial-gradient(700px 380px at 90% 20%, rgba(59,130,246,0.14), transparent 50%)",
+                }}
+              />
+              <div className="relative space-y-5 p-5 sm:p-7">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <h2 className="text-lg font-bold tracking-tight text-white">群组互动</h2>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                      自动使用<span className="text-fuchsia-200/90"> 可用 + 当日受限 </span>
+                      账号，对今日消息随机表情反应；群与群之间随机等待 5–15 秒
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/[0.06] px-3 py-2 text-center backdrop-blur-md sm:text-right">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-fuchsia-300/80">账号池</p>
+                    <p className="stat-num-risk text-2xl tabular-nums">{engagementAccountPoolCount}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    目标群组（多选）
+                  </span>
+                  <GlassMultiSelect
+                    values={engagementSelectedGroups}
+                    onChange={setEngagementSelectedGroups}
+                    options={engagementGroupOptions}
+                    placeholder="搜索并勾选目标群组…"
+                    disabled={!profile}
+                  />
+                  <p className="text-[11px] text-slate-500">数据来自「目标群组」库（groups 表）</p>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                      消息扫描条数
+                    </span>
+                    <input
+                      type="number"
+                      min={10}
+                      max={5000}
+                      className={INPUT_FIELD}
+                      value={engagementScanLimit}
+                      onChange={(e) => setEngagementScanLimit(Number(e.target.value) || 300)}
+                    />
+                  </label>
+                  <div className="flex flex-col justify-end rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] px-3 py-2 text-xs text-slate-400 backdrop-blur-md">
+                    <span className="font-medium text-slate-300">群组间隔</span>
+                    <span className="mt-1 tabular-nums text-fuchsia-200/90">5–15 秒（随机）</span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={!profile || engagementSubmitting}
+                  onClick={onStartEngagement}
+                  className="w-full rounded-2xl bg-[linear-gradient(135deg,#e879f9,#60efff)] px-5 py-3 text-sm font-bold text-slate-900 shadow-[0_0_28px_rgba(217,70,239,0.45),0_8px_28px_rgba(0,0,0,0.35)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_42px_rgba(96,239,255,0.35),0_12px_36px_rgba(217,70,239,0.25)] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 sm:w-auto sm:min-w-[200px]"
+                >
+                  {engagementSubmitting ? (
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <UiSpinner tone="primary" />
+                      提交中…
+                    </span>
+                  ) : (
+                    "开始互动"
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <aside className={`${cardShellClass("log")} min-h-[280px] !p-4`}>
+              <div className="mb-3 flex items-center justify-between gap-2 border-b border-blue-400/10 pb-3">
+                <h3 className="text-sm font-semibold text-slate-100">任务列表</h3>
+                <span className="rounded-full border border-cyan-400/25 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-cyan-200/90">
+                  live
+                </span>
+              </div>
+              <div className="growth-scroll max-h-[min(560px,70vh)] space-y-3 overflow-y-auto pr-1">
+                {engagementTasks.length === 0 ? (
+                  <p className="py-8 text-center text-xs text-slate-500">暂无任务，提交后将在此显示</p>
+                ) : (
+                  engagementTasks.map((t) => (
+                    <div
+                      key={t.id}
+                      className="rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.04)] p-3 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-[16px] transition hover:border-cyan-400/20"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="font-mono text-[11px] text-slate-500">#{t.id}</span>
+                        <span
+                          className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide backdrop-blur-sm ${
+                            t.status === "completed"
+                              ? "border-emerald-400/35 bg-emerald-500/15 text-emerald-300 shadow-[0_0_14px_rgba(52,211,153,0.25)]"
+                              : t.status === "running"
+                                ? "border-cyan-400/35 bg-cyan-500/15 text-cyan-200 shadow-[0_0_14px_rgba(34,211,238,0.3)]"
+                                : t.status === "failed"
+                                  ? "border-rose-400/35 bg-rose-500/15 text-rose-300 shadow-[0_0_14px_rgba(251,113,133,0.25)]"
+                                  : "border-amber-400/30 bg-amber-500/10 text-amber-200 shadow-[0_0_12px_rgba(251,191,36,0.2)]"
+                          }`}
+                        >
+                          {t.status}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-3 gap-2 text-center text-[11px]">
+                        <div>
+                          <p className="text-slate-500">群组</p>
+                          <p className="font-bold tabular-nums text-slate-100">{t.group_count}</p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">账号</p>
+                          <p className="font-semibold tabular-nums text-slate-200">{t.account_count}</p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">成功</p>
+                          <p className="font-bold tabular-nums text-emerald-300">{t.success_count}</p>
+                        </div>
+                      </div>
+                      <p className="mt-2 truncate text-[10px] text-slate-500" title={(t.groups || []).join(", ")}>
+                        {(t.groups || []).slice(0, 3).join(" · ")}
+                        {(t.groups || []).length > 3 ? " …" : ""}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </aside>
           </div>
         )}
 
         {tab === "账号检测" && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-end gap-2">
-              <button className="rounded bg-indigo-600 px-3 py-2 text-sm" onClick={() => setShowPathModal(true)}>账号路径</button>
-              <input className="max-w-[260px] text-sm" type="file" accept=".zip" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} />
-              <button className="rounded bg-blue-600 px-3 py-2 text-sm" onClick={onUpload}>上传</button>
-              <button className="rounded bg-slate-700 px-3 py-2 text-sm" type="button" onClick={() => refreshBase()}>刷新</button>
-            </div>
-            <div className="grid gap-4 xl:grid-cols-3">
-              <Card title="可用账号">
-                <div className="max-h-[500px] space-y-2 overflow-auto">
-                  {(accounts.active || []).map((a) => (
-                    <div key={a.id} className="rounded-xl border border-emerald-500/30 bg-slate-900 p-3">
-                      <div className="font-medium">{displayPhone(a)}</div>
-                      <div className="text-xs text-slate-400">今日使用: {a.today_used_count || 0}</div>
-                      <Badge status="可用" />
-                    </div>
-                  ))}
+          <div className="space-y-6">
+            <header className="account-console-hero flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between lg:gap-6">
+              <div className="flex min-w-0 items-start gap-4">
+                <div className="hidden h-14 w-14 shrink-0 place-items-center rounded-2xl border border-cyan-400/20 bg-gradient-to-br from-cyan-500/15 to-emerald-500/10 shadow-[0_0_28px_rgba(56,189,248,0.2)] sm:grid">
+                  <Shield className="h-7 w-7 text-cyan-300" strokeWidth={1.75} aria-hidden />
                 </div>
-              </Card>
-              <Card title="当日受限">
-                <div className="max-h-[500px] space-y-2 overflow-auto">
-                  {(accounts.limited || []).map((a) => (
-                    <div key={a.id} className="rounded-xl border border-amber-500/30 bg-slate-900 p-3">
-                      <div className="font-medium">{displayPhone(a)}</div>
-                      <div className="text-xs text-slate-400">今日使用: {a.today_used_count || 0}</div>
-                      <Badge status="当日受限" />
-                    </div>
-                  ))}
+                <div className="min-w-0">
+                  <h2 className="text-xl font-bold tracking-tight text-white md:text-2xl">账号检测</h2>
+                  <p className="account-console-title-en mt-1.5">Account Monitoring Center</p>
                 </div>
-              </Card>
-              <Card title="风控账号">
-                <div className="max-h-[500px] space-y-2 overflow-auto">
-                  {(accounts.banned || []).map((a) => (
-                    <div key={a.id} className="rounded-xl border border-rose-500/30 bg-slate-900 p-3">
-                      <div className="mb-1 font-medium">{displayPhone(a)}</div>
-                      <div className="text-xs text-slate-400">今日使用: {a.today_used_count || 0}</div>
-                      <div className="mt-2 flex items-center justify-between">
-                        <Badge status={a.status === "limited_long" ? "长期受限" : "风控"} />
-                        <button className="rounded bg-rose-600 px-2 py-1 text-xs" onClick={() => onDeleteAccount(a.phone)}>删除</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </Card>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                <button
+                  type="button"
+                  className={`${BTN_SECONDARY} hover:scale-[1.02] active:scale-[0.98]`}
+                  onClick={() => setShowPathModal(true)}
+                >
+                  账号路径
+                </button>
+                <label className="inline-flex cursor-pointer items-center rounded-xl border border-dashed border-cyan-400/25 bg-[rgba(255,255,255,0.04)] px-3 py-2 text-xs text-slate-400 shadow-[0_4px_20px_rgba(0,0,0,0.28)] backdrop-blur-[14px] transition hover:scale-[1.02] hover:border-cyan-400/40 hover:bg-white/[0.06] hover:text-slate-200 active:scale-[0.98]">
+                  <input className="sr-only" type="file" accept=".zip" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} />
+                  {uploadFile ? uploadFile.name : "选择 .zip"}
+                </label>
+                <button
+                  type="button"
+                  disabled={uploadLoading}
+                  className="account-console-btn-primary inline-flex items-center justify-center gap-2 disabled:hover:scale-100"
+                  onClick={onUpload}
+                >
+                  {uploadLoading ? (
+                    <>
+                      <UiSpinner tone="primary" />
+                      上传中...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="h-4 w-4 shrink-0" aria-hidden />
+                      上传
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  disabled={refreshLoading}
+                  className={`${BTN_SECONDARY} inline-flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-[0.98] disabled:hover:scale-100`}
+                  onClick={() => triggerRefresh({}, "header")}
+                >
+                  {refreshLoading && refreshPhase === "header" ? (
+                    <>
+                      <UiSpinner tone="muted" />
+                      刷新中...
+                    </>
+                  ) : (
+                    "刷新"
+                  )}
+                </button>
+              </div>
+            </header>
+            <div className="grid gap-5 xl:grid-cols-3">
+              <AccountMonitorColumn
+                variant="active"
+                title="可用账号"
+                titleEn="Active · Healthy"
+                count={(accounts.active || []).length}
+                countClassName="stat-num-growth text-3xl md:text-4xl"
+              >
+                {(accounts.active || []).map((a) => (
+                  <AccountInspectRow
+                    key={a.id}
+                    variant="active"
+                    phoneLine={displayPhone(a)}
+                    subLine={`今日使用: ${a.today_used_count || 0}`}
+                    badge={<Badge glow status="可用" />}
+                  />
+                ))}
+              </AccountMonitorColumn>
+              <AccountMonitorColumn
+                variant="limited"
+                title="当日受限"
+                titleEn="Limited · Cooldown"
+                count={(accounts.limited || []).length}
+                countClassName="stat-num-warn text-3xl md:text-4xl"
+              >
+                {(accounts.limited || []).map((a) => (
+                  <AccountInspectRow
+                    key={a.id}
+                    variant="limited"
+                    phoneLine={displayPhone(a)}
+                    subLine={`今日使用: ${a.today_used_count || 0}`}
+                    badge={<Badge glow status="当日受限" />}
+                  />
+                ))}
+              </AccountMonitorColumn>
+              <AccountMonitorColumn
+                variant="banned"
+                title="风控账号"
+                titleEn="At Risk · Review"
+                count={(accounts.banned || []).length}
+                countClassName="stat-num-risk text-3xl md:text-4xl"
+              >
+                {(accounts.banned || []).map((a) => (
+                  <AccountInspectRow
+                    key={a.id}
+                    variant="banned"
+                    phoneLine={displayPhone(a)}
+                    subLine={`今日使用: ${a.today_used_count || 0}`}
+                    badge={
+                      <Badge
+                        glow
+                        status={
+                          a.status === "risk_suspected"
+                            ? "疑似风控"
+                            : a.status === "limited_long"
+                              ? "长期受限"
+                              : "风控"
+                        }
+                      />
+                    }
+                    right={
+                      <button
+                        type="button"
+                        className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-300 shadow-[0_0_12px_rgba(251,113,133,0.15)] transition hover:scale-105 hover:border-rose-400/50 hover:shadow-[0_0_20px_rgba(251,113,133,0.25)] active:scale-95"
+                        onClick={() => onDeleteAccount(a.phone)}
+                      >
+                        删除
+                      </button>
+                    }
+                  />
+                ))}
+              </AccountMonitorColumn>
             </div>
           </div>
         )}
 
         {tab === "代理监控" && (
-          <div className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <Card title="代理总数"><p className="text-3xl font-bold text-cyan-300">{proxyData.summary.total}</p></Card>
-              <Card title="已使用数量"><p className="text-3xl font-bold text-emerald-300">{proxyData.summary.used}</p></Card>
-              <Card title="空闲数量"><p className="text-3xl font-bold text-blue-300">{proxyData.summary.idle}</p></Card>
-              <Card title="失效数量"><p className="text-3xl font-bold text-rose-300">{proxyData.summary.dead}</p></Card>
+          <div className="space-y-5">
+            <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+              <StatTileLg title="代理总数" value={proxyData.summary.total} icon={Network} tone="info" />
+              <StatTileLg title="已使用数量" value={proxyData.summary.used} icon={Activity} tone="growth" />
+              <StatTileLg title="空闲数量" value={proxyData.summary.idle} icon={Server} tone="info" />
+              <StatTileLg title="失效数量" value={proxyData.summary.dead} icon={XCircle} tone="risk" />
             </div>
-            <Card title="代理列表">
-              {!isAdmin ? <p className="mb-2 text-sm text-slate-400">当前为只读视图（管理员可操作代理）</p> : null}
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="text-slate-400">
+            <Card title="代理列表" accent="log">
+              {!isAdmin ? <p className="mb-3 text-sm text-slate-500">当前为只读视图（管理员可操作代理）</p> : null}
+              <div className={TABLE_WRAP}>
+                <table className="w-full border-separate border-spacing-0 text-sm">
+                  <thead className="border-b border-white/[0.06] bg-[rgba(255,255,255,0.04)] text-left text-[11px] font-medium uppercase tracking-wider text-slate-400">
                     <tr>
-                      <th className="px-2 py-2 text-left">手机号</th>
-                      <th className="px-2 py-2 text-left">代理类型</th>
-                      <th className="px-2 py-2 text-left">代理值</th>
-                      <th className="px-2 py-2 text-left">状态</th>
-                      <th className="px-2 py-2 text-left">操作</th>
+                      <th className="px-3 py-3">手机号</th>
+                      <th className="px-3 py-3">代理类型</th>
+                      <th className="px-3 py-3">代理值</th>
+                      <th className="px-3 py-3">状态</th>
+                      <th className="px-3 py-3">操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     {proxyData.items.map((p) => (
-                      <tr key={p.id} className="border-t border-slate-800">
-                        <td className="px-2 py-2">{p.phone || "-"}</td>
-                        <td className="px-2 py-2">{p.proxy_type || "-"}</td>
-                        <td className="px-2 py-2 max-w-[380px] truncate">{p.proxy_value || "-"}</td>
-                        <td className="px-2 py-2">
+                      <tr
+                        key={p.id}
+                        className="border-t border-white/[0.06] transition-colors duration-150 first:border-t-0 hover:bg-white/[0.04]"
+                      >
+                        <td className="px-3 py-2.5 text-slate-200">{p.phone || "-"}</td>
+                        <td className="px-3 py-2.5 text-slate-400">
+                          <span className="inline-flex items-center gap-1.5">
+                            <Globe className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
+                            {p.proxy_type || "-"}
+                          </span>
+                        </td>
+                        <td className="max-w-[380px] truncate px-3 py-2.5 font-log text-xs text-slate-500">{p.proxy_value || "-"}</td>
+                        <td className="px-3 py-2.5">
                           <span
-                            className={`rounded px-2 py-1 text-xs ${
+                            className={`rounded-lg border px-2 py-0.5 text-xs font-medium ${
                               p.status === "idle"
-                                ? "bg-blue-500/20 text-blue-300"
+                                ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-300"
                                 : p.status === "used"
-                                  ? "bg-emerald-500/20 text-emerald-300"
-                                  : "bg-rose-500/20 text-rose-300"
+                                  ? "border-cyan-400/35 bg-cyan-500/10 text-cyan-200"
+                                  : "border-rose-400/35 bg-rose-500/10 text-rose-300"
                             }`}
                           >
                             {p.status}
                           </span>
                         </td>
-                        <td className="px-2 py-2">
-                          <div className="flex gap-2">
+                        <td className="px-3 py-2.5">
+                          <div className="flex flex-wrap gap-2">
                             <button
-                              className="rounded bg-rose-600 px-2 py-1 text-xs disabled:opacity-40"
+                              type="button"
+                              className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2 py-1 text-xs font-medium text-rose-300 transition hover:-translate-y-0.5 hover:shadow-[0_0_14px_rgba(251,113,133,0.2)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
                               onClick={() => p.proxy_id && onMarkProxyDead(p.proxy_id)}
                               disabled={!p.proxy_id || !isAdmin}
                             >
                               标记失效
                             </button>
                             <button
-                              className="rounded bg-amber-600 px-2 py-1 text-xs disabled:opacity-40"
+                              type="button"
+                              className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-200 transition hover:-translate-y-0.5 hover:shadow-[0_0_14px_rgba(251,191,36,0.15)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
                               onClick={() => p.proxy_id && onUnbindProxy(p.proxy_id)}
                               disabled={!p.proxy_id || !isAdmin}
                             >
@@ -696,53 +1949,483 @@ export default function App() {
           </div>
         )}
 
+        {tab === "用户采集" && (
+          <div className={`${SCRAPER_PAGE} mx-auto max-w-6xl`}>
+            <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:gap-8">
+              <div className="min-w-0 flex-1 space-y-5">
+                <div className={SCRAPER_GLASS_CARD}>
+                  <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="text-base font-bold tracking-tight text-slate-100">采集账号</h3>
+                    <button type="button" className={SCRAPER_BTN_GLOW_SM} onClick={openScraperAccountModal}>
+                      更新账号
+                    </button>
+                  </div>
+                  <p className="mb-4 text-xs leading-relaxed text-slate-500">
+                    Telethon 独立 session，与账号池 / 代理池无关。
+                  </p>
+                  {scraperAccount?.status === "not_logged" || scraperAccount == null ? (
+                    <p className="text-sm text-slate-500">
+                      <span className="inline-flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full bg-slate-600 ring-2 ring-white/10" />
+                        未登录，请点击「更新账号」完成验证。
+                      </span>
+                    </p>
+                  ) : scraperAccount.status === "active" ? (
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(34,197,94,0.55)]" />
+                      <span className="text-xs text-slate-500">手机号</span>
+                      <span className="text-lg font-bold tabular-nums text-teal-200 drop-shadow-[0_0_14px_rgba(45,212,191,0.45)]">
+                        {scraperAccount.phone}
+                      </span>
+                      <span className="rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
+                        active
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-3 text-sm">
+                      <span className="h-2.5 w-2.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.45)]" />
+                      <span className="text-xs text-slate-500">手机号</span>
+                      <span className="font-bold tabular-nums text-slate-200">{scraperAccount.phone || "—"}</span>
+                      <span className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2 py-0.5 text-[10px] font-semibold text-rose-300">
+                        invalid
+                      </span>
+                      <span className="text-xs text-rose-400/90">请重新绑定</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className={SCRAPER_GLASS_CARD}>
+                  <h3 className="text-base font-bold tracking-tight text-slate-100">新建采集</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                    按时间窗口扫描群内消息，提取 <span className="font-log">@username</span> 并去重保存；session 路径{" "}
+                    <span className="font-log text-[10px]">data/scraper/</span>
+                  </p>
+                  <div className="mt-5 space-y-4">
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">群组 ID / 用户名 / 链接</span>
+                      <input
+                        className={SCRAPER_FIELD}
+                        placeholder="例如 username、-100… 或 t.me/…"
+                        value={scraperForm.group_id}
+                        onChange={(e) => setScraperForm((f) => ({ ...f, group_id: e.target.value }))}
+                      />
+                    </label>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="flex flex-col gap-1.5">
+                        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">时间范围</span>
+                        <GlassDropdown
+                          value={String(scraperForm.days)}
+                          onChange={(v) => setScraperForm((f) => ({ ...f, days: Number(v) || 7 }))}
+                          options={scraperDaysDropdownOptions}
+                          placeholder="选择天数"
+                          className="w-full"
+                        />
+                      </div>
+                      <label className="flex flex-col gap-1.5">
+                        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">最多扫描消息数</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={200000}
+                          className={SCRAPER_FIELD}
+                          value={scraperForm.max_messages}
+                          onChange={(e) =>
+                            setScraperForm((f) => ({ ...f, max_messages: Number(e.target.value) || 5000 }))
+                          }
+                        />
+                      </label>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={scraperLoading || !scraperForm.group_id.trim()}
+                      className={SCRAPER_BTN_GLOW_BLOCK}
+                      onClick={onRunScraper}
+                    >
+                      {scraperLoading ? (
+                        <>
+                          <UiSpinner tone="primary" />
+                          采集中…
+                        </>
+                      ) : (
+                        "开始采集"
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {scraperResult ? (
+                  <div className={SCRAPER_GLASS_CARD}>
+                    <h3 className="text-base font-bold tracking-tight text-slate-100">本次结果</h3>
+                    <p className="mt-1 text-xs text-slate-500">当前任务摘要，可下载 txt 或从历史重复下载。</p>
+                    <div className="mt-5 space-y-3">
+                      <div>
+                        <p className="text-[11px] font-medium text-slate-500">目标群组</p>
+                        <p className="mt-0.5 break-all font-log text-sm font-semibold text-slate-200">{scraperResult.group_id}</p>
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-medium text-slate-500">去重用户</p>
+                        <p className="stat-num-scraper mt-1 text-3xl tabular-nums tracking-tight">{scraperResult.count}</p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={scraperResultDownloadLoading}
+                        className={`${SCRAPER_BTN_GLOW_BLOCK} mt-2`}
+                        onClick={onDownloadScrape}
+                      >
+                        {scraperResultDownloadLoading ? (
+                          <>
+                            <UiSpinner tone="primary" />
+                            下载中…
+                          </>
+                        ) : (
+                          <>
+                            <Download className="h-4 w-4 shrink-0" aria-hidden />
+                            下载结果
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              <aside className="w-full shrink-0 space-y-4 lg:sticky lg:top-24 lg:w-[360px]">
+                <div className={SCRAPER_GLASS_CARD}>
+                  <h3 className="text-base font-bold tracking-tight text-slate-100">采集历史</h3>
+                  <p className="mt-1 text-xs text-slate-500">仅展示有用户的任务（user_count {">"} 0）。</p>
+                </div>
+                {scraperHistoryLoading && scraperTasks.length === 0 ? (
+                  <div className={`${SCRAPER_GLASS_CARD} flex items-center justify-center gap-2 py-10 text-sm text-slate-500`}>
+                    <UiSpinner tone="muted" />
+                    加载中…
+                  </div>
+                ) : scraperTasksVisible.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-white/[0.12] bg-[rgba(255,255,255,0.02)] px-4 py-10 text-center text-sm text-slate-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-[16px]">
+                    暂无记录，完成一次采集后将显示在此
+                  </div>
+                ) : (
+                  <ul className="growth-scroll flex max-h-[min(72vh,600px)] flex-col gap-4 overflow-y-auto pr-1">
+                    {scraperTasksVisible.map((t) => {
+                      const done = t.status === "done";
+                      const dt = t.created_at
+                        ? new Date(t.created_at).toLocaleString("zh-CN", { hour12: false })
+                        : "—";
+                      const titleName = (t.group_name && String(t.group_name).trim()) || t.group_link;
+                      const subLink =
+                        t.group_name && String(t.group_name).trim() && t.group_link !== titleName ? t.group_link : null;
+                      return (
+                        <li key={t.id} className={`${SCRAPER_HISTORY_CARD} ${done ? "" : "opacity-75"}`}>
+                          <h4 className="line-clamp-2 text-[15px] font-bold leading-snug text-slate-100" title={titleName}>
+                            {titleName}
+                          </h4>
+                          {subLink ? (
+                            <p className="mt-1 truncate font-log text-[10px] text-slate-400" title={subLink}>
+                              {subLink}
+                            </p>
+                          ) : null}
+                          <div className="mt-4 flex items-end justify-between gap-3">
+                            <div>
+                              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">用户</p>
+                              <p className="stat-num-scraper text-3xl leading-none tabular-nums">{t.user_count}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">下载</p>
+                              <p className="stat-num-log text-lg tabular-nums">{t.download_count ?? 0}</p>
+                            </div>
+                          </div>
+                          <p className="mt-3 text-[11px] text-slate-400">{dt}</p>
+                          {!done ? (
+                            <p className="mt-2 text-[11px] font-semibold text-amber-400">
+                              {t.status === "running" ? "未完成" : "失败"}
+                            </p>
+                          ) : null}
+                          <button
+                            type="button"
+                            disabled={!done || scraperDownloadTaskId != null}
+                            className={`${SCRAPER_BTN_GLOW_SM} mt-4 w-full`}
+                            onClick={() => onDownloadScraperHistoryTask(t.id)}
+                          >
+                            {scraperDownloadTaskId === t.id ? (
+                              <>
+                                <UiSpinner tone="primary" />
+                                下载中…
+                              </>
+                            ) : (
+                              <>
+                                <Download className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                                下载
+                              </>
+                            )}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </aside>
+            </div>
+          </div>
+        )}
+
         {tab === "用户管理" && (
-          <Card title="用户权限管理" right={isAdmin ? <button onClick={onLoadUsers}>刷新用户</button> : null}>
-            {!isAdmin ? <p className="text-sm text-slate-400">仅管理员可查看和修改用户权限</p> : (
+          <Card
+            title="用户权限管理"
+            right={
+              isAdmin ? (
+                <button
+                  type="button"
+                  disabled={loadUsersLoading}
+                  className={`${BTN_PRIMARY} inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0`}
+                  onClick={onLoadUsers}
+                >
+                  {loadUsersLoading ? (
+                    <>
+                      <UiSpinner tone="primary" />
+                      刷新中...
+                    </>
+                  ) : (
+                    "刷新用户"
+                  )}
+                </button>
+              ) : null
+            }
+          >
+            {!isAdmin ? (
+              <p className="text-sm text-slate-500">仅管理员可查看和修改用户权限</p>
+            ) : (
               <div className="space-y-2">
                 {users.map((u) => (
-                  <div key={u.id} className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900 p-2 text-sm">
-                    <div>#{u.id} {u.username} ({u.role})</div>
-                    <select className="rounded border border-slate-700 bg-slate-950 px-2 py-1" value={u.role} onChange={(e) => onChangeRole(u.id, e.target.value)}>
-                      <option value="user">user</option>
-                      <option value="admin">admin</option>
-                    </select>
+                  <div
+                    key={u.id}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] px-3 py-2.5 text-sm shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-[16px] transition-all duration-[250ms] ease-out hover:-translate-y-1 hover:border-cyan-400/20 hover:shadow-[0_12px_40px_rgba(0,255,180,0.06)]"
+                  >
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-cyan-500/12 text-cyan-300 ring-1 ring-cyan-400/25">
+                        <UserCog size={18} strokeWidth={1.75} aria-hidden />
+                      </div>
+                      <div className="min-w-0 text-slate-200">
+                        <div className="font-medium">
+                          #{u.id} {u.username}
+                        </div>
+                        <div className="text-xs text-slate-500">角色 · {u.role}</div>
+                      </div>
+                    </div>
+                    <GlassDropdown
+                      value={u.role}
+                      onChange={(role) => onChangeRole(u.id, role)}
+                      options={userRoleDropdownOptions}
+                      placeholder="角色"
+                      className="min-w-[132px] max-w-[200px]"
+                      triggerClassName="px-2.5 py-1.5 text-xs"
+                    />
                   </div>
                 ))}
               </div>
             )}
           </Card>
         )}
-      </main>
+        </main>
+      </div>
 
       {showPathModal && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70">
-          <div className="max-h-[80vh] w-[760px] overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl">
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-lg font-semibold">账号路径管理</h3>
-              <button className="rounded bg-slate-700 px-3 py-1 text-sm" onClick={() => setShowPathModal(false)}>关闭</button>
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(11,15,20,0.55)] p-4 backdrop-blur-md"
+          role="presentation"
+          onClick={() => setShowPathModal(false)}
+        >
+          <div
+            className={`${MODAL_SHELL} max-h-[80vh] w-full max-w-[760px] overflow-hidden`}
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b border-white/[0.06] px-5 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-base font-semibold text-slate-100">账号路径管理</h3>
+                <button type="button" className={`${BTN_SECONDARY} px-3 py-1.5 text-sm`} onClick={() => setShowPathModal(false)}>
+                  关闭
+                </button>
+              </div>
             </div>
-            <div className="mb-3 flex items-center gap-2">
-              <input
-                className="flex-1 rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                value={newPath}
-                onChange={(e) => setNewPath(e.target.value)}
-                placeholder="输入账号路径，例如 C:/Users/.../TGTDATAaccount"
-              />
-              <button className="rounded bg-blue-600 px-3 py-2 text-sm" onClick={onAddOrUpdatePath}>
-                {editingPathId ? "保存" : "添加"}
-              </button>
-            </div>
-            <div className="max-h-[55vh] space-y-2 overflow-auto pr-1">
-              {accountPaths.map((item) => (
-                <div key={item.id} className="flex items-center justify-between rounded-xl border border-slate-700 bg-slate-950 p-3">
-                  <div className="truncate pr-3 text-sm">{item.path}</div>
-                  <div className="flex gap-2">
-                    <button className="rounded bg-amber-600 px-2 py-1 text-xs" onClick={() => onEditPath(item)}>编辑</button>
-                    <button className="rounded bg-rose-600 px-2 py-1 text-xs" onClick={() => onDeletePath(item.id)}>删除</button>
+            <div className="space-y-4 px-5 py-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  className={`min-w-0 flex-1 ${INPUT_FIELD} py-2.5`}
+                  value={newPath}
+                  onChange={(e) => setNewPath(e.target.value)}
+                  placeholder="输入账号路径，例如 C:/Users/.../TGTDATAaccount"
+                />
+                <button
+                  type="button"
+                  disabled={pathSubmitLoading}
+                  className={`${BTN_PRIMARY} inline-flex items-center justify-center gap-2 px-4 py-2.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0`}
+                  onClick={onAddOrUpdatePath}
+                >
+                  {pathSubmitLoading ? (
+                    <>
+                      <UiSpinner tone="primary" />
+                      提交中...
+                    </>
+                  ) : editingPathId ? (
+                    "保存"
+                  ) : (
+                    "添加"
+                  )}
+                </button>
+              </div>
+              <div className="growth-scroll max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+                {accountPaths.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] p-3 shadow-[0_8px_28px_rgba(0,0,0,0.35)] backdrop-blur-[16px] transition hover:border-cyan-400/20 hover:shadow-[0_0_20px_rgba(0,255,180,0.05)]"
+                  >
+                    <div className="min-w-0 flex-1 truncate font-log text-xs text-slate-400">{item.path}</div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-200 transition hover:-translate-y-0.5 hover:shadow-[0_0_14px_rgba(251,191,36,0.15)]"
+                        onClick={() => onEditPath(item)}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-300 transition hover:-translate-y-0.5 hover:shadow-[0_0_14px_rgba(251,113,133,0.2)]"
+                        onClick={() => onDeletePath(item.id)}
+                      >
+                        删除
+                      </button>
+                    </div>
                   </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showScraperAccountModal && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(11,15,20,0.55)] p-4 backdrop-blur-md"
+          role="presentation"
+          onClick={closeScraperAccountModal}
+        >
+          <div
+            className={`${MODAL_SHELL} w-full max-w-md overflow-hidden`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="scraper-account-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b border-white/[0.06] px-5 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 id="scraper-account-modal-title" className="text-base font-semibold text-slate-100">
+                  更新采集账号
+                </h3>
+                <button type="button" className={`${BTN_SECONDARY} px-3 py-1.5 text-sm`} onClick={closeScraperAccountModal}>
+                  关闭
+                </button>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                验证码与二步验证密码均在弹窗内完成；登录成功后 session 保存在服务端，全局仅一个采集账号。
+              </p>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              {scraperModalBanner ? (
+                <div
+                  className={`rounded-xl border px-3 py-2.5 text-sm font-medium ${
+                    scraperModalBanner.kind === "success"
+                      ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-200"
+                      : scraperModalBanner.kind === "error"
+                        ? "border-rose-400/35 bg-rose-500/10 text-rose-200"
+                        : "border-cyan-400/35 bg-cyan-500/10 text-cyan-200"
+                  }`}
+                  role="status"
+                >
+                  {scraperModalBanner.kind === "loading" ? (
+                    <span className="inline-flex items-center gap-2">
+                      <UiSpinner tone="muted" />
+                      {scraperModalBanner.text}
+                    </span>
+                  ) : (
+                    scraperModalBanner.text
+                  )}
                 </div>
-              ))}
+              ) : null}
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">手机号（含区号）</span>
+                <input
+                  className={INPUT_FIELD}
+                  placeholder="例如 8613800138000 或 +8613800138000"
+                  value={scraperBindPhone}
+                  onChange={(e) => setScraperBindPhone(e.target.value)}
+                  autoComplete="tel"
+                  disabled={scraperBindLoginLoading || scraperSendCodeLoading}
+                />
+              </label>
+              <button
+                type="button"
+                disabled={scraperSendCodeLoading || scraperBindLoginLoading || !scraperBindPhone.trim()}
+                className={`${BTN_SECONDARY} inline-flex w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-60`}
+                onClick={onScraperSendCode}
+              >
+                {scraperSendCodeLoading ? (
+                  <>
+                    <UiSpinner tone="muted" />
+                    发送中…
+                  </>
+                ) : (
+                  "发送验证码"
+                )}
+              </button>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">验证码</span>
+                <input
+                  className={INPUT_FIELD}
+                  placeholder="Telegram 中的登录码"
+                  value={scraperBindCode}
+                  onChange={(e) => setScraperBindCode(e.target.value)}
+                  autoComplete="one-time-code"
+                  disabled={scraperNeedPassword || scraperBindLoginLoading}
+                />
+              </label>
+              {scraperNeedPassword ? (
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">二步验证密码</span>
+                  <input
+                    type="password"
+                    className={INPUT_FIELD}
+                    placeholder="Telegram 云密码"
+                    value={scraperBindPassword}
+                    onChange={(e) => setScraperBindPassword(e.target.value)}
+                    autoComplete="current-password"
+                    disabled={scraperBindLoginLoading}
+                  />
+                </label>
+              ) : null}
+              <button
+                type="button"
+                disabled={
+                  scraperBindLoginLoading ||
+                  scraperSendCodeLoading ||
+                  !scraperBindPhone.trim() ||
+                  (scraperNeedPassword
+                    ? !scraperBindPassword.trim()
+                    : !scraperBindCode.trim() || !scraperPhoneCodeHash)
+                }
+                className={`${BTN_PRIMARY} inline-flex w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0`}
+                onClick={onScraperBindLogin}
+              >
+                {scraperBindLoginLoading ? (
+                  <>
+                    <UiSpinner tone="primary" />
+                    登录中…
+                  </>
+                ) : (
+                  "登录"
+                )}
+              </button>
             </div>
           </div>
         </div>

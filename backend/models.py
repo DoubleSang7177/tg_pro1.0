@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Text, String
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, Text, String
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -31,12 +31,14 @@ class AccountFile(Base):
     proxy_type = Column(String(20), nullable=False, default="direct")
     filename = Column(String(255), nullable=False)
     saved_path = Column(String(500), nullable=False)
-    status = Column(String(20), nullable=False, default="active")
+    status = Column(String(32), nullable=False, default="normal")
     today_count = Column(Integer, nullable=False, default=0)
     error_count = Column(Integer, nullable=False, default=0)
     today_used_count = Column(Integer, nullable=False, default=0)
     last_used_time = Column(DateTime(timezone=True), nullable=True)
     limited_until = Column(DateTime(timezone=True), nullable=True)
+    login_fail_count = Column(Integer, nullable=False, default=0)
+    last_login_fail_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
@@ -100,4 +102,49 @@ class AccountPath(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     path = Column(String(500), unique=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ScraperAccount(Base):
+    """Telethon 采集账号（单例）：与账号池、代理池无关"""
+
+    __tablename__ = "scraper_account"
+
+    id = Column(Integer, primary_key=True, index=True)
+    phone = Column(String(32), nullable=False, unique=True)
+    session_file = Column(String(500), nullable=False)
+    status = Column(String(20), nullable=False, default="active")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ScraperTask(Base):
+    """用户采集任务记录（结果文件可重复下载）"""
+
+    __tablename__ = "scraper_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    group_link = Column(String(512), nullable=False)
+    group_name = Column(String(512), nullable=False, default="")
+    result_file = Column(String(500), nullable=False, default="")
+    user_count = Column(Integer, nullable=False, default=0)
+    download_count = Column(Integer, nullable=False, default=0)
+    status = Column(String(20), nullable=False, default="running")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class InteractionTask(Base):
+    """群组互动：多群随机表情反应任务"""
+
+    __tablename__ = "interaction_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # 目标群组 username 列表（与 groups 表一致）
+    target_groups = Column(JSON, nullable=False)
+    account_ids = Column(JSON, nullable=False)
+    status = Column(String(32), nullable=False, default="pending")
+    success_count = Column(Integer, nullable=False, default=0)
+    fail_count = Column(Integer, nullable=False, default=0)
+    scan_limit = Column(Integer, nullable=False, default=300)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

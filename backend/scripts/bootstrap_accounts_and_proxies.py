@@ -67,7 +67,7 @@ def main() -> None:
                             phone=phone,
                             filename=sub.name,
                             saved_path=str(sub.resolve()),
-                            status="active",
+                            status="normal",
                             proxy_type="direct",
                         )
                     )

@@ -28,6 +28,29 @@ def _ensure_group_columns() -> None:
             conn.execute(text("ALTER TABLE groups ADD COLUMN public_username VARCHAR(255)"))
 
 
+def _ensure_account_file_columns() -> None:
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(account_files)")).fetchall()
+        col_names = {r[1] for r in rows}
+        if "login_fail_count" not in col_names:
+            conn.execute(
+                text("ALTER TABLE account_files ADD COLUMN login_fail_count INTEGER NOT NULL DEFAULT 0")
+            )
+        if "last_login_fail_at" not in col_names:
+            conn.execute(text("ALTER TABLE account_files ADD COLUMN last_login_fail_at DATETIME"))
+        conn.execute(
+            text("UPDATE account_files SET status = 'normal' WHERE status IN ('active', '') OR status IS NULL")
+        )
+        conn.execute(text("UPDATE account_files SET status = 'daily_limited' WHERE status = 'limited_today'"))
+        conn.execute(
+            text(
+                "UPDATE account_files SET status = 'risk_suspected' "
+                "WHERE status IN ('limited_long', 'banned')"
+            )
+        )
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_group_columns()
+    _ensure_account_file_columns()

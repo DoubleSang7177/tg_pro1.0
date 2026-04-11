@@ -16,6 +16,13 @@ from cn_time import cn_hms
 from database import SessionLocal
 from logger import get_logger
 from models import AccountFile, Group, Proxy, Setting
+from services.account_status import (
+    ST_DAILY_LIMITED,
+    ST_NORMAL,
+    ST_RISK_SUSPECTED,
+    is_risk_suspected,
+    recover_and_normalize,
+)
 from services.task_progress import progress_append, progress_highlight_publish
 
 log = get_logger("telegram_service")
@@ -30,6 +37,8 @@ TELEGRAM_START_ABORT_STOP_SEC = float(os.getenv("TELEGRAM_START_ABORT_STOP_SEC",
 TELEGRAM_START_TASK_DRAIN_SEC = float(os.getenv("TELEGRAM_START_TASK_DRAIN_SEC", "10"))
 LOGIN_FAIL_DELAY_MIN_SEC = int(os.getenv("LOGIN_FAIL_DELAY_MIN_SEC", "30"))
 LOGIN_FAIL_DELAY_MAX_SEC = int(os.getenv("LOGIN_FAIL_DELAY_MAX_SEC", "60"))
+TELEGRAM_LOGIN_ATTEMPT_TIMEOUT = float(os.getenv("TELEGRAM_LOGIN_ATTEMPT_TIMEOUT", "20"))
+TELEGRAM_LOGIN_MAX_RETRIES = int(os.getenv("TELEGRAM_LOGIN_MAX_RETRIES", "3"))
 
 GROUP_METADATA_SYNC_KEY = "group_metadata_last_sync"
 GROUP_METADATA_STALE_SECONDS = int(os.getenv("GROUP_METADATA_STALE_SECONDS", str(24 * 3600)))
@@ -69,6 +78,86 @@ async def _client_start_with_hard_timeout(client: Client, timeout: float) -> Non
                 pass
 
 
+async def _pyrogram_start_with_task_timeout(
+    client: Client,
+    timeout: float,
+    tl,
+    phone_label: str,
+    attempt_no: int,
+) -> bool:
+    """
+    代理下 client.start() 可能长时间不 yield，wait_for(协程) 有时无法及时打断。
+    使用 create_task + 超时后 cancel task，强制结束本轮 start。
+    """
+    task = asyncio.create_task(client.start())
+    try:
+        await asyncio.wait_for(task, timeout=timeout)
+        return True
+    except asyncio.TimeoutError:
+        log.error(
+            "登录超时，准备取消任务 phone=%s attempt=%s timeout=%s",
+            phone_label,
+            attempt_no,
+            timeout,
+        )
+        tl(f"[ERROR] 登录超时 {phone_label}（第{attempt_no}次，>{int(timeout)}s）")
+        if not task.done():
+            task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=TELEGRAM_START_TASK_DRAIN_SEC)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        except Exception:
+            pass
+        tl("[INFO] 取消任务成功")
+        return False
+
+
+async def _single_login_attempt(
+    account: AccountFile,
+    session_name: str,
+    proxy_dict: dict[str, Any] | None,
+    proxy_label: str,
+    attempt_timeout: float,
+    attempt_no: int,
+    tl,
+) -> tuple[bool, Client | None, str | None]:
+    """单次登录：成功返回 (True, client, None)，失败返回 (False, None, err)。"""
+    login_cap = max(1, int(attempt_timeout))
+    tl(f"[INFO] 登录开始 {account.phone}（第{attempt_no}次，超时{login_cap}s，经 {proxy_label}）")
+    client = Client(
+        name=session_name,
+        api_id=API_ID,
+        api_hash=API_HASH,
+        phone_number=account.phone,
+        proxy=proxy_dict,
+        no_updates=True,
+    )
+    try:
+        success = await _pyrogram_start_with_task_timeout(
+            client,
+            attempt_timeout,
+            tl,
+            account.phone or "",
+            attempt_no,
+        )
+        if success:
+            tl(f"[INFO] 登录成功 {account.phone}（第{attempt_no}次）")
+            return True, client, None
+        try:
+            await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
+        except Exception:
+            pass
+        return False, None, "timeout"
+    except Exception as exc:
+        tl(f"[ERROR] 登录失败 {account.phone}（第{attempt_no}次）: {str(exc)[:300]}")
+        try:
+            await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
+        except Exception:
+            pass
+        return False, None, str(exc)
+
+
 def _task_log(logs: list[str], message: str, progress_job_id: str | None = None) -> None:
     ts = cn_hms()
     line = f"[{ts}] {message}"
@@ -83,30 +172,6 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
-
-
-def _classify_account_status(exc: Exception) -> str:
-    msg = str(exc).lower()
-    if "peer_flood" in msg or "floodwait" in msg:
-        return "limited"
-    if "session" in msg or "登录失败" in msg or "login failed" in msg:
-        return "banned"
-    return "active"
-
-
-def _recover_account_status(account: AccountFile, now_utc: datetime) -> None:
-    limited_until = account.limited_until
-    if limited_until and limited_until.tzinfo is None:
-        limited_until = limited_until.replace(tzinfo=timezone.utc)
-    elif limited_until:
-        limited_until = limited_until.astimezone(timezone.utc)
-
-    if account.status == "limited_today" and limited_until and now_utc >= limited_until:
-        account.status = "active"
-        account.limited_until = None
-
-    if account.status == "limited_today" and limited_until and now_utc - limited_until > timedelta(days=3):
-        account.status = "banned"
 
 
 def _classify_failure_reason(exc: Exception) -> str:
@@ -219,15 +284,18 @@ async def sync_groups_metadata(owner_id: int | None, force: bool, db) -> dict[st
     now_utc = datetime.now(timezone.utc)
     runnable: list[AccountFile] = []
     for row in account_rows:
-        _recover_account_status(row, now_utc)
-        if row.status == "banned":
+        recover_and_normalize(row, now_utc)
+        if row.status == ST_RISK_SUSPECTED:
             continue
-        lu = row.limited_until
-        if lu and lu.tzinfo is None:
-            lu = lu.replace(tzinfo=timezone.utc)
-        elif lu:
-            lu = lu.astimezone(timezone.utc)
-        if row.status == "limited_today" and lu and now_utc < lu:
+        if row.status == ST_DAILY_LIMITED:
+            lu = row.limited_until
+            if lu and lu.tzinfo is None:
+                lu = lu.replace(tzinfo=timezone.utc)
+            elif lu:
+                lu = lu.astimezone(timezone.utc)
+            if lu and now_utc < lu:
+                continue
+        if row.status != ST_NORMAL:
             continue
         runnable.append(row)
 
@@ -242,30 +310,59 @@ async def sync_groups_metadata(owner_id: int | None, force: bool, db) -> dict[st
     client: Client | None = None
     used_phone: str | None = None
 
+    def _mlog(msg: str) -> None:
+        logs.append(msg)
+
     for account in runnable:
         proxy_obj = db.query(Proxy).filter(Proxy.id == account.proxy_id).first() if account.proxy_id else None
         proxy_dict = _build_proxy(proxy_obj, account.proxy_type)
         session_name = _resolve_session_name(account)
-        try:
-            client = Client(
-                name=session_name,
-                api_id=API_ID,
-                api_hash=API_HASH,
-                phone_number=account.phone,
-                proxy=proxy_dict,
+        if proxy_dict:
+            proxy_label = f"{proxy_dict.get('hostname', '?')}:{proxy_dict.get('port', '?')}"
+        else:
+            proxy_label = "直连"
+        login_ok = False
+        for attempt in range(1, TELEGRAM_LOGIN_MAX_RETRIES + 1):
+            ok, client, _ = await _single_login_attempt(
+                account,
+                session_name,
+                proxy_dict,
+                proxy_label,
+                TELEGRAM_LOGIN_ATTEMPT_TIMEOUT,
+                attempt,
+                _mlog,
             )
-            await client.start()
-            used_phone = account.phone or ""
-            logs.append(f"使用账号 {account.phone} 同步群组元数据")
-            break
-        except Exception as exc:
-            logs.append(f"账号 {account.phone} 登录失败: {exc}")
-            if client:
-                try:
-                    await client.stop()
-                except Exception:
-                    pass
+            if ok:
+                account.login_fail_count = 0
+                account.status = ST_NORMAL
+                account.limited_until = None
+                db.add(account)
+                used_phone = account.phone or ""
+                logs.append(f"[INFO] 使用账号 {account.phone} 同步群组元数据（第{attempt}次尝试成功）")
+                login_ok = True
+                break
+            account.login_fail_count = (account.login_fail_count or 0) + 1
+            account.last_login_fail_at = datetime.now(timezone.utc)
+            db.add(account)
+        if not login_ok:
+            if is_risk_suspected(account):
+                account.status = ST_RISK_SUSPECTED
+                tag = "疑似风控"
+            else:
+                account.status = ST_DAILY_LIMITED
+                account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                tag = "当日受限"
+            logs.append(
+                f"[WARN] 账号 {account.phone} 登录失败{TELEGRAM_LOGIN_MAX_RETRIES}次，标记为{tag}",
+            )
+            logs.append("[INFO] 切换账号")
+            logs.append("[INFO] 切换下一个账号（同步元数据）")
+            db.add(account)
             client = None
+            db.commit()
+            continue
+        db.commit()
+        break
 
     if not client:
         return {"ok": False, "skipped": False, "message": "无法登录任何账号", "logs": logs}
@@ -401,13 +498,15 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
 
         runnable_accounts: list[AccountFile] = []
         for row in account_rows:
-            _recover_account_status(row, now_utc)
-            if row.status == "banned":
+            recover_and_normalize(row, now_utc)
+            if row.status == ST_RISK_SUSPECTED:
                 updated["banned"] += 1
                 continue
             row_lu = _as_utc(row.limited_until)
-            if row.status == "limited_today" and row_lu and now_utc < row_lu:
+            if row.status == ST_DAILY_LIMITED and row_lu and now_utc < row_lu:
                 updated["limited"] += 1
+                continue
+            if row.status != ST_NORMAL:
                 continue
             runnable_accounts.append(row)
 
@@ -428,18 +527,22 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
 
             account = runnable_accounts[account_idx]
             now_utc = datetime.now(timezone.utc)
+            recover_and_normalize(account, now_utc)
             acc_lu = _as_utc(account.limited_until)
-            if account.status == "limited_today" and acc_lu and now_utc < acc_lu:
+            if account.status == ST_DAILY_LIMITED and acc_lu and now_utc < acc_lu:
                 account_idx += 1
                 continue
-            if account.status in {"limited_long", "banned"}:
+            if account.status == ST_RISK_SUSPECTED:
+                account_idx += 1
+                continue
+            if account.status != ST_NORMAL:
                 account_idx += 1
                 continue
             if (account.today_used_count or 0) >= 3:
-                account.status = "limited_today"
+                account.status = ST_DAILY_LIMITED
                 account.limited_until = now_utc + timedelta(hours=12)
                 db.add(account)
-                tl(f"账号 {account.phone} 达到当日阈值，标记 limited_today，切换下一个账号")
+                tl(f"账号 {account.phone} 达到当日阈值，标记为 daily_limited，切换下一个账号")
                 db.commit()
                 account_idx += 1
                 continue
@@ -456,195 +559,197 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                     proxy_label = "直连"
                 highlight_connecting = account.phone
                 th_pub()
-                login_cap = int(TELEGRAM_START_TIMEOUT)
+                attempt_cap = int(TELEGRAM_LOGIN_ATTEMPT_TIMEOUT)
+                max_login_attempts = TELEGRAM_LOGIN_MAX_RETRIES
                 tl(
-                    f"账号 {account.phone} 经 {proxy_label} 发起 Telegram 登录（client.start，硬超时 {login_cap}s）；"
-                    f"此阶段在等与服务器握手，不是拉人成功后的 60 秒间隔。",
+                    f"账号 {account.phone} 经 {proxy_label} 登录：单次超时 {attempt_cap}s，最多 {max_login_attempts} 次；"
+                    f"失败自动累计并切下一账号。",
                 )
-                client = Client(
-                    name=session_name,
-                    api_id=API_ID,
-                    api_hash=API_HASH,
-                    phone_number=account.phone,
-                    proxy=proxy_dict,
-                    no_updates=True,
-                )
+                login_ok = False
+                for attempt in range(1, max_login_attempts + 1):
+                    ok, client, _ = await _single_login_attempt(
+                        account,
+                        session_name,
+                        proxy_dict,
+                        proxy_label,
+                        TELEGRAM_LOGIN_ATTEMPT_TIMEOUT,
+                        attempt,
+                        tl,
+                    )
+                    if ok:
+                        account.login_fail_count = 0
+                        account.status = ST_NORMAL
+                        account.limited_until = None
+                        db.add(account)
+                        login_ok = True
+                        break
+                    account.login_fail_count = (account.login_fail_count or 0) + 1
+                    account.last_login_fail_at = datetime.now(timezone.utc)
+                    account.error_count = (account.error_count or 0) + 1
+                    db.add(account)
 
-                t_login_start = time.monotonic()
+                if not login_ok:
+                    highlight_connecting = None
+                    if is_risk_suspected(account):
+                        account.status = ST_RISK_SUSPECTED
+                        account.limited_until = None
+                        tag = "疑似风控"
+                    else:
+                        account.status = ST_DAILY_LIMITED
+                        account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                        tag = "当日受限"
+                    tl(f"[WARN] 账号 {account.phone} 登录失败{max_login_attempts}次，标记为{tag}")
+                    tl("[INFO] 切换账号")
+                    tl("[INFO] 切换下一个账号")
+                    account.last_used_time = datetime.now(timezone.utc)
+                    highlight_previous = account.phone
+                    highlight_active = None
+                    db.add(account)
+                    th_pub()
+                    db.commit()
+                    client = None
 
-                async def _login_heartbeat() -> None:
-                    while True:
-                        await asyncio.sleep(TELEGRAM_START_HEARTBEAT_SEC)
-                        elapsed = int(time.monotonic() - t_login_start)
-                        remain = max(0, login_cap - elapsed)
-                        tl(
-                            f"账号 {account.phone} 仍在登录中（经 {proxy_label}）："
-                            f"已约 {elapsed}s / 上限 {login_cap}s，预计最多再等约 {remain}s；"
-                            f"超时将放弃本号并换下一个。",
+                if login_ok:
+                    highlight_connecting = None
+                    th_pub()
+                    tl(f"账号 {account.phone} Telegram 会话已建立，正在校验目标群组并尝试入群…")
+                    try:
+                        ok_in_group, group = await asyncio.wait_for(
+                            _ensure_in_group(client, default_group),
+                            timeout=TELEGRAM_ENSURE_GROUP_TIMEOUT,
                         )
+                    except asyncio.TimeoutError:
+                        highlight_connecting = None
+                        account.error_count = (account.error_count or 0) + 1
+                        account.last_used_time = datetime.now(timezone.utc)
+                        db.add(account)
+                        highlight_previous = account.phone
+                        highlight_active = None
+                        th_pub()
+                        tl(
+                            f"账号 {account.phone} 登录失败：校验/加入群组超过 {int(TELEGRAM_ENSURE_GROUP_TIMEOUT)}s，"
+                            f"切换下一个账号",
+                        )
+                        raise
+                    if not ok_in_group:
+                        raise RuntimeError("group limited: join failed")
 
-                # finally 必须在 except 里长 sleep 之前执行，否则会先睡 30～60s 才停心跳，日志仍刷「仍在登录」且无失败提示
-                login_timed_out = False
-                hb = asyncio.create_task(_login_heartbeat())
-                try:
-                    await _client_start_with_hard_timeout(client, TELEGRAM_START_TIMEOUT)
-                except asyncio.TimeoutError:
-                    login_timed_out = True
-                finally:
-                    hb.cancel()
-                    try:
-                        await hb
-                    except asyncio.CancelledError:
-                        pass
-                if login_timed_out:
-                    highlight_connecting = None
-                    account.error_count = (account.error_count or 0) + 1
-                    account.last_used_time = datetime.now(timezone.utc)
-                    db.add(account)
-                    highlight_previous = account.phone
-                    highlight_active = None
+                    highlight_active = account.phone
                     th_pub()
-                    tl(
-                        f"账号 {account.phone} 登录失败：client.start 超过 {login_cap}s 未完成（代理或链路卡住），"
-                        f"切换下一个账号",
-                    )
-                    raise asyncio.TimeoutError
-                highlight_connecting = None
-                th_pub()
-                tl(f"账号 {account.phone} Telegram 会话已建立，正在校验目标群组并尝试入群…")
-                try:
-                    ok_in_group, group = await asyncio.wait_for(
-                        _ensure_in_group(client, default_group),
-                        timeout=TELEGRAM_ENSURE_GROUP_TIMEOUT,
-                    )
-                except asyncio.TimeoutError:
-                    highlight_connecting = None
-                    account.error_count = (account.error_count or 0) + 1
-                    account.last_used_time = datetime.now(timezone.utc)
-                    db.add(account)
-                    highlight_previous = account.phone
-                    highlight_active = None
-                    th_pub()
-                    tl(
-                        f"账号 {account.phone} 登录失败：校验/加入群组超过 {int(TELEGRAM_ENSURE_GROUP_TIMEOUT)}s，"
-                        f"切换下一个账号",
-                    )
-                    raise
-                if not ok_in_group:
-                    raise RuntimeError("group limited: join failed")
+                    tl(f"账号 {account.phone} 登录成功，开始处理用户队列")
+                    switch_account = False
 
-                highlight_active = account.phone
-                th_pub()
-                tl(f"账号 {account.phone} 登录成功，开始处理用户队列")
-                switch_account = False
-
-                while user_idx < len(users):
-                    target_user = users[user_idx]
-                    i = user_idx + 1
-                    skip_short_sleep = False
-                    if target_user in already_in_group_users:
-                        summary["skipped"] += 1
-                        tl(f"[{i}/{len(users)}] 用户 {target_user} 已在群里，跳过")
-                        user_idx += 1
-                        continue
-
-                    tl(f"[{i}/{len(users)}] 使用账号 {account.phone} 处理用户 {target_user}")
-                    try:
-                        user_obj = await client.get_users(target_user)
-                        if await _is_user_in_group(client, group.id, target_user, getattr(user_obj, "id", None)):
+                    while user_idx < len(users):
+                        target_user = users[user_idx]
+                        i = user_idx + 1
+                        skip_short_sleep = False
+                        if target_user in already_in_group_users:
                             summary["skipped"] += 1
-                            tl(f"用户 {target_user} 已在群组 {default_group}，跳过")
+                            tl(f"[{i}/{len(users)}] 用户 {target_user} 已在群里，跳过")
                             user_idx += 1
                             continue
 
-                        await client.add_chat_members(group.id, [user_obj.id])
-                        summary["success"] += 1
-                        account.status = "active"
-                        account.today_count = (account.today_count or 0) + 1
-                        account.today_used_count = (account.today_used_count or 0) + 1
-                        account.last_used_time = datetime.now(timezone.utc)
+                        tl(f"[{i}/{len(users)}] 使用账号 {account.phone} 处理用户 {target_user}")
+                        try:
+                            user_obj = await client.get_users(target_user)
+                            if await _is_user_in_group(client, group.id, target_user, getattr(user_obj, "id", None)):
+                                summary["skipped"] += 1
+                                tl(f"用户 {target_user} 已在群组 {default_group}，跳过")
+                                user_idx += 1
+                                continue
 
-                        group_row = group_map.get(default_group)
-                        if group_row:
-                            group_row.failed_streak = 0
-                            group_row.status = "normal"
-                            group_row.total_added = (group_row.total_added or 0) + 1
-                            group_row.today_added = (group_row.today_added or 0) + 1
-                            if group_row.today_added >= group_row.daily_limit:
-                                group_row.disabled_until = datetime.now(timezone.utc) + timedelta(hours=12)
-                                group_row.status = "limited"
-                                tl(f"群组 {default_group} 达到每日上限，12小时禁用")
-                            db.add(group_row)
-
-                        db.add(account)
-                        db.commit()
-                        user_idx += 1
-                        tl(f"用户 {target_user} 拉入群组 {default_group} 成功，开始执行 60 秒间隔（结束后再处理下一名）")
-                        t_wait = time.monotonic()
-                        await asyncio.sleep(60)
-                        waited = int(time.monotonic() - t_wait)
-                        tl(f"60 秒间隔结束（实际等待 {waited}s），继续处理队列")
-                        skip_short_sleep = True
-                        if (account.today_used_count or 0) >= 3:
-                            account.status = "limited_today"
-                            account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
-                            db.add(account)
-                            highlight_connecting = None
-                            highlight_previous = account.phone
-                            highlight_active = None
-                            th_pub()
-                            tl(f"账号 {account.phone} 达到当日阈值，标记 limited_today，切换下一个账号")
-                            switch_account = True
-                            break
-                    except Exception as exc:
-                        reason = _classify_failure_reason(exc)
-                        account.error_count = (account.error_count or 0) + 1
-                        db.add(account)
-                        if reason in {"account_limited", "account_auth_failed"}:
+                            await client.add_chat_members(group.id, [user_obj.id])
+                            summary["success"] += 1
+                            account.status = ST_NORMAL
+                            account.today_count = (account.today_count or 0) + 1
+                            account.today_used_count = (account.today_used_count or 0) + 1
                             account.last_used_time = datetime.now(timezone.utc)
-                            account.status = "limited_today" if reason == "account_limited" else "limited_long"
-                            if reason == "account_limited":
-                                account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
-                            highlight_connecting = None
-                            highlight_previous = account.phone
-                            highlight_active = None
-                            db.add(account)
-                            th_pub()
-                            await _fail_wait_then_detail(
-                                f"账号 {account.phone} 失败: {reason}，切换下一个账号",
-                                wait_msg="上一账号已不可用，等待 {sec}s 后再连下一账号…",
-                            )
-                            switch_account = True
-                            break
-                        if reason == "group_limited":
+
                             group_row = group_map.get(default_group)
                             if group_row:
-                                group_row.failed_streak = (group_row.failed_streak or 0) + 1
-                                if group_row.failed_streak >= 3:
-                                    group_row.status = "limited"
+                                group_row.failed_streak = 0
+                                group_row.status = "normal"
+                                group_row.total_added = (group_row.total_added or 0) + 1
+                                group_row.today_added = (group_row.today_added or 0) + 1
+                                if group_row.today_added >= group_row.daily_limit:
                                     group_row.disabled_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                                    group_row.status = "limited"
+                                    tl(f"群组 {default_group} 达到每日上限，12小时禁用")
                                 db.add(group_row)
-                            summary["failed"] += 1
-                            tl(f"用户 {target_user} 失败: 目标群组受限")
-                            user_idx += 1
-                        elif isinstance(exc, FloodWait):
-                            summary["failed"] += 1
-                            tl(f"用户 {target_user} 失败: FloodWait {exc.value}s")
-                            user_idx += 1
-                        elif reason == "user_issue":
-                            summary["failed"] += 1
-                            tl(f"用户 {target_user} 失败: 用户本身问题")
-                            user_idx += 1
-                        else:
-                            summary["failed"] += 1
-                            tl(f"用户 {target_user} 失败: {reason} {exc}")
-                            user_idx += 1
-                    finally:
-                        if not skip_short_sleep:
-                            await asyncio.sleep(random.randint(1, 2))
 
-                if not switch_account and user_idx >= len(users):
-                    tl(f"账号 {account.phone} 用户队列处理完成")
+                            db.add(account)
+                            db.commit()
+                            user_idx += 1
+                            tl(f"用户 {target_user} 拉入群组 {default_group} 成功，开始执行 60 秒间隔（结束后再处理下一名）")
+                            t_wait = time.monotonic()
+                            await asyncio.sleep(60)
+                            waited = int(time.monotonic() - t_wait)
+                            tl(f"60 秒间隔结束（实际等待 {waited}s），继续处理队列")
+                            skip_short_sleep = True
+                            if (account.today_used_count or 0) >= 3:
+                                account.status = ST_DAILY_LIMITED
+                                account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                                db.add(account)
+                                highlight_connecting = None
+                                highlight_previous = account.phone
+                                highlight_active = None
+                                th_pub()
+                                tl(f"账号 {account.phone} 达到当日阈值，标记为 daily_limited，切换下一个账号")
+                                switch_account = True
+                                break
+                        except Exception as exc:
+                            reason = _classify_failure_reason(exc)
+                            account.error_count = (account.error_count or 0) + 1
+                            db.add(account)
+                            if reason in {"account_limited", "account_auth_failed"}:
+                                account.last_used_time = datetime.now(timezone.utc)
+                                account.status = (
+                                    ST_DAILY_LIMITED if reason == "account_limited" else ST_RISK_SUSPECTED
+                                )
+                                if reason == "account_limited":
+                                    account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                                else:
+                                    account.limited_until = None
+                                highlight_connecting = None
+                                highlight_previous = account.phone
+                                highlight_active = None
+                                db.add(account)
+                                th_pub()
+                                await _fail_wait_then_detail(
+                                    f"账号 {account.phone} 失败: {reason}，切换下一个账号",
+                                    wait_msg="上一账号已不可用，等待 {sec}s 后再连下一账号…",
+                                )
+                                switch_account = True
+                                break
+                            if reason == "group_limited":
+                                group_row = group_map.get(default_group)
+                                if group_row:
+                                    group_row.failed_streak = (group_row.failed_streak or 0) + 1
+                                    if group_row.failed_streak >= 3:
+                                        group_row.status = "limited"
+                                        group_row.disabled_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                                    db.add(group_row)
+                                summary["failed"] += 1
+                                tl(f"用户 {target_user} 失败: 目标群组受限")
+                                user_idx += 1
+                            elif isinstance(exc, FloodWait):
+                                summary["failed"] += 1
+                                tl(f"用户 {target_user} 失败: FloodWait {exc.value}s")
+                                user_idx += 1
+                            elif reason == "user_issue":
+                                summary["failed"] += 1
+                                tl(f"用户 {target_user} 失败: 用户本身问题")
+                                user_idx += 1
+                            else:
+                                summary["failed"] += 1
+                                tl(f"用户 {target_user} 失败: {reason} {exc}")
+                                user_idx += 1
+                        finally:
+                            if not skip_short_sleep:
+                                await asyncio.sleep(random.randint(1, 2))
+
+                    if not switch_account and user_idx >= len(users):
+                        tl(f"账号 {account.phone} 用户队列处理完成")
             except asyncio.TimeoutError:
                 pass
             except Exception as exc:
@@ -653,9 +758,11 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                 account.error_count = (account.error_count or 0) + 1
                 if reason in {"account_limited", "account_auth_failed"}:
                     account.last_used_time = datetime.now(timezone.utc)
-                    account.status = "limited_today" if reason == "account_limited" else "limited_long"
+                    account.status = ST_DAILY_LIMITED if reason == "account_limited" else ST_RISK_SUSPECTED
                     if reason == "account_limited":
                         account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                    else:
+                        account.limited_until = None
                 highlight_previous = account.phone
                 highlight_active = None
                 if reason in {"account_limited", "account_auth_failed"}:

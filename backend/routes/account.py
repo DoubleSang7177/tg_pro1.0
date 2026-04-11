@@ -12,6 +12,7 @@ from auth import require_user_or_admin
 from database import get_db
 from logger import get_logger
 from models import AccountFile, AccountPath, Proxy, User
+from services.account_status import ST_DAILY_LIMITED, ST_NORMAL, ST_RISK_SUSPECTED, recover_and_normalize
 from services.daily_reset import perform_daily_reset_if_needed
 from services.proxy_service import assign_proxy_to_account
 
@@ -55,6 +56,8 @@ def _account_payload(row: AccountFile, proxy_ip: str | None = None) -> dict:
         "today_used_count": row.today_used_count,
         "last_used_time": row.last_used_time.isoformat() if row.last_used_time else None,
         "limited_until": row.limited_until.isoformat() if row.limited_until else None,
+        "login_fail_count": getattr(row, "login_fail_count", 0) or 0,
+        "last_login_fail_at": row.last_login_fail_at.isoformat() if getattr(row, "last_login_fail_at", None) else None,
         "filename": row.filename,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
@@ -87,7 +90,7 @@ def _scan_accounts(user: User, db: Session) -> None:
                     phone=phone,
                     filename=subdir.name,
                     saved_path=str(subdir.resolve()),
-                    status="active",
+                    status=ST_NORMAL,
                     today_count=0,
                     error_count=0,
                 )
@@ -97,7 +100,7 @@ def _scan_accounts(user: User, db: Session) -> None:
             else:
                 existing.saved_path = str(subdir.resolve())
                 if not existing.status:
-                    existing.status = "active"
+                    existing.status = ST_NORMAL
                 db.add(existing)
     db.commit()
 
@@ -138,7 +141,7 @@ async def _upload_and_create_account(file: UploadFile, user: User, db: Session) 
             phone=_parse_phone_from_name(Path(file.filename).stem) or Path(file.filename).stem,
             filename=file.filename,
             saved_path=str(extracted_dir),
-            status="active",
+            status=ST_NORMAL,
             today_count=0,
             error_count=0,
         )
@@ -201,25 +204,19 @@ def list_accounts(
     recent_limited_sidebar: list[dict] = []
     now_utc = datetime.now(timezone.utc)
     for row in rows:
-        status = (row.status or "active").lower()
-        limited_until = _as_utc(row.limited_until)
-        if status == "limited_today":
-            if limited_until and now_utc >= limited_until:
-                row.status = "active"
-                row.limited_until = None
-                status = "active"
-            elif limited_until and now_utc - limited_until > timedelta(days=3):
-                row.status = "limited_long"
-                status = "banned"
-            else:
-                status = "limited"
-        elif status == "limited_long":
-            status = "banned"
-        elif status not in grouped:
-            status = "active"
+        recover_and_normalize(row, now_utc)
+        st = (row.status or ST_NORMAL).lower()
+        if st == ST_NORMAL:
+            bucket = "active"
+        elif st == ST_DAILY_LIMITED:
+            bucket = "limited"
+        elif st == ST_RISK_SUSPECTED:
+            bucket = "banned"
+        else:
+            bucket = "active"
         payload = _account_payload(row, proxy_map.get(row.proxy_id))
-        grouped[status].append(payload)
-        if status == "limited":
+        grouped[bucket].append(payload)
+        if bucket == "limited":
             last_u = _as_utc(row.last_used_time)
             if last_u and (now_utc - last_u).total_seconds() <= RECENT_LIMITED_SIDEBAR_SECONDS:
                 recent_limited_sidebar.append({**payload, "sidebar_echo": True})

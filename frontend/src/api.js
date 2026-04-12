@@ -184,6 +184,32 @@ export const api = {
     }),
   listAccounts: () => request("/accounts"),
   listProxies: () => request("/proxy"),
+  listProxyPool: () => request("/proxy/pool"),
+  dedupeProxyPool: () =>
+    request("/proxy/pool/dedupe", {
+      method: "POST",
+    }),
+  startProxyPoolCheck: () =>
+    request("/proxy/pool/check", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  getProxyCheckJob: (jobId) =>
+    request(`/proxy/pool/check-job/${encodeURIComponent(jobId)}`),
+  matchProxies: (body, opts = {}) =>
+    request("/proxy/match", {
+      method: "POST",
+      body: JSON.stringify({
+        match_unbound: Boolean(body?.match_unbound),
+        match_dead_proxy: Boolean(body?.match_dead_proxy),
+      }),
+      ...opts,
+    }),
+  uploadProxyFile: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request("/proxy/upload", { method: "POST", body: form });
+  },
   markProxyDead: (proxyId) =>
     request(`/proxy/${proxyId}/mark_dead`, {
       method: "POST",

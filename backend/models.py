@@ -105,6 +105,12 @@ class Proxy(Base):
     status = Column(String(20), nullable=False, default="idle")
     assigned_account_id = Column(Integer, ForeignKey("account_files.id"), unique=True, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # 出口检测（与 status 闲置/已分配/失效 无关；不影响绑定与任务逻辑）
+    proxy_ip = Column(String(64), nullable=True)
+    proxy_country = Column(String(128), nullable=True)
+    proxy_city = Column(String(128), nullable=True)
+    proxy_country_code = Column(String(4), nullable=True)
+    proxy_status = Column(String(16), nullable=False, default="unknown")
 
 
 class AccountPath(Base):

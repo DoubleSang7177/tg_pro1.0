@@ -49,6 +49,10 @@ export function GlassDropdown({
   searchable = false,
   className = "",
   triggerClassName = "",
+  /** 显示在选中项文案前，例如「状态：」 */
+  triggerPrefix = "",
+  /** 追加到菜单面板容器（如 rounded-[10px]） */
+  menuClassName = "",
   disabled = false,
   variant = "default",
 }) {
@@ -126,7 +130,7 @@ export function GlassDropdown({
     "flex w-full items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.04)] px-2.5 py-2 text-left text-sm text-slate-100 shadow-[0_4px_24px_rgba(0,0,0,0.25)] backdrop-blur-[16px] outline-none transition-all duration-200 hover:border-white/[0.12] focus-visible:ring-2 focus-visible:ring-cyan-400/30 disabled:cursor-not-allowed disabled:opacity-50";
 
   const fixedBase =
-    "fixed rounded-xl border border-white/[0.1] bg-[rgba(14,20,28,0.96)] shadow-[0_20px_60px_rgba(0,0,0,0.55),0_0_40px_rgba(0,255,180,0.06)] backdrop-blur-[20px]";
+    "fixed rounded-xl border border-white/[0.1] bg-[rgba(14,20,28,0.92)] shadow-[0_20px_60px_rgba(0,0,0,0.55),0_0_40px_rgba(0,255,180,0.06)] backdrop-blur-[22px]";
 
   const taskFixedBase =
     "fixed rounded-xl border border-[rgba(0,175,255,0.18)] bg-[rgba(12,18,28,0.96)] shadow-[0_24px_64px_rgba(0,0,0,0.55),0_0_40px_rgba(0,175,255,0.08),0_0_48px_rgba(122,92,255,0.06)] backdrop-blur-[20px]";
@@ -158,7 +162,10 @@ export function GlassDropdown({
             : `${triggerBaseDefault} ${triggerClassName}`
         }
       >
-        <span className={`min-w-0 flex-1 truncate ${displayLabel ? "" : "text-slate-500"}`}>
+        <span className={`min-w-0 flex-1 truncate ${displayLabel || triggerPrefix ? "" : "text-slate-500"}`}>
+          {triggerPrefix ? (
+            <span className="text-slate-500">{triggerPrefix}</span>
+          ) : null}
           {displayLabel || placeholder}
         </span>
         <svg
@@ -182,7 +189,11 @@ export function GlassDropdown({
             role="listbox"
             aria-hidden={false}
             style={dropdownFixedStyle}
-            className={isTask ? `${taskFixedBase} flex flex-col overflow-hidden` : `${fixedBase} flex flex-col overflow-hidden`}
+            className={
+              isTask
+                ? `${taskFixedBase} flex flex-col overflow-hidden`
+                : `${fixedBase} flex flex-col overflow-hidden ${menuClassName}`.trim()
+            }
           >
             {searchable ? (
               <div className="shrink-0 border-b border-white/[0.06] p-2" onMouseDown={(e) => e.preventDefault()}>
@@ -206,6 +217,16 @@ export function GlassDropdown({
               ) : (
                 filtered.map((opt) => {
                   const isActive = opt.value === value;
+                  const customOpt =
+                    opt.itemInactiveClass != null ||
+                    opt.itemActiveClass != null ||
+                    opt.itemBaseClass != null;
+                  const optRowBase =
+                    opt.itemBaseClass ??
+                    "flex w-full items-center px-3 py-2.5 text-left text-sm transition duration-200 ease-out rounded-[10px] mx-1";
+                  const defaultInactive = "text-slate-300 hover:bg-white/[0.06]";
+                  const defaultActive =
+                    "bg-gradient-to-r from-emerald-500/20 to-cyan-500/15 font-medium text-emerald-200";
                   return (
                     <li key={String(opt.value)}>
                       <button
@@ -219,17 +240,21 @@ export function GlassDropdown({
                         className={
                           isTask
                             ? `glass-dd-task-option ${isActive ? "glass-dd-task-option--active" : ""}`
-                            : `flex w-full items-center px-3 py-2.5 text-left text-sm transition duration-200 ease-out will-change-transform hover:translate-x-1 ${
-                                isActive
-                                  ? "bg-gradient-to-r from-emerald-500/20 to-cyan-500/15 font-medium text-emerald-200"
-                                  : "text-slate-300 hover:bg-white/[0.06]"
-                              }`
+                            : customOpt
+                              ? `${optRowBase} ${
+                                  isActive
+                                    ? opt.itemActiveClass ?? defaultActive
+                                    : opt.itemInactiveClass ?? defaultInactive
+                                }`
+                              : `flex w-full items-center px-3 py-2.5 text-left text-sm transition duration-200 ease-out will-change-transform hover:translate-x-1 ${
+                                  isActive ? defaultActive : defaultInactive
+                                }`
                         }
                       >
                         <span className="min-w-0 flex-1 truncate">{opt.label}</span>
                         {isActive ? (
                           <svg
-                            className={`ml-2 h-4 w-4 shrink-0 ${isTask ? "text-[#00AFFF]" : "text-[#00ff87]"}`}
+                            className={`ml-2 h-4 w-4 shrink-0 ${isTask ? "text-[#00AFFF]" : "text-cyan-300/90"}`}
                             viewBox="0 0 24 24"
                             fill="none"
                             stroke="currentColor"

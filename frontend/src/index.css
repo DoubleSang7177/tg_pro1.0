@@ -1525,3 +1525,176 @@ body::after {
   border: 1px solid rgba(251, 113, 133, 0.45);
   animation: growth-queue-new-pulse 1s ease 3;
 }
+
+/* —— 代理池 / 匹配引擎 · 高级玻璃态弹窗 —— */
+@keyframes proxy-glass-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes proxy-glass-dialog-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 14px)) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.proxy-glass-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10100;
+  display: block;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  background: rgba(6, 10, 18, 0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: proxy-glass-overlay-in 0.32s ease-out both;
+}
+
+.proxy-glass-dialog {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 10101;
+  width: min(440px, calc(100vw - 1.75rem));
+  max-height: min(90vh, 720px);
+  transform: translate(-50%, -50%);
+  border-radius: 14px;
+  background: rgba(15, 20, 30, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(120, 160, 255, 0.22);
+  box-shadow:
+    0 0 30px rgba(80, 120, 255, 0.15),
+    0 24px 64px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  animation: proxy-glass-dialog-in 0.38s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.proxy-glass-dialog--wide {
+  width: min(520px, calc(100vw - 1.75rem));
+}
+
+.proxy-glass-dialog-glow {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  background: linear-gradient(
+    165deg,
+    rgba(80, 140, 255, 0.07) 0%,
+    transparent 40%,
+    transparent 60%,
+    rgba(122, 92, 255, 0.06) 100%
+  );
+  box-shadow: inset 0 0 0 1px rgba(100, 200, 255, 0.06);
+}
+
+.proxy-glass-pool-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 180, 255, 0.35) transparent;
+}
+
+.proxy-glass-pool-row {
+  transition:
+    background 0.22s ease,
+    box-shadow 0.22s ease;
+}
+
+.proxy-glass-pool-row:hover {
+  background: rgba(80, 140, 255, 0.1);
+  box-shadow: 0 0 18px rgba(80, 150, 255, 0.14);
+}
+
+.proxy-glass-btn {
+  border-radius: 10px;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.proxy-glass-btn--secondary {
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgb(226 232 240);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.25);
+}
+
+.proxy-glass-btn--secondary:hover:not(:disabled) {
+  border-color: rgba(100, 200, 255, 0.35);
+  background: rgba(100, 200, 255, 0.1);
+  box-shadow: 0 0 20px rgba(80, 160, 255, 0.15);
+}
+
+.proxy-glass-btn--ghost {
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+.proxy-glass-btn--ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.proxy-glass-btn--primary {
+  border: 1px solid rgba(100, 200, 255, 0.5);
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.38), rgba(99, 102, 241, 0.34));
+  color: rgb(240 249 255);
+  box-shadow:
+    0 0 22px rgba(56, 189, 248, 0.28),
+    0 6px 24px rgba(0, 0, 0, 0.35);
+}
+
+.proxy-glass-btn--primary:hover:not(:disabled) {
+  box-shadow:
+    0 0 32px rgba(56, 189, 248, 0.45),
+    0 8px 28px rgba(0, 0, 0, 0.4);
+  transform: translateY(-1px);
+}
+
+.proxy-glass-btn--stop {
+  border: 1px solid rgba(251, 113, 133, 0.55);
+  background: rgba(251, 113, 133, 0.14);
+  color: rgb(254 205 211);
+  box-shadow: 0 0 20px rgba(251, 113, 133, 0.22);
+}
+
+.proxy-glass-btn--stop:hover:not(:disabled) {
+  background: rgba(251, 113, 133, 0.26);
+  box-shadow: 0 0 28px rgba(251, 113, 133, 0.38);
+  transform: translateY(-1px);
+}
+
+.proxy-glass-checkbox {
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: rgba(0, 0, 0, 0.25);
+  accent-color: rgb(56 189 248);
+  cursor: pointer;
+}
+
+.proxy-glass-checkbox:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.proxy-glass-log pre {
+  margin: 0;
+}

@@ -7,6 +7,8 @@ import {
   BarChart3,
   CalendarClock,
   CheckCircle,
+  Cpu,
+  Database,
   Download,
   Globe,
   Info,
@@ -14,6 +16,7 @@ import {
   Loader,
   MessageCircle,
   Network,
+  Radar,
   Repeat2,
   Server,
   Shield,
@@ -32,10 +35,62 @@ import { api, downloadScraperFile, downloadScraperTaskById, getWebSocketUrl } fr
 import { AuthModal } from "./components/AuthModal";
 import { GlassDropdown } from "./components/GlassDropdown";
 import { EngagementGroupPanel } from "./components/EngagementGroupPanel";
+import { ProxyCheckGlassModal, ProxyMatchGlassModal, ProxyPoolGlassModal } from "./components/ProxyGlassModals";
 import { UiSpinner } from "./components/UiSpinner";
 import { UserAccountDock } from "./components/UserAccountDock";
 
 const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "消息Copy", "用户管理"];
+
+/** 代理列表 · 状态筛选（值与接口 p.status 一致：idle / used / dead） */
+const PROXY_STATUS_FILTER_OPTIONS = [
+  {
+    value: "all",
+    label: "全部",
+    itemInactiveClass: "text-slate-200 hover:bg-white/[0.12]",
+    itemActiveClass:
+      "bg-white/[0.14] text-white border border-white/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ring-1 ring-white/12",
+  },
+  {
+    value: "idle",
+    label: "直连",
+    itemInactiveClass: "text-emerald-300/95 hover:bg-emerald-500/[0.16]",
+    itemActiveClass:
+      "bg-emerald-500/20 text-emerald-50 border border-emerald-400/35 ring-1 ring-emerald-400/18",
+  },
+  {
+    value: "used",
+    label: "已绑定",
+    itemInactiveClass: "text-sky-300/95 hover:bg-sky-500/[0.16]",
+    itemActiveClass: "bg-sky-500/22 text-sky-50 border border-sky-400/40 ring-1 ring-sky-400/18",
+  },
+  {
+    value: "dead",
+    label: "代理失效",
+    itemInactiveClass: "text-rose-300/95 hover:bg-rose-500/[0.16]",
+    itemActiveClass: "bg-rose-500/20 text-rose-50 border border-rose-400/35 ring-1 ring-rose-400/18",
+  },
+];
+
+function proxyListStatusLabel(status) {
+  if (status === "idle") return "直连";
+  if (status === "used") return "已绑定";
+  if (status === "dead") return "代理失效";
+  return String(status || "—");
+}
+
+function countryFlagEmoji(code) {
+  const c = String(code || "").trim().toUpperCase();
+  if (c.length !== 2 || !/^[A-Z]{2}$/.test(c)) return "";
+  const cp = (ch) => 0x1f1e6 + (ch.charCodeAt(0) - 65);
+  return String.fromCodePoint(cp(c[0]), cp(c[1]));
+}
+
+function proxyCheckStatusUi(checkStatus) {
+  const s = String(checkStatus || "unknown").toLowerCase();
+  if (s === "ok") return { emoji: "🟢", label: "正常", cls: "text-emerald-300" };
+  if (s === "dead") return { emoji: "🔴", label: "代理失效", cls: "text-rose-300" };
+  return { emoji: "⚪", label: "未检测", cls: "text-slate-400" };
+}
 
 /** 玻璃基底（无纯白/纯黑底板） */
 const CARD_GLASS_CORE =
@@ -1191,7 +1246,38 @@ export default function App() {
   const [sidebarEchoTick, setSidebarEchoTick] = useState(0);
   const [taskHighlight, setTaskHighlight] = useState({ active: null, previous: null, connecting: null });
   const [groups, setGroups] = useState([]);
-  const [proxyData, setProxyData] = useState({ summary: { total: 0, idle: 0, used: 0, dead: 0 }, items: [] });
+  const [proxyData, setProxyData] = useState({
+    summary: {
+      account_total: 0,
+      accounts_with_proxy: 0,
+      accounts_direct: 0,
+      bound_dead_proxy_accounts: 0,
+    },
+    items: [],
+  });
+  const [proxyTableQuery, setProxyTableQuery] = useState("");
+  const [proxyTableStatusFilter, setProxyTableStatusFilter] = useState("all");
+  const [proxyTableSort, setProxyTableSort] = useState({ key: "phone", asc: true });
+  const [proxyPoolModalOpen, setProxyPoolModalOpen] = useState(false);
+  const [proxyMatchModalOpen, setProxyMatchModalOpen] = useState(false);
+  const [proxyPoolItems, setProxyPoolItems] = useState([]);
+  const [proxyPoolLoading, setProxyPoolLoading] = useState(false);
+  const [proxyPoolImportBusy, setProxyPoolImportBusy] = useState(false);
+  /** 代理池弹窗内可见的导入结果（Toast 曾被玻璃弹窗 z-index 挡住） */
+  const [proxyPoolImportNotice, setProxyPoolImportNotice] = useState(null);
+  const [proxyPoolDedupeBusy, setProxyPoolDedupeBusy] = useState(false);
+  const proxyPoolFileInputRef = useRef(null);
+  const [proxyCheckModalOpen, setProxyCheckModalOpen] = useState(false);
+  const [proxyCheckJobId, setProxyCheckJobId] = useState(null);
+  const [proxyCheckLogs, setProxyCheckLogs] = useState([]);
+  const [proxyCheckRunning, setProxyCheckRunning] = useState(false);
+  const proxyCheckLogEndRef = useRef(null);
+  const [matchUnbound, setMatchUnbound] = useState(true);
+  const [matchDeadProxy, setMatchDeadProxy] = useState(true);
+  const [matchRunning, setMatchRunning] = useState(false);
+  const [matchLogs, setMatchLogs] = useState("");
+  const matchAbortRef = useRef(null);
+  const proxyMatchLogEndRef = useRef(null);
   const [users, setUsers] = useState([]);
   const [accountPaths, setAccountPaths] = useState([]);
   const [showPathModal, setShowPathModal] = useState(false);
@@ -1312,6 +1398,57 @@ export default function App() {
 
   const isAdmin = useMemo(() => profile?.role === "admin", [profile]);
   const availableAccounts = useMemo(() => accounts.active || [], [accounts]);
+
+  const toggleProxyTableSort = useCallback((key) => {
+    setProxyTableSort((s) => (s.key === key ? { key, asc: !s.asc } : { key, asc: true }));
+  }, []);
+
+  const proxyStatusFilterTriggerClass = useMemo(() => {
+    const base =
+      "!rounded-[10px] border bg-[rgba(255,255,255,0.06)] px-3 py-2 text-slate-100 shadow-[0_4px_28px_rgba(0,0,0,0.35)] backdrop-blur-[18px] transition hover:bg-[rgba(255,255,255,0.09)] hover:shadow-[0_6px_32px_rgba(0,0,0,0.4)]";
+    if (proxyTableStatusFilter === "idle") return `${base} border-emerald-400/35 hover:border-emerald-400/50`;
+    if (proxyTableStatusFilter === "used") return `${base} border-sky-400/35 hover:border-sky-400/50`;
+    if (proxyTableStatusFilter === "dead") return `${base} border-rose-400/35 hover:border-rose-400/50`;
+    return `${base} border-white/[0.12] hover:border-cyan-400/40`;
+  }, [proxyTableStatusFilter]);
+
+  const proxyTableRows = useMemo(() => {
+    let rows = Array.isArray(proxyData.items) ? [...proxyData.items] : [];
+    const q = proxyTableQuery.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter(
+        (p) =>
+          String(p.phone || "")
+            .toLowerCase()
+            .includes(q) ||
+          String(p.proxy_value || "")
+            .toLowerCase()
+            .includes(q) ||
+          String(p.check_ip || "")
+            .toLowerCase()
+            .includes(q) ||
+          String(p.check_country || "")
+            .toLowerCase()
+            .includes(q) ||
+          String(p.check_city || "")
+            .toLowerCase()
+            .includes(q),
+      );
+    }
+    if (proxyTableStatusFilter !== "all") {
+      rows = rows.filter((p) => p.status === proxyTableStatusFilter);
+    }
+    const { key, asc } = proxyTableSort;
+    const mul = asc ? 1 : -1;
+    rows.sort((a, b) => {
+      const va = a[key] != null ? String(a[key]) : "";
+      const vb = b[key] != null ? String(b[key]) : "";
+      const cmp = va.localeCompare(vb, "zh-CN", { numeric: true, sensitivity: "base" });
+      if (cmp !== 0) return cmp * mul;
+      return (Number(a.id) - Number(b.id)) * mul;
+    });
+    return rows;
+  }, [proxyData.items, proxyTableQuery, proxyTableStatusFilter, proxyTableSort]);
 
   useEffect(() => {
     profileRef.current = profile;
@@ -1685,10 +1822,18 @@ export default function App() {
       setGroups(g.groups || []);
       setLastGroupMetadataSync(g.last_metadata_sync || null);
       setAccountPaths(ap.items || []);
-      setProxyData({
-        summary: p?.summary || { total: 0, idle: 0, used: 0, dead: 0 },
-        items: p?.items || [],
-      });
+      {
+        const ps = p?.summary || {};
+        setProxyData({
+          summary: {
+            account_total: ps.account_total ?? ps.total ?? 0,
+            accounts_with_proxy: ps.accounts_with_proxy ?? ps.used ?? 0,
+            accounts_direct: ps.accounts_direct ?? ps.idle ?? 0,
+            bound_dead_proxy_accounts: ps.bound_dead_proxy_accounts ?? 0,
+          },
+          items: p?.items || [],
+        });
+      }
       await loadCopyData();
       if (!silent) appendLog(isGuest ? "数据已刷新（游客预览，仅展示）" : "sync ok");
       return { syncOk };
@@ -2355,6 +2500,164 @@ export default function App() {
     await refreshBase();
   };
 
+  const loadProxyPool = useCallback(async () => {
+    if (profile?.role !== "admin") return;
+    setProxyPoolLoading(true);
+    try {
+      const d = await api.listProxyPool();
+      setProxyPoolItems(Array.isArray(d.items) ? d.items : []);
+    } catch (e) {
+      pushToast(e?.message || "加载代理池失败");
+      setProxyPoolItems([]);
+    } finally {
+      setProxyPoolLoading(false);
+    }
+  }, [profile?.role, pushToast]);
+
+  const onProxyPoolFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || profile?.role !== "admin") return;
+    setProxyPoolImportBusy(true);
+    setProxyPoolImportNotice(null);
+    try {
+      const r = await api.uploadProxyFile(file);
+      const n = Number(r?.imported_count ?? 0);
+      const scheduled = Number(r?.check_scheduled ?? 0);
+      const fmt = r?.format === "json" ? "JSON" : "文本";
+      let line =
+        n > 0
+          ? `导入成功（${fmt}）：新增 ${n} 条代理。`
+          : `导入已完成（${fmt}）：未新增条目。若文件有内容，多为格式不符、与库中重复，或空文件。`;
+      if (scheduled > 0) {
+        line += ` 已在后台排队检测出口 IP / 国家（${scheduled} 条），稍候点「刷新列表」查看。`;
+      }
+      setProxyPoolImportNotice({ variant: "ok", text: line });
+      pushToast(n > 0 ? `导入成功：新增 ${n} 条` : "导入完成：未新增条目（见弹窗说明）");
+      await loadProxyPool();
+      await refreshBase();
+    } catch (err) {
+      const msg = err?.message || "导入失败";
+      setProxyPoolImportNotice({ variant: "err", text: msg });
+      pushToast(msg);
+    } finally {
+      setProxyPoolImportBusy(false);
+    }
+  };
+
+  const onDedupeProxyPool = async () => {
+    if (!guardLoggedIn() || profile?.role !== "admin") return;
+    setProxyPoolDedupeBusy(true);
+    try {
+      const r = await api.dedupeProxyPool();
+      pushToast(`清洗完成，已移除重复 ${r?.removed ?? 0} 条`);
+      await loadProxyPool();
+      await refreshBase();
+    } catch (e) {
+      pushToast(e?.message || "清洗失败");
+    } finally {
+      setProxyPoolDedupeBusy(false);
+    }
+  };
+
+  const onStartProxyPoolCheck = async () => {
+    if (!guardLoggedIn()) return;
+    if ((profile?.role || "").toLowerCase() !== "admin") {
+      pushToast("需要管理员权限才能检测代理");
+      return;
+    }
+    try {
+      const r = await api.startProxyPoolCheck();
+      if (r.job_id) {
+        setProxyCheckLogs([]);
+        setProxyCheckRunning(true);
+        setProxyCheckJobId(r.job_id);
+        setProxyCheckModalOpen(true);
+        pushToast(`已开始检测 ${Number(r.count ?? 0)} 条代理…`);
+      } else {
+        pushToast(
+          r.message || "没有待检测的代理（均为「正常」或代理池为空）。仅会检测「未检测 / 失效」的条目。",
+        );
+      }
+    } catch (e) {
+      pushToast(e?.message || "启动检测失败");
+    }
+  };
+
+  const onStartProxyMatch = async () => {
+    if (!guardLoggedIn() || profile?.role !== "admin") return;
+    if (!matchUnbound && !matchDeadProxy) {
+      pushToast("请至少选择一类账号");
+      return;
+    }
+    const ac = new AbortController();
+    matchAbortRef.current = ac;
+    setMatchRunning(true);
+    setMatchLogs("");
+    try {
+      const data = await api.matchProxies(
+        { match_unbound: matchUnbound, match_dead_proxy: matchDeadProxy },
+        { signal: ac.signal },
+      );
+      setMatchLogs((data.logs || []).join("\n"));
+      pushToast(`匹配结束：成功分配 ${data.assigned_count ?? 0}（候选 ${data.candidates ?? 0}）`);
+      await refreshBase();
+    } catch (e) {
+      if (e?.name === "AbortError") {
+        setMatchLogs((prev) => `${prev ? `${prev}\n` : ""}[已中止请求]`);
+      } else {
+        pushToast(e?.message || "匹配失败");
+      }
+    } finally {
+      matchAbortRef.current = null;
+      setMatchRunning(false);
+    }
+  };
+
+  const onStopProxyMatch = () => {
+    matchAbortRef.current?.abort();
+  };
+
+  useLayoutEffect(() => {
+    if (!proxyMatchModalOpen) return;
+    proxyMatchLogEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [matchLogs, proxyMatchModalOpen]);
+
+  useLayoutEffect(() => {
+    if (!proxyCheckModalOpen) return;
+    proxyCheckLogEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [proxyCheckLogs, proxyCheckModalOpen]);
+
+  useEffect(() => {
+    if (!proxyCheckModalOpen || !proxyCheckJobId) return undefined;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const st = await api.getProxyCheckJob(proxyCheckJobId);
+        if (cancelled) return;
+        setProxyCheckLogs(Array.isArray(st.logs) ? st.logs : []);
+        setProxyCheckRunning(!st.done);
+        if (st.done) {
+          try {
+            const d = await api.listProxyPool();
+            if (!cancelled) setProxyPoolItems(Array.isArray(d.items) ? d.items : []);
+          } catch {
+            /* ignore */
+          }
+          await refreshBaseRef.current({ skipMetadataSync: true, silent: true });
+        }
+      } catch {
+        if (!cancelled) setProxyCheckRunning(false);
+      }
+    };
+    poll();
+    const t = window.setInterval(poll, 400);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [proxyCheckModalOpen, proxyCheckJobId]);
+
   const onChangeRole = async (id, role) => {
     if (!guardLoggedIn()) return;
     await api.updateUserRole(id, role);
@@ -2732,7 +3035,8 @@ export default function App() {
         <nav className="growth-scroll flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3">
           {menus
             .filter((m) => {
-              if (m === "用户管理" || m === "代理监控") return isAdmin;
+              /* 仅「用户管理」隐藏非管理员；「代理监控」全员可见（页内操作仍受 isAdmin 限制） */
+              if (m === "用户管理") return isAdmin;
               return true;
             })
             .map((m) => (
@@ -3569,73 +3873,227 @@ export default function App() {
         {tab === "代理监控" && (
           <div className="space-y-5">
             <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
-              <StatTileLg title="代理总数" value={proxyData.summary.total} icon={Network} tone="info" />
-              <StatTileLg title="已使用数量" value={proxyData.summary.used} icon={Activity} tone="growth" />
-              <StatTileLg title="空闲数量" value={proxyData.summary.idle} icon={Server} tone="info" />
-              <StatTileLg title="失效数量" value={proxyData.summary.dead} icon={XCircle} tone="risk" />
+              <StatTileLg title="账号总数" value={proxyData.summary.account_total} icon={Users} tone="info" />
+              <StatTileLg title="已绑定代理" value={proxyData.summary.accounts_with_proxy} icon={Activity} tone="growth" />
+              <StatTileLg title="直连（未绑代理）" value={proxyData.summary.accounts_direct} icon={Server} tone="info" />
+              <StatTileLg
+                title="绑定但代理已失效"
+                value={proxyData.summary.bound_dead_proxy_accounts}
+                icon={XCircle}
+                tone="risk"
+              />
             </div>
-            <Card title="代理列表" accent="log">
+            <p className="text-xs leading-relaxed text-slate-500">
+              统计按<strong className="font-medium text-slate-400">账号</strong>维度：已绑定代理指非直连；最后一项仅含「已关联代理记录且该代理在库中为
+              <span className="font-mono text-slate-400"> dead </span>
+              （例如已点「标记失效」）」的账号数，与账号风控状态无关。
+            </p>
+            <Card
+              title="代理列表"
+              accent="log"
+              right={
+                isAdmin ? (
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProxyPoolModalOpen(true);
+                        loadProxyPool();
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-[10px] border border-cyan-400/35 bg-cyan-500/[0.12] px-3 py-1.5 text-xs font-semibold text-cyan-100 shadow-[0_0_18px_rgba(34,211,238,0.18)] backdrop-blur-[12px] transition hover:border-cyan-400/55 hover:bg-cyan-500/18 hover:shadow-[0_0_24px_rgba(34,211,238,0.28)]"
+                    >
+                      <Database className="h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />
+                      代理池
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onStartProxyPoolCheck}
+                      className="inline-flex items-center gap-1.5 rounded-[10px] border border-emerald-400/35 bg-emerald-500/[0.12] px-3 py-1.5 text-xs font-semibold text-emerald-100 shadow-[0_0_18px_rgba(52,211,153,0.18)] backdrop-blur-[12px] transition hover:border-emerald-400/55 hover:bg-emerald-500/18 hover:shadow-[0_0_24px_rgba(52,211,153,0.26)]"
+                    >
+                      <Radar className="h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />
+                      检测代理
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProxyMatchModalOpen(true)}
+                      className="inline-flex items-center gap-1.5 rounded-[10px] border border-violet-400/35 bg-violet-500/[0.12] px-3 py-1.5 text-xs font-semibold text-violet-100 shadow-[0_0_18px_rgba(139,92,246,0.2)] backdrop-blur-[12px] transition hover:border-violet-400/55 hover:bg-violet-500/18 hover:shadow-[0_0_24px_rgba(139,92,246,0.3)]"
+                    >
+                      <Cpu className="h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />
+                      匹配引擎
+                    </button>
+                  </div>
+                ) : null
+              }
+            >
+              <input
+                ref={proxyPoolFileInputRef}
+                type="file"
+                accept=".txt,.text,.json,text/plain,application/json"
+                className="sr-only"
+                aria-hidden
+                onChange={onProxyPoolFileSelected}
+              />
               {!isAdmin ? <p className="mb-3 text-sm text-slate-500">当前为只读视图（管理员可操作代理）</p> : null}
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+                <label className="flex min-w-[12rem] flex-1 flex-col gap-1">
+                  <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500">搜索</span>
+                  <input
+                    type="search"
+                    value={proxyTableQuery}
+                    onChange={(e) => setProxyTableQuery(e.target.value)}
+                    placeholder="手机号或代理值…"
+                    className="rounded-lg border border-white/[0.1] bg-white/[0.04] px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-cyan-500/40"
+                  />
+                </label>
+                <div className="flex w-full min-w-[14rem] max-w-[18rem] flex-col gap-1">
+                  <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500">状态筛选</span>
+                  <GlassDropdown
+                    value={proxyTableStatusFilter}
+                    onChange={setProxyTableStatusFilter}
+                    options={PROXY_STATUS_FILTER_OPTIONS}
+                    placeholder="全部"
+                    triggerPrefix="状态："
+                    triggerClassName={proxyStatusFilterTriggerClass}
+                    menuClassName="!rounded-[10px]"
+                    className="w-full"
+                  />
+                </div>
+              </div>
               <div className={TABLE_WRAP}>
-                <table className="w-full border-separate border-spacing-0 text-sm">
+                <table className="w-full min-w-[1000px] border-separate border-spacing-0 text-sm">
                   <thead className="border-b border-white/[0.06] bg-[rgba(255,255,255,0.04)] text-left text-[11px] font-medium uppercase tracking-wider text-slate-400">
                     <tr>
-                      <th className="px-3 py-3">手机号</th>
-                      <th className="px-3 py-3">代理类型</th>
-                      <th className="px-3 py-3">代理值</th>
-                      <th className="px-3 py-3">状态</th>
+                      <th className="px-3 py-3">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-white/[0.06] hover:text-slate-200"
+                          onClick={() => toggleProxyTableSort("phone")}
+                        >
+                          手机号
+                          {proxyTableSort.key === "phone" ? (
+                            <span className="font-mono text-[10px] text-cyan-400/90">{proxyTableSort.asc ? "↑" : "↓"}</span>
+                          ) : null}
+                        </button>
+                      </th>
+                      <th className="px-3 py-3">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-white/[0.06] hover:text-slate-200"
+                          onClick={() => toggleProxyTableSort("proxy_type")}
+                        >
+                          代理类型
+                          {proxyTableSort.key === "proxy_type" ? (
+                            <span className="font-mono text-[10px] text-cyan-400/90">{proxyTableSort.asc ? "↑" : "↓"}</span>
+                          ) : null}
+                        </button>
+                      </th>
+                      <th className="px-3 py-3">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-white/[0.06] hover:text-slate-200"
+                          onClick={() => toggleProxyTableSort("proxy_value")}
+                        >
+                          代理值
+                          {proxyTableSort.key === "proxy_value" ? (
+                            <span className="font-mono text-[10px] text-cyan-400/90">{proxyTableSort.asc ? "↑" : "↓"}</span>
+                          ) : null}
+                        </button>
+                      </th>
+                      <th className="px-3 py-3 whitespace-nowrap">出口 IP</th>
+                      <th className="px-3 py-3 whitespace-nowrap">国家</th>
+                      <th className="px-3 py-3 whitespace-nowrap">城市</th>
+                      <th className="px-3 py-3 whitespace-nowrap">检测</th>
+                      <th className="px-3 py-3">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-white/[0.06] hover:text-slate-200"
+                          onClick={() => toggleProxyTableSort("status")}
+                        >
+                          状态
+                          {proxyTableSort.key === "status" ? (
+                            <span className="font-mono text-[10px] text-cyan-400/90">{proxyTableSort.asc ? "↑" : "↓"}</span>
+                          ) : null}
+                        </button>
+                      </th>
                       <th className="px-3 py-3">操作</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {proxyData.items.map((p) => (
-                      <tr
-                        key={p.id}
-                        className="border-t border-white/[0.06] transition-colors duration-150 first:border-t-0 hover:bg-white/[0.04]"
-                      >
-                        <td className="px-3 py-2.5 text-slate-200">{p.phone || "-"}</td>
-                        <td className="px-3 py-2.5 text-slate-400">
-                          <span className="inline-flex items-center gap-1.5">
-                            <Globe className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
-                            {p.proxy_type || "-"}
-                          </span>
-                        </td>
-                        <td className="max-w-[380px] truncate px-3 py-2.5 font-log text-xs text-slate-500">{p.proxy_value || "-"}</td>
-                        <td className="px-3 py-2.5">
-                          <span
-                            className={`rounded-lg border px-2 py-0.5 text-xs font-medium ${
-                              p.status === "idle"
-                                ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-300"
-                                : p.status === "used"
-                                  ? "border-cyan-400/35 bg-cyan-500/10 text-cyan-200"
-                                  : "border-rose-400/35 bg-rose-500/10 text-rose-300"
-                            }`}
-                          >
-                            {p.status}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2 py-1 text-xs font-medium text-rose-300 transition hover:-translate-y-0.5 hover:shadow-[0_0_14px_rgba(251,113,133,0.2)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
-                              onClick={() => p.proxy_id && onMarkProxyDead(p.proxy_id)}
-                              disabled={!p.proxy_id || !isAdmin}
-                            >
-                              标记失效
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-200 transition hover:-translate-y-0.5 hover:shadow-[0_0_14px_rgba(251,191,36,0.15)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
-                              onClick={() => p.proxy_id && onUnbindProxy(p.proxy_id)}
-                              disabled={!p.proxy_id || !isAdmin}
-                            >
-                              解绑账号
-                            </button>
-                          </div>
+                    {proxyTableRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="px-3 py-10 text-center text-sm text-slate-500">
+                          没有符合当前筛选/搜索条件的记录
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      proxyTableRows.map((p) => (
+                        <tr
+                          key={p.id}
+                          className="border-t border-white/[0.06] transition-colors duration-150 first:border-t-0 hover:bg-white/[0.04]"
+                        >
+                          <td className="px-3 py-2.5 text-slate-200">{p.phone || "-"}</td>
+                          <td className="px-3 py-2.5 text-slate-400">
+                            <span className="inline-flex items-center gap-1.5">
+                              <Globe className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
+                              {p.proxy_type || "-"}
+                            </span>
+                          </td>
+                          <td className="max-w-[380px] truncate px-3 py-2.5 font-log text-xs text-slate-500">{p.proxy_value || "-"}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs text-slate-400">{p.check_ip || "—"}</td>
+                          <td className="max-w-[10rem] truncate px-3 py-2.5 text-xs text-slate-300" title={p.check_country || ""}>
+                            <span className="mr-1" aria-hidden>
+                              {countryFlagEmoji(p.country_code)}
+                            </span>
+                            {p.check_country || "—"}
+                          </td>
+                          <td className="max-w-[8rem] truncate px-3 py-2.5 text-xs text-slate-400">{p.check_city || "—"}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5 text-xs">
+                            {(() => {
+                              const u = proxyCheckStatusUi(p.check_status);
+                              return (
+                                <span className={`inline-flex items-center gap-1 font-medium ${u.cls}`}>
+                                  <span aria-hidden>{u.emoji}</span>
+                                  {u.label}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span
+                              className={`rounded-lg border px-2 py-0.5 text-xs font-medium ${
+                                p.status === "idle"
+                                  ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-300"
+                                  : p.status === "used"
+                                    ? "border-sky-400/35 bg-sky-500/10 text-sky-200"
+                                    : "border-rose-400/35 bg-rose-500/10 text-rose-300"
+                              }`}
+                            >
+                              {proxyListStatusLabel(p.status)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2 py-1 text-xs font-medium text-rose-300 transition hover:-translate-y-0.5 hover:shadow-[0_0_14px_rgba(251,113,133,0.2)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
+                                onClick={() => p.proxy_id && onMarkProxyDead(p.proxy_id)}
+                                disabled={!p.proxy_id || !isAdmin}
+                              >
+                                标记失效
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-200 transition hover:-translate-y-0.5 hover:shadow-[0_0_14px_rgba(251,191,36,0.15)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
+                                onClick={() => p.proxy_id && onUnbindProxy(p.proxy_id)}
+                                disabled={!p.proxy_id || !isAdmin}
+                              >
+                                解绑账号
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -4593,7 +5051,7 @@ export default function App() {
 
       {createPortal(
         <div
-          className="pointer-events-none fixed right-4 top-20 z-[10050] flex w-[min(22rem,calc(100vw-2rem))] flex-col items-end gap-2 sm:right-6 sm:top-24"
+          className="pointer-events-none fixed right-4 top-20 z-[10500] flex w-[min(22rem,calc(100vw-2rem))] flex-col items-end gap-2 sm:right-6 sm:top-24"
           aria-live="polite"
         >
           {toasts.map((t) => (
@@ -4608,6 +5066,50 @@ export default function App() {
         </div>,
         document.body,
       )}
+
+      <ProxyPoolGlassModal
+        open={proxyPoolModalOpen && isAdmin}
+        onClose={() => {
+          setProxyPoolImportNotice(null);
+          setProxyPoolModalOpen(false);
+        }}
+        items={proxyPoolItems}
+        loading={proxyPoolLoading}
+        onReload={loadProxyPool}
+        onImportClick={() => proxyPoolFileInputRef.current?.click()}
+        importBusy={proxyPoolImportBusy}
+        dedupeBusy={proxyPoolDedupeBusy}
+        onDedupe={onDedupeProxyPool}
+        importNotice={proxyPoolImportNotice}
+      />
+      <ProxyCheckGlassModal
+        open={proxyCheckModalOpen && isAdmin}
+        onClose={() => {
+          setProxyCheckModalOpen(false);
+          setProxyCheckJobId(null);
+          setProxyCheckLogs([]);
+          setProxyCheckRunning(false);
+        }}
+        running={proxyCheckRunning}
+        logs={proxyCheckLogs}
+        logEndRef={proxyCheckLogEndRef}
+      />
+      <ProxyMatchGlassModal
+        open={proxyMatchModalOpen && isAdmin}
+        onClose={() => {
+          if (matchRunning) return;
+          setProxyMatchModalOpen(false);
+        }}
+        matchUnbound={matchUnbound}
+        setMatchUnbound={setMatchUnbound}
+        matchDeadProxy={matchDeadProxy}
+        setMatchDeadProxy={setMatchDeadProxy}
+        onStartMatch={onStartProxyMatch}
+        onStopMatch={onStopProxyMatch}
+        matchRunning={matchRunning}
+        logs={matchLogs}
+        logEndRef={proxyMatchLogEndRef}
+      />
 
       <AuthModal
         open={authModalOpen}

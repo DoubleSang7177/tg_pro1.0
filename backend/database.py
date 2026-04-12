@@ -92,6 +92,26 @@ def _ensure_users_avatar_url() -> None:
             conn.execute(text("ALTER TABLE users ADD COLUMN avatar_url VARCHAR(512)"))
 
 
+def _ensure_proxies_check_columns() -> None:
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(proxies)")).fetchall()
+        if not rows:
+            return
+        col_names = {r[1] for r in rows}
+        if "proxy_ip" not in col_names:
+            conn.execute(text("ALTER TABLE proxies ADD COLUMN proxy_ip VARCHAR(64)"))
+        if "proxy_country" not in col_names:
+            conn.execute(text("ALTER TABLE proxies ADD COLUMN proxy_country VARCHAR(128)"))
+        if "proxy_city" not in col_names:
+            conn.execute(text("ALTER TABLE proxies ADD COLUMN proxy_city VARCHAR(128)"))
+        if "proxy_country_code" not in col_names:
+            conn.execute(text("ALTER TABLE proxies ADD COLUMN proxy_country_code VARCHAR(4)"))
+        if "proxy_status" not in col_names:
+            conn.execute(
+                text("ALTER TABLE proxies ADD COLUMN proxy_status VARCHAR(16) NOT NULL DEFAULT 'unknown'")
+            )
+
+
 def _ensure_copy_tasks_owner_id() -> None:
     """旧库 copy_tasks 可能无 owner_id，补列并默认归到用户 id=1（通常为 admin）。"""
     with engine.begin() as conn:
@@ -111,3 +131,4 @@ def init_db() -> None:
     _ensure_copy_bots_session_name()
     _ensure_users_avatar_url()
     _ensure_copy_tasks_owner_id()
+    _ensure_proxies_check_columns()

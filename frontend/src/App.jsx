@@ -45,6 +45,7 @@ import { EngagementGroupPanel } from "./components/EngagementGroupPanel";
 import { ProxyCheckGlassModal, ProxyMatchGlassModal, ProxyPoolGlassModal } from "./components/ProxyGlassModals";
 import { UiSpinner } from "./components/UiSpinner";
 import { UserAccountDock } from "./components/UserAccountDock";
+import { SessionLogParticleBackdrop } from "./components/SessionLogParticleBackdrop";
 
 const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "消息Copy", "用户管理"];
 
@@ -232,11 +233,6 @@ const BTN_PRIMARY =
 /** 用户列表 / 日志等区域：视口内可滚动高度 */
 const PANEL_SCROLL_MAX_H =
   "max-h-[calc(100vh-300px)] max-h-[calc(100dvh-300px)]";
-
-/** 用户增长页：session.log 滚动区上限 */
-const GROWTH_QUEUE_LOG_MAX_H = "max-h-[min(36rem,calc(100dvh-15rem))]";
-/** 账号队列：略高于日志区，补偿左侧上方（POOL + 执行状态）比右侧（统计 + 任务面板）矮，使两格外框底边对齐 */
-const GROWTH_ACCOUNTS_QUEUE_MAX_H = "max-h-[min(46rem,calc(100dvh-9rem))]";
 
 const GLASS_PANEL_GROWTH =
   "flex flex-col overflow-visible rounded-2xl border border-emerald-400/14 bg-[rgba(255,255,255,0.03)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(34,197,94,0.08)] backdrop-blur-[20px]";
@@ -1520,7 +1516,7 @@ function inferLogRowKind(message, type) {
   return "info";
 }
 
-function LogLineRow({ time, message, type }) {
+function LogLineRow({ time, message, type, isLatest }) {
   const termCls =
     type === "error"
       ? "terminal-log-line--error"
@@ -1538,7 +1534,7 @@ function LogLineRow({ time, message, type }) {
   else rowIcon = <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />;
   return (
     <div
-      className={`log-line terminal-log-line flex gap-2 border-b border-emerald-500/[0.07] py-2 font-log text-[11px] leading-6 ${termCls}`}
+      className={`log-line terminal-log-line flex gap-2 font-log text-[11px] leading-6 ${termCls}${isLatest ? " latest" : ""}`}
     >
       <span className="w-[76px] shrink-0 tabular-nums text-slate-500/80">{time}</span>
       {rowIcon}
@@ -3667,9 +3663,9 @@ export default function App() {
             />
 
             <div className="relative z-[1] flex flex-col gap-4 overflow-visible p-4 sm:p-5">
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(300px,340px)_minmax(0,1fr)] lg:items-start lg:gap-5">
-                {/* 左侧：统计 → 执行状态 → 账号队列（列表限高约一页，内部滚动） */}
-                <div className="order-1 flex min-h-0 flex-col gap-3 lg:order-none">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(300px,340px)_minmax(0,1fr)] lg:items-stretch lg:gap-5">
+                {/* 左侧：统计 → 执行状态 → 账号队列（与右侧同列高，队列区 flex 铺满 + 内部滚动） */}
+                <div className="order-1 flex h-full min-h-0 flex-col gap-3 lg:order-none">
                   <div className="shrink-0">
                     <AccountPoolNeonDistributionPanel
                       total_accounts={growthAccountPoolStats.total_accounts}
@@ -3684,7 +3680,9 @@ export default function App() {
                     taskRunning={taskRunning}
                     taskHighlight={taskHighlight}
                   />
-                  <div className={`${GLASS_PANEL_GROWTH} flex shrink-0 flex-col overflow-visible max-lg:min-h-[12.5rem]`}>
+                  <div
+                    className={`${GLASS_PANEL_GROWTH} min-h-0 flex-1 flex-col !overflow-hidden max-lg:min-h-[12.5rem]`}
+                  >
                     <div className={GLASS_PANEL_CHROME_GROWTH}>
                       <span className="h-2 w-2 rounded-full bg-rose-400 shadow-sm" />
                       <span className="h-2 w-2 rounded-full bg-amber-400 shadow-sm" />
@@ -3699,7 +3697,7 @@ export default function App() {
                     </p>
                     <div
                       id="accounts-queue"
-                      className={`growth-queue-scroll ${GROWTH_ACCOUNTS_QUEUE_MAX_H} min-h-[12rem] overflow-y-auto overflow-x-hidden px-3 py-2.5`}
+                      className="growth-queue-scroll max-lg:min-h-[12rem] min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2.5"
                     >
                       <div className="flex flex-col gap-2.5 pr-0.5">
                         {sidebarQueueAccounts.map((a) => {
@@ -3854,8 +3852,8 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 右侧：任务控制 + 实时日志（日志区限高约一页，内部滚动） */}
-                <div className="order-2 flex min-h-0 min-w-0 flex-col gap-3 lg:order-none lg:min-h-0">
+                {/* 右侧：任务控制 + 实时日志（与左侧同列高，日志区 flex 铺满 + 内部滚动） */}
+                <div className="order-2 flex h-full min-h-0 min-w-0 flex-col gap-3 lg:order-none">
                   <div className="flex shrink-0 flex-col gap-4">
                     <div className="grid shrink-0 grid-cols-3 gap-2 sm:gap-3">
                       <StatTile title="今日新增" value={stats.todayAdd} icon={TrendingUp} tone="growth" />
@@ -3984,8 +3982,8 @@ export default function App() {
                     </div>
                   </section>
                   </div>
-                  <div className="flex min-w-0 shrink-0 flex-col">
-                  <div className="flex shrink-0 flex-col overflow-visible rounded-2xl border border-blue-400/18 bg-[rgba(6,10,18,0.65)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_42px_rgba(59,130,246,0.12)] backdrop-blur-[18px] max-lg:min-h-[12rem]">
+                  <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-blue-400/18 bg-[rgba(6,10,18,0.65)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_42px_rgba(59,130,246,0.12)] backdrop-blur-[18px] max-lg:min-h-[12rem]">
                     <div className={GLASS_PANEL_CHROME_LOG}>
                       <span className="h-2 w-2 rounded-full bg-rose-400 shadow-sm" />
                       <span className="h-2 w-2 rounded-full bg-amber-400 shadow-sm" />
@@ -4005,8 +4003,13 @@ export default function App() {
                       aria-live="polite"
                       aria-relevant="additions"
                       onScroll={handleLogScroll}
-                      className={`session-log-panel growth-terminal-scroll terminal-log-body log-container ${GROWTH_QUEUE_LOG_MAX_H} min-h-[12rem] overflow-y-auto overflow-x-hidden font-log`}
+                      className="session-log-panel log-container growth-terminal-scroll terminal-log-body max-lg:min-h-[12rem] min-h-0 flex-1 overflow-y-auto overflow-x-hidden font-log"
                     >
+                      <div className="session-log-fx-stack" aria-hidden>
+                        <SessionLogParticleBackdrop />
+                        <div className="scan-line" />
+                        <div className="log-overlay" />
+                      </div>
                       <div
                         className="session-log-empty"
                         style={{ opacity: logs.length === 0 ? 1 : 0 }}
@@ -4014,9 +4017,15 @@ export default function App() {
                       >
                         <span>系统运行中 · 等待日志...</span>
                       </div>
-                      <div className="session-log-content px-3 py-2">
-                        {logs.map(({ id, time, message, type }) => (
-                          <LogLineRow key={id} time={time} message={message} type={type} />
+                      <div className="log-content session-log-content px-3 py-2">
+                        {logs.map(({ id, time, message, type }, idx) => (
+                          <LogLineRow
+                            key={id}
+                            time={time}
+                            message={message}
+                            type={type}
+                            isLatest={idx === logs.length - 1}
+                          />
                         ))}
                       </div>
                     </div>

@@ -1381,75 +1381,142 @@ body::after {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
-/* 用户增长 · SESSION.LOG 科技动态背景 + 网格 + 漂移光斑 */
-.session-log-panel {
+/* 用户增长 · SESSION.LOG：交易终端风（粒子 + 扫描光 + 遮罩 + 行态） */
+.session-log-panel.log-container {
   position: relative;
   isolation: isolate;
-  background: linear-gradient(180deg, rgba(10, 15, 25, 0.92), rgba(5, 10, 20, 0.97));
+  overflow-x: hidden;
+  background: linear-gradient(180deg, rgba(8, 14, 24, 0.96), rgba(4, 8, 18, 0.98));
   box-shadow:
-    inset 0 1px 0 rgba(52, 211, 153, 0.06),
-    inset 0 0 56px rgba(56, 189, 248, 0.06);
+    inset 0 1px 0 rgba(52, 211, 153, 0.05),
+    inset 0 0 48px rgba(56, 189, 248, 0.05);
 }
 
-.session-log-panel::before {
-  content: "";
+/* 视口内 FX 层（不随日志行增高，省性能） */
+.session-log-panel .session-log-fx-stack {
   position: absolute;
   inset: 0;
   z-index: 0;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: 40px 40px;
-  opacity: 0.32;
+  overflow: hidden;
   pointer-events: none;
 }
 
-.session-log-panel::after {
-  content: "";
+.session-log-particles {
   position: absolute;
   inset: 0;
   z-index: 0;
-  background: radial-gradient(
-    circle at 20% 30%,
-    rgba(80, 200, 255, 0.15),
-    transparent 40%
-  );
-  animation: session-log-glow-move 8s linear infinite;
-  pointer-events: none;
 }
 
-@keyframes session-log-glow-move {
+.session-log-particle {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(120, 200, 255, 0.55);
+  opacity: 0.3;
+  transform: translate3d(0, 0, 0);
+  animation: sessionLogParticleDrift linear infinite;
+}
+
+@keyframes sessionLogParticleDrift {
   0% {
-    transform: translate(0, 0);
+    transform: translate3d(0, 0, 0);
+    opacity: 0.22;
   }
   50% {
-    transform: translate(20px, -30px);
+    opacity: 0.32;
   }
   100% {
-    transform: translate(0, 0);
+    transform: translate3d(var(--session-log-p-dx, 24px), var(--session-log-p-dy, -36px), 0);
+    opacity: 0.22;
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .session-log-panel::after {
-    animation: none;
+.session-log-panel .scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 80px;
+  z-index: 1;
+  background: linear-gradient(to bottom, transparent, rgba(80, 200, 255, 0.08), transparent);
+  animation: scanMove 6s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes scanMove {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(200%);
   }
 }
 
-.session-log-panel .session-log-content {
-  position: relative;
+.session-log-panel .log-overlay {
+  position: absolute;
+  inset: 0;
   z-index: 2;
+  background: linear-gradient(to bottom, rgba(10, 20, 40, 0.6), rgba(10, 20, 40, 0.9));
+  pointer-events: none;
+}
+
+.session-log-panel .log-content {
+  position: relative;
+  z-index: 3;
 }
 
 .session-log-panel .session-log-empty {
   position: absolute;
   inset: 0;
-  z-index: 1;
+  z-index: 3;
   display: flex;
   align-items: center;
   justify-content: center;
   pointer-events: none;
   transition: opacity 0.3s ease;
+}
+
+.session-log-panel .log-line {
+  padding: 2px 6px;
+  margin-bottom: 1px;
+  border-radius: 3px;
+  border-bottom: none;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease;
+}
+
+.session-log-panel .log-line:hover {
+  background: rgba(80, 200, 255, 0.08);
+}
+
+.session-log-panel .log-line.latest {
+  background: linear-gradient(90deg, rgba(80, 200, 255, 0.15), transparent);
+  animation: flashIn 0.6s ease;
+}
+
+@keyframes flashIn {
+  from {
+    background: rgba(80, 200, 255, 0.3);
+  }
+  to {
+    background: linear-gradient(90deg, rgba(80, 200, 255, 0.15), transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-log-particle {
+    animation: none;
+    opacity: 0.22;
+  }
+
+  .session-log-panel .scan-line {
+    animation: none;
+    transform: translateY(30%);
+    opacity: 0.5;
+  }
+
+  .session-log-panel .log-line.latest {
+    animation: none;
+  }
 }
 
 .session-log-panel .session-log-empty span {
@@ -1755,19 +1822,19 @@ body::after {
 }
 
 .terminal-log-line--info {
-  color: rgb(125 211 252);
+  color: #7dd3fc;
 }
 
 .terminal-log-line--success {
-  color: rgb(74 222 128);
+  color: #4ade80;
 }
 
 .terminal-log-line--warn {
-  color: rgb(250 204 21);
+  color: #facc15;
 }
 
 .terminal-log-line--error {
-  color: rgb(251 113 133);
+  color: #f87171;
 }
 
 /* 账户活动流 · 新行滑入 */

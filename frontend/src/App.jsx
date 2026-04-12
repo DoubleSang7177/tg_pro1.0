@@ -485,7 +485,7 @@ function AccountPoolNeonDistributionPanel({
               )}
             </svg>
             <div
-              className="pointer-events-none absolute left-1/2 top-1/2 flex w-full max-w-[5.5rem] -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-1 text-center"
+              className="pointer-events-none absolute left-1/2 top-[46%] flex w-full max-w-[5.5rem] -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-0.5 text-center"
               aria-hidden
             >
               <span className="font-log text-[10px] font-medium uppercase tracking-[0.26em] text-slate-500/90">TOTAL</span>
@@ -635,9 +635,9 @@ function GrowthExecutionStatusModule({ selectedGroup, snapshot, taskRunning, tas
 
       <div className="relative z-[1] flex h-full min-h-0 flex-col overflow-hidden">
         <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] pb-2">
-          <h3 className="min-w-0 truncate text-[16px] font-bold uppercase tracking-[0.12em] text-slate-50">
+          <h4 className="task-control-panel-title min-w-0 shrink truncate">
             EXECUTION STATUS
-          </h3>
+          </h4>
           <div
             className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-0.5 transition-[box-shadow,border-color] duration-500 ${statusBadge.wrap}`}
           >

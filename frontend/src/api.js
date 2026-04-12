@@ -1,5 +1,17 @@
 export const BASE_URL = "http://localhost:8000";
 
+function jsonErrorMessage(data) {
+  let detail = data?.detail;
+  if (Array.isArray(detail)) {
+    detail = detail
+      .map((item) => item?.msg || JSON.stringify(item))
+      .join("; ");
+  } else if (detail && typeof detail === "object") {
+    detail = detail.msg || JSON.stringify(detail);
+  }
+  return detail || data?.message || "请求失败";
+}
+
 async function request(path, options = {}) {
   const token = localStorage.getItem("token") || "";
   const headers = {
@@ -15,15 +27,7 @@ async function request(path, options = {}) {
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    let detail = data?.detail;
-    if (Array.isArray(detail)) {
-      detail = detail
-        .map((item) => item?.msg || JSON.stringify(item))
-        .join("; ");
-    } else if (detail && typeof detail === "object") {
-      detail = detail.msg || JSON.stringify(detail);
-    }
-    throw new Error(detail || data?.message || "请求失败");
+    throw new Error(jsonErrorMessage(data));
   }
   return data;
 }
@@ -41,31 +45,51 @@ async function scraperPost(path, body) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    let detail = data?.detail;
-    if (Array.isArray(detail)) {
-      detail = detail.map((item) => item?.msg || JSON.stringify(item)).join("; ");
-    } else if (detail && typeof detail === "object") {
-      detail = detail.msg || JSON.stringify(detail);
-    }
-    return { ok: false, error: detail || data?.message || `HTTP ${res.status}` };
+    return { ok: false, error: jsonErrorMessage(data) || `HTTP ${res.status}` };
   }
   return data;
 }
 
 export const api = {
   login: (username, password) =>
-    request("/auth/login", {
+    request("/login", {
       method: "POST",
       body: JSON.stringify({ username, password }),
     }),
+  logout: () => request("/auth/logout", { method: "POST", body: "{}" }),
   me: () => request("/auth/me"),
   systemStatus: () => request("/"),
   listGroups: () => request("/groups"),
-  syncGroupMetadata: (payload = {}) =>
-    request("/groups/sync-metadata", {
+  /** Telegram 群组元数据同步；独立超时，避免阻塞整页刷新与登录后的数据加载 */
+  syncGroupMetadata: (payload = {}) => {
+    const force = Boolean(payload.force);
+    const timeoutMs =
+      typeof payload.timeoutMs === "number" && payload.timeoutMs > 0
+        ? payload.timeoutMs
+        : force
+          ? 180_000
+          : 120_000;
+    const token = localStorage.getItem("token") || "";
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    return fetch(`${BASE_URL}/groups/sync-metadata`, {
       method: "POST",
-      body: JSON.stringify({ force: Boolean(payload.force) }),
-    }),
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ force }),
+      signal: ctrl.signal,
+    })
+      .finally(() => clearTimeout(timer))
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(jsonErrorMessage(data));
+        }
+        return data;
+      });
+  },
   updateGroupLimit: (groupId, dailyLimit) =>
     request(`/groups/${groupId}/limit`, {
       method: "PUT",
@@ -154,6 +178,37 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ usernames: Array.isArray(usernames) ? usernames : [] }),
     }),
+  listCopyBots: () => request("/copy/bots"),
+  createCopyBot: (payload) =>
+    request("/copy/bots", {
+      method: "POST",
+      body: JSON.stringify({
+        api_id: Number(payload.api_id),
+        api_hash: String(payload.api_hash || "").trim(),
+        bot_token: String(payload.bot_token || "").trim(),
+      }),
+    }),
+  deleteCopyBot: (botId) => request(`/copy/bots/${Number(botId)}`, { method: "DELETE" }),
+  uploadCopyBotSession: (botId, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request(`/copy/bots/${Number(botId)}/session`, { method: "POST", body: form });
+  },
+  resetCopyBot: (botId) => request(`/copy/bots/${Number(botId)}/reset`, { method: "POST" }),
+  listCopyTasks: () => request("/copy/tasks"),
+  createCopyTask: (payload) =>
+    request("/copy/tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        source_channel: String(payload.source_channel || "").trim(),
+        target_channel: String(payload.target_channel || "").trim(),
+        bot_id: Number(payload.bot_id),
+      }),
+    }),
+  startCopyTask: (taskId) => request(`/copy/tasks/${Number(taskId)}/start`, { method: "POST" }),
+  pauseCopyTask: (taskId) => request(`/copy/tasks/${Number(taskId)}/pause`, { method: "POST" }),
+  deleteCopyTask: (taskId) => request(`/copy/tasks/${Number(taskId)}`, { method: "DELETE" }),
+  copyLogs: (limit = 200) => request(`/copy/logs?limit=${Number(limit)}`),
 };
 
 /** 携带 Token 下载采集结果 txt（浏览器保存文件，兼容旧版按文件名） */

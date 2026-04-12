@@ -12,15 +12,23 @@ from auth import require_user_or_admin
 from database import get_db
 from logger import get_logger
 from models import AccountFile, AccountPath, Proxy, User
-from services.account_status import ST_DAILY_LIMITED, ST_NORMAL, ST_RISK_SUSPECTED, recover_and_normalize
+from services.account_status import (
+    RECENT_SIDEBAR_SECONDS,
+    ST_COOLDOWN,
+    ST_DAILY_LIMITED,
+    ST_NORMAL,
+    ST_RISK_SUSPECTED,
+    lifecycle_ui_labels,
+    recover_and_normalize,
+)
 from services.daily_reset import perform_daily_reset_if_needed
+from services.account_activity_log import list_account_activity_for_user
 from services.proxy_service import assign_proxy_to_account
 
 
 router = APIRouter(tags=["accounts"])
 BASE_TDATA_DIR = Path(__file__).resolve().parent.parent / "data" / "tdata"
 log = get_logger("account")
-RECENT_LIMITED_SIDEBAR_SECONDS = 60
 
 
 def _safe_extract_zip(zip_path: Path, extract_to: Path) -> None:
@@ -58,6 +66,10 @@ def _account_payload(row: AccountFile, proxy_ip: str | None = None) -> dict:
         "limited_until": row.limited_until.isoformat() if row.limited_until else None,
         "login_fail_count": getattr(row, "login_fail_count", 0) or 0,
         "last_login_fail_at": row.last_login_fail_at.isoformat() if getattr(row, "last_login_fail_at", None) else None,
+        "status_changed_at": row.status_changed_at.isoformat() if getattr(row, "status_changed_at", None) else None,
+        "status_note": getattr(row, "status_note", None),
+        "lifecycle_primary": lifecycle_ui_labels(row.status, getattr(row, "status_note", None))[0],
+        "lifecycle_sub": lifecycle_ui_labels(row.status, getattr(row, "status_note", None))[1],
         "filename": row.filename,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
@@ -201,14 +213,14 @@ def list_accounts(
         proxy_map = {p.id: f"{p.host}:{p.port}" for p in proxy_rows}
     log.info("accounts list user_id=%s role=%s count=%s", user.id, user.role, len(rows))
     grouped = {"active": [], "limited": [], "banned": []}
-    recent_limited_sidebar: list[dict] = []
+    recent_sidebar_echo: list[dict] = []
     now_utc = datetime.now(timezone.utc)
     for row in rows:
         recover_and_normalize(row, now_utc)
         st = (row.status or ST_NORMAL).lower()
         if st == ST_NORMAL:
             bucket = "active"
-        elif st == ST_DAILY_LIMITED:
+        elif st in (ST_DAILY_LIMITED, ST_COOLDOWN):
             bucket = "limited"
         elif st == ST_RISK_SUSPECTED:
             bucket = "banned"
@@ -216,22 +228,30 @@ def list_accounts(
             bucket = "active"
         payload = _account_payload(row, proxy_map.get(row.proxy_id))
         grouped[bucket].append(payload)
-        if bucket == "limited":
-            last_u = _as_utc(row.last_used_time)
-            if last_u and (now_utc - last_u).total_seconds() <= RECENT_LIMITED_SIDEBAR_SECONDS:
-                recent_limited_sidebar.append({**payload, "sidebar_echo": True})
+        if st != ST_NORMAL:
+            changed = _as_utc(getattr(row, "status_changed_at", None))
+            if changed and (now_utc - changed).total_seconds() <= RECENT_SIDEBAR_SECONDS:
+                _, sub = lifecycle_ui_labels(row.status, getattr(row, "status_note", None))
+                recent_sidebar_echo.append({**payload, "sidebar_echo": True, "echo_label": sub})
     db.commit()
     flat_accounts = []
     for item in grouped["active"] + grouped["limited"] + grouped["banned"]:
         if item.get("formatted_phone"):
             flat_accounts.append(item["formatted_phone"])
+    activity_feed = list_account_activity_for_user(
+        viewer_id=user.id,
+        is_admin=user.role == "admin",
+        limit=15,
+    )
     return {
         "ok": True,
         "accounts": flat_accounts,
         "active": grouped["active"],
         "limited": grouped["limited"],
         "banned": grouped["banned"],
-        "recent_limited_sidebar": recent_limited_sidebar,
+        "recent_sidebar_echo": recent_sidebar_echo,
+        "recent_limited_sidebar": recent_sidebar_echo,
+        "activity_feed": activity_feed,
     }
 
 

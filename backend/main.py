@@ -8,8 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
-from auth import hash_password, require_admin
-from database import SessionLocal, init_db
+from auth import complete_login, hash_password, require_admin
+from database import SessionLocal, get_db, init_db
 from logger import get_logger, setup_logging
 from routes.account import router as account_router
 from routes.auth import router as auth_router
@@ -21,7 +21,10 @@ from routes.group import router as group_router
 from routes.proxy import router as proxy_router
 from routes.scraper import router as scraper_router
 from routes.interaction import router as interaction_router
+from routes.copy_forward import router as copy_forward_router
+from routes.auth import LoginRequest
 from models import Group, User
+from services.copy_forward_service import spawn_copy_forward_thread
 from config.groups import GROUPS
 
 
@@ -43,6 +46,7 @@ app.include_router(group_router)
 app.include_router(proxy_router)
 app.include_router(scraper_router)
 app.include_router(interaction_router)
+app.include_router(copy_forward_router)
 api_logger = get_logger("api")
 
 
@@ -115,11 +119,18 @@ def startup() -> None:
             db.close()
 
     threading.Thread(target=_background_group_metadata_sync, name="group-metadata-sync", daemon=True).start()
+    spawn_copy_forward_thread()
 
 
 @app.get("/")
 def root() -> dict:
     return {"status": "success", "message": "backend is running"}
+
+
+@app.post("/login")
+def login_root(payload: LoginRequest, db: Session = Depends(get_db)) -> dict:
+    """与 POST /auth/login 等价，返回 JWT token 与用户信息。"""
+    return complete_login(db, payload.username, payload.password)
 
 
 @app.get("/web", response_class=HTMLResponse)
@@ -148,15 +159,16 @@ def web_page() -> str:
     <script>
       let token = "";
       async function login() {
-        const resp = await fetch("/auth/login", {
+        const resp = await fetch("/login", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({username: u.value, password: p.value})
         });
         const data = await resp.json();
-        if (data.ok) {
+        if (data.ok && data.token) {
           token = data.token;
-          loginResult.textContent = "登录成功，角色: " + data.role;
+          const role = (data.user && data.user.role) || data.role || "";
+          loginResult.textContent = "登录成功，角色: " + role;
         } else {
           loginResult.textContent = "登录失败";
         }

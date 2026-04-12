@@ -17,16 +17,31 @@ from database import SessionLocal
 from logger import get_logger
 from models import AccountFile, Group, Proxy, Setting
 from services.account_status import (
+    ST_COOLDOWN,
     ST_DAILY_LIMITED,
     ST_NORMAL,
     ST_RISK_SUSPECTED,
-    is_risk_suspected,
+    login_fail_reason_cn,
+    mark_daily_limited,
+    mark_risk_login_failed,
+    mark_risk_session_or_auth,
     recover_and_normalize,
 )
+from services.account_activity_log import record_account_activity as _record_account_activity
 from services.task_progress import progress_append, progress_highlight_publish
 from services.task_run_control import task_run_should_continue
 
 log = get_logger("telegram_service")
+
+
+def _log_account_act(owner_id: int | None, phone: str | None, *, action: str, status: str, level: str) -> None:
+    try:
+        oid = int(owner_id) if owner_id is not None else 0
+        _record_account_activity(oid, phone, action=action, status=status, level=level)
+    except Exception:
+        log.debug("account activity record failed", exc_info=True)
+
+
 API_ID = int(os.getenv("TELEGRAM_API_ID", "20954937"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "d5a748cfdb420593307b5265c1864ba3")
 TELEGRAM_START_TIMEOUT = float(os.getenv("TELEGRAM_START_TIMEOUT", "45"))
@@ -320,6 +335,8 @@ async def sync_groups_metadata(owner_id: int | None, force: bool, db) -> dict[st
         recover_and_normalize(row, now_utc)
         if row.status == ST_RISK_SUSPECTED:
             continue
+        if row.status == ST_COOLDOWN:
+            continue
         if row.status == ST_DAILY_LIMITED:
             lu = row.limited_until
             if lu and lu.tzinfo is None:
@@ -356,8 +373,9 @@ async def sync_groups_metadata(owner_id: int | None, force: bool, db) -> dict[st
             proxy_label = "直连"
         login_ok = False
         max_att = TELEGRAM_LOGIN_MAX_RETRIES
+        last_login_err: str | None = None
         for attempt in range(1, max_att + 1):
-            ok, client, _ = await _single_login_attempt(
+            ok, client, err = await _single_login_attempt(
                 account,
                 session_name,
                 proxy_dict,
@@ -375,18 +393,27 @@ async def sync_groups_metadata(owner_id: int | None, force: bool, db) -> dict[st
                 used_phone = account.phone or ""
                 logs.append(f"[INFO] 使用账号 {account.phone} 同步群组元数据（第{attempt}次尝试成功）")
                 login_ok = True
+                _log_account_act(
+                    getattr(account, "owner_id", None) or 0,
+                    account.phone,
+                    action="登录",
+                    status="元数据同步·成功",
+                    level="success",
+                )
                 break
+            last_login_err = err
             account.login_fail_count = (account.login_fail_count or 0) + 1
             account.last_login_fail_at = datetime.now(timezone.utc)
             db.add(account)
         if not login_ok:
-            if is_risk_suspected(account):
-                account.status = ST_RISK_SUSPECTED
-                tag = "疑似风控"
-            else:
-                account.status = ST_DAILY_LIMITED
-                account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
-                tag = "当日受限"
+            mark_risk_login_failed(
+                account,
+                datetime.now(timezone.utc),
+                logger=log,
+                task_notify=_mlog,
+                status_reason_cn=login_fail_reason_cn(last_login_err),
+            )
+            tag = "疑似风控"
             logs.append(
                 f"[WARN] 账号 {account.phone} 登录失败（已达 {max_att} 次），标记为{tag}",
             )
@@ -395,6 +422,13 @@ async def sync_groups_metadata(owner_id: int | None, force: bool, db) -> dict[st
             logs.append("[INFO] 切换下一个账号（同步元数据）")
             db.add(account)
             client = None
+            _log_account_act(
+                getattr(account, "owner_id", None) or 0,
+                account.phone,
+                action="登录",
+                status=login_fail_reason_cn(last_login_err),
+                level="error",
+            )
             db.commit()
             continue
         db.commit()
@@ -475,6 +509,7 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
     groups = config.get("groups", [])
     users = config.get("users", [])
     owner_id = config.get("owner_id")
+    act_owner = int(owner_id) if owner_id is not None else 0
 
     if not isinstance(groups, list) or not groups:
         raise ValueError("groups 必须是非空列表")
@@ -552,6 +587,9 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
             if row.status == ST_RISK_SUSPECTED:
                 updated["banned"] += 1
                 continue
+            if row.status == ST_COOLDOWN:
+                updated["limited"] += 1
+                continue
             row_lu = _as_utc(row.limited_until)
             if row.status == ST_DAILY_LIMITED and row_lu and now_utc < row_lu:
                 updated["limited"] += 1
@@ -587,6 +625,9 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
             if account.status == ST_DAILY_LIMITED and acc_lu and now_utc < acc_lu:
                 account_idx += 1
                 continue
+            if account.status == ST_COOLDOWN:
+                account_idx += 1
+                continue
             if account.status == ST_RISK_SUSPECTED:
                 account_idx += 1
                 continue
@@ -594,9 +635,15 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                 account_idx += 1
                 continue
             if (account.today_used_count or 0) >= 3:
-                account.status = ST_DAILY_LIMITED
-                account.limited_until = now_utc + timedelta(hours=12)
+                mark_daily_limited(account, now_utc, logger=log, task_notify=tl)
                 db.add(account)
+                _log_account_act(
+                    act_owner,
+                    account.phone,
+                    action="执行",
+                    status="当日上限·受限",
+                    level="warn",
+                )
                 tl(f"账号 {account.phone} 达到当日阈值，标记为 daily_limited，切换下一个账号")
                 db.commit()
                 account_idx += 1
@@ -621,13 +668,14 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                     f"最多 {max_login_attempts} 次；超限跳过该号。",
                 )
                 login_ok = False
+                last_login_err: str | None = None
                 for attempt in range(1, max_login_attempts + 1):
                     if not task_run_should_continue():
                         user_stopped = True
                         tl("任务已中断")
                         tl("已停止")
                         break
-                    ok, client, _ = await _single_login_attempt(
+                    ok, client, err = await _single_login_attempt(
                         account,
                         session_name,
                         proxy_dict,
@@ -643,7 +691,9 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                         account.limited_until = None
                         db.add(account)
                         login_ok = True
+                        _log_account_act(act_owner, account.phone, action="登录", status="成功", level="success")
                         break
+                    last_login_err = err
                     account.login_fail_count = (account.login_fail_count or 0) + 1
                     account.last_login_fail_at = datetime.now(timezone.utc)
                     account.error_count = (account.error_count or 0) + 1
@@ -661,14 +711,21 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
 
                 if not login_ok:
                     highlight_connecting = None
-                    if is_risk_suspected(account):
-                        account.status = ST_RISK_SUSPECTED
-                        account.limited_until = None
-                        tag = "疑似风控"
-                    else:
-                        account.status = ST_DAILY_LIMITED
-                        account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
-                        tag = "当日受限"
+                    mark_risk_login_failed(
+                        account,
+                        datetime.now(timezone.utc),
+                        logger=log,
+                        task_notify=tl,
+                        status_reason_cn=login_fail_reason_cn(last_login_err),
+                    )
+                    _log_account_act(
+                        act_owner,
+                        account.phone,
+                        action="登录",
+                        status=login_fail_reason_cn(last_login_err),
+                        level="error",
+                    )
+                    tag = "疑似风控"
                     tl(
                         f"[WARN] 账号 {account.phone} 登录失败（已达 {max_login_attempts} 次），标记为{tag}",
                     )
@@ -705,6 +762,13 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                             highlight_previous = account.phone
                             highlight_active = None
                             th_pub()
+                            _log_account_act(
+                                act_owner,
+                                account.phone,
+                                action="入群",
+                                status="校验超时",
+                                level="warn",
+                            )
                             tl(
                                 f"账号 {account.phone} 登录失败：校验/加入群组超过 {int(TELEGRAM_ENSURE_GROUP_TIMEOUT)}s，"
                                 f"切换下一个账号",
@@ -715,6 +779,13 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
 
                         highlight_active = account.phone
                         th_pub()
+                        _log_account_act(
+                            act_owner,
+                            account.phone,
+                            action="执行",
+                            status="已入群·拉人中",
+                            level="info",
+                        )
                         tl(f"账号 {account.phone} 登录成功，开始处理用户队列")
                         switch_account = False
 
@@ -752,6 +823,8 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                     tl("任务已中断")
                                     tl("已停止")
                                     break
+                                account.invite_try_today = (account.invite_try_today or 0) + 1
+                                db.add(account)
                                 await client.add_chat_members(group.id, [user_obj.id])
                                 summary["success"] += 1
                                 account.status = ST_NORMAL
@@ -774,6 +847,13 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                 db.add(account)
                                 db.commit()
                                 user_idx += 1
+                                _log_account_act(
+                                    act_owner,
+                                    account.phone,
+                                    action="拉人",
+                                    status=f"成功 · {str(target_user)[:32]}",
+                                    level="success",
+                                )
                                 tl(f"用户 {target_user} 拉入群组 {default_group} 成功，开始执行 60 秒间隔（结束后再处理下一名）")
                                 t_wait = time.monotonic()
                                 if not await _sleep_while_running(60.0):
@@ -785,9 +865,17 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                 tl(f"60 秒间隔结束（实际等待 {waited}s），继续处理队列")
                                 skip_short_sleep = True
                                 if (account.today_used_count or 0) >= 3:
-                                    account.status = ST_DAILY_LIMITED
-                                    account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                                    mark_daily_limited(
+                                        account, datetime.now(timezone.utc), logger=log, task_notify=tl
+                                    )
                                     db.add(account)
+                                    _log_account_act(
+                                        act_owner,
+                                        account.phone,
+                                        action="执行",
+                                        status="当日阈值·受限",
+                                        level="warn",
+                                    )
                                     highlight_connecting = None
                                     highlight_previous = account.phone
                                     highlight_active = None
@@ -801,13 +889,28 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                 db.add(account)
                                 if reason in {"account_limited", "account_auth_failed"}:
                                     account.last_used_time = datetime.now(timezone.utc)
-                                    account.status = (
-                                        ST_DAILY_LIMITED if reason == "account_limited" else ST_RISK_SUSPECTED
-                                    )
                                     if reason == "account_limited":
-                                        account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                                        mark_daily_limited(
+                                            account, datetime.now(timezone.utc), logger=log, task_notify=tl
+                                        )
+                                        _log_account_act(
+                                            act_owner,
+                                            account.phone,
+                                            action="拉人",
+                                            status="账号受限",
+                                            level="warn",
+                                        )
                                     else:
-                                        account.limited_until = None
+                                        mark_risk_session_or_auth(
+                                            account, datetime.now(timezone.utc), logger=log, task_notify=tl
+                                        )
+                                        _log_account_act(
+                                            act_owner,
+                                            account.phone,
+                                            action="会话",
+                                            status="鉴权失败",
+                                            level="error",
+                                        )
                                     highlight_connecting = None
                                     highlight_previous = account.phone
                                     highlight_active = None
@@ -836,10 +939,24 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                     user_idx += 1
                                 elif reason == "user_issue":
                                     summary["failed"] += 1
+                                    _log_account_act(
+                                        act_owner,
+                                        account.phone,
+                                        action="拉人",
+                                        status=f"跳过 · 用户侧 · {str(target_user)[:24]}",
+                                        level="info",
+                                    )
                                     tl(f"用户 {target_user} 失败: 用户本身问题")
                                     user_idx += 1
                                 else:
                                     summary["failed"] += 1
+                                    _log_account_act(
+                                        act_owner,
+                                        account.phone,
+                                        action="拉人",
+                                        status=f"失败 · {reason}",
+                                        level="warn",
+                                    )
                                     tl(f"用户 {target_user} 失败: {reason} {exc}")
                                     user_idx += 1
                             finally:
@@ -862,11 +979,26 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                 account.error_count = (account.error_count or 0) + 1
                 if reason in {"account_limited", "account_auth_failed"}:
                     account.last_used_time = datetime.now(timezone.utc)
-                    account.status = ST_DAILY_LIMITED if reason == "account_limited" else ST_RISK_SUSPECTED
                     if reason == "account_limited":
-                        account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                        mark_daily_limited(account, datetime.now(timezone.utc), logger=log, task_notify=tl)
+                        _log_account_act(
+                            act_owner,
+                            account.phone,
+                            action="入群/登录",
+                            status="账号受限",
+                            level="warn",
+                        )
                     else:
-                        account.limited_until = None
+                        mark_risk_session_or_auth(
+                            account, datetime.now(timezone.utc), logger=log, task_notify=tl
+                        )
+                        _log_account_act(
+                            act_owner,
+                            account.phone,
+                            action="入群/登录",
+                            status="鉴权失败",
+                            level="error",
+                        )
                 highlight_previous = account.phone
                 highlight_active = None
                 if reason in {"account_limited", "account_auth_failed"}:

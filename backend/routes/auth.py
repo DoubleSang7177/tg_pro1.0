@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from auth import get_current_user, issue_token, verify_password
+from auth import complete_login, get_current_user
 from database import get_db
 from models import User
 
@@ -17,17 +17,19 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 def login(payload: LoginRequest, db: Session = Depends(get_db)) -> dict:
-    user = db.query(User).filter(User.username == payload.username).first()
-    if user is None or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    return complete_login(db, payload.username, payload.password)
 
-    token = issue_token()
-    user.token = token
-    db.add(user)
-    db.commit()
-    return {"ok": True, "token": token, "role": user.role, "username": user.username}
+
+@router.post("/logout")
+def logout(_user: User = Depends(get_current_user)) -> dict:
+    return {"ok": True, "message": "已登出"}
 
 
 @router.get("/me")
 def me(user: User = Depends(get_current_user)) -> dict:
-    return {"ok": True, "username": user.username, "role": user.role}
+    return {
+        "ok": True,
+        "username": user.username,
+        "role": user.role,
+        "user": {"username": user.username, "role": user.role},
+    }

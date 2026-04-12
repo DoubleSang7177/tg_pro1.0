@@ -3,14 +3,22 @@ from __future__ import annotations
 import asyncio
 import random
 import time as time_mod
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from pyrogram.errors import FloodWait, PeerFlood
 
 from database import SessionLocal
 from logger import get_logger
 from models import AccountFile, Group, InteractionTask, Proxy
-from services.account_status import ST_DAILY_LIMITED, ST_NORMAL, recover_and_normalize
+from services.account_activity_log import record_account_activity as _iag_activity
+from services.account_status import (
+    ST_DAILY_LIMITED,
+    ST_NORMAL,
+    login_fail_reason_cn,
+    mark_daily_limited,
+    mark_risk_login_failed,
+    recover_and_normalize,
+)
 from services.interaction_live_log import append as live_append
 from services.interaction_live_log import finalize as live_finalize
 from services.task_run_control import clear_interaction_job, task_run_should_continue, task_run_stop
@@ -27,6 +35,13 @@ from services.telegram_service import (
 )
 
 log = get_logger("interaction_service")
+
+
+def _interaction_activity(owner_id: int | None, phone: str | None, *, action: str, status: str, level: str) -> None:
+    try:
+        _iag_activity(int(owner_id or 0), phone, action=action, status=status, level=level)
+    except Exception:
+        log.debug("interaction activity log failed", exc_info=True)
 
 ENGAGEMENT_REACTIONS = ["❤️", "👍", "🔥", "🎉", "💯"]
 GROUP_GAP_MIN_SEC = 5
@@ -205,6 +220,7 @@ async def _run_interaction_task_async(task_id: int, job_id: str | None = None) -
             )
             client = None
             login_ok = False
+            last_login_err: str | None = None
             for attempt in range(1, max_login + 1):
                 if not task_run_should_continue():
                     mark_interrupted(pr_acc)
@@ -218,7 +234,7 @@ async def _run_interaction_task_async(task_id: int, job_id: str | None = None) -
                     layer="account",
                     progress=pr_acc,
                 )
-                ok, client, _ = await _single_login_attempt(
+                ok, client, err = await _single_login_attempt(
                     account,
                     session_name,
                     proxy_dict,
@@ -230,7 +246,15 @@ async def _run_interaction_task_async(task_id: int, job_id: str | None = None) -
                 )
                 if ok:
                     login_ok = True
+                    _interaction_activity(
+                        task_row.owner_id,
+                        account.phone,
+                        action="登录",
+                        status="互动·成功",
+                        level="success",
+                    )
                     break
+                last_login_err = err
                 db.refresh(account)
 
             if user_stopped:
@@ -242,6 +266,22 @@ async def _run_interaction_task_async(task_id: int, job_id: str | None = None) -
                 break
 
             if not login_ok:
+                mark_risk_login_failed(
+                    account,
+                    datetime.now(timezone.utc),
+                    logger=log,
+                    task_notify=tl,
+                    status_reason_cn=login_fail_reason_cn(last_login_err),
+                )
+                db.add(account)
+                db.commit()
+                _interaction_activity(
+                    task_row.owner_id,
+                    account.phone,
+                    action="登录",
+                    status=login_fail_reason_cn(last_login_err),
+                    level="error",
+                )
                 tl(f"[WARN] 跳过账号 {account.phone}（登录失败，已尝试 {max_login} 次）")
                 emit("warn", _mask_phone(account.phone), "—", "✕", "登录失败", layer="account", progress=pr_acc)
                 emit(
@@ -495,11 +535,16 @@ async def _run_interaction_task_async(task_id: int, job_id: str | None = None) -
                             succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
                     except PeerFlood:
                         succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
-                        account.status = ST_DAILY_LIMITED
-                        account.limited_until = datetime.now(timezone.utc) + timedelta(hours=12)
-                        account.last_used_time = datetime.now(timezone.utc)
+                        mark_daily_limited(account, datetime.now(timezone.utc), logger=log, task_notify=tl)
                         db.add(account)
                         db.commit()
+                        _interaction_activity(
+                            task_row.owner_id,
+                            account.phone,
+                            action="互动",
+                            status="PEER_FLOOD·当日受限",
+                            level="warn",
+                        )
                         tl(f"[WARN] PEER_FLOOD 账号 {account.phone}，已标记当日受限")
                         emit(
                             "error",

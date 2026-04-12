@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, Text, String
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, Text, String, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -39,6 +39,12 @@ class AccountFile(Base):
     limited_until = Column(DateTime(timezone=True), nullable=True)
     login_fail_count = Column(Integer, nullable=False, default=0)
     last_login_fail_at = Column(DateTime(timezone=True), nullable=True)
+    # 生命周期：状态变更时间（左侧队列 60s 提示）、拉人尝试/连续失败日、长期冷却轮次、冷却来源标记
+    status_changed_at = Column(DateTime(timezone=True), nullable=True)
+    invite_try_today = Column(Integer, nullable=False, default=0)
+    invite_fail_streak_days = Column(Integer, nullable=False, default=0)
+    cooldown_completed_count = Column(Integer, nullable=False, default=0)
+    status_note = Column(String(32), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
@@ -148,3 +154,59 @@ class InteractionTask(Base):
     fail_count = Column(Integer, nullable=False, default=0)
     scan_limit = Column(Integer, nullable=False, default=300)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class CopyBot(Base):
+    """Copy 转发：机器人库（Telethon 监听 + Bot API 发送）"""
+
+    __tablename__ = "copy_bots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    api_id = Column(Integer, nullable=False)
+    api_hash = Column(String(64), nullable=False)
+    bot_token = Column(String(256), nullable=False)
+    # Telethon 会话文件名（不含路径），对应文件 backend/sessions/{session_name}.session
+    session_name = Column(String(128), nullable=True)
+    status = Column(String(16), nullable=False, default="active")  # active / error
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    tasks = relationship("CopyTask", back_populates="bot")
+
+
+class CopyTask(Base):
+    """Copy 转发任务"""
+
+    __tablename__ = "copy_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    source_channel = Column(String(255), nullable=False)
+    target_channel = Column(String(255), nullable=False)
+    bot_id = Column(Integer, ForeignKey("copy_bots.id"), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="idle")  # idle / starting / running / paused / error
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+    total_forwarded = Column(Integer, nullable=False, default=0)
+    today_forwarded = Column(Integer, nullable=False, default=0)
+    stats_utc_date = Column(String(10), nullable=True)  # YYYY-MM-DD 用于重置今日计数
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    bot = relationship("CopyBot", back_populates="tasks")
+    forwards = relationship("ForwardRecord", back_populates="task", cascade="all, delete-orphan")
+
+
+class ForwardRecord(Base):
+    """已转发消息去重"""
+
+    __tablename__ = "forward_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("copy_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    message_hash = Column(String(128), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    task = relationship("CopyTask", back_populates="forwards")
+
+    __table_args__ = (UniqueConstraint("task_id", "message_hash", name="uq_forward_task_hash"),)

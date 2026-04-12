@@ -13,7 +13,7 @@
 body {
   @apply min-h-screen min-h-[100dvh] antialiased text-slate-200;
   position: relative;
-  background-color: #0b0f14;
+  background-color: #0b0f1a;
   background-image:
     radial-gradient(circle at 20% 20%, rgba(0, 150, 255, 0.15), transparent 55%),
     radial-gradient(circle at 80% 20%, rgba(0, 255, 200, 0.15), transparent 55%),
@@ -1269,4 +1269,120 @@ body::after {
 
 .growth-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 255, 180, 0.35);
+}
+
+/* 用户增长 · 账号队列 / 终端日志：更细的渐变滚动条 */
+.growth-queue-scroll,
+.growth-terminal-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(52, 211, 153, 0.35) rgba(255, 255, 255, 0.04);
+  scroll-behavior: smooth;
+}
+
+.growth-terminal-scroll {
+  scrollbar-color: rgba(56, 189, 248, 0.4) rgba(0, 0, 0, 0.35);
+}
+
+.growth-queue-scroll::-webkit-scrollbar,
+.growth-terminal-scroll::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.growth-queue-scroll::-webkit-scrollbar-track,
+.growth-terminal-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+}
+
+.growth-queue-scroll::-webkit-scrollbar-thumb {
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(52, 211, 153, 0.55), rgba(6, 182, 212, 0.45));
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.25);
+}
+
+.growth-terminal-scroll::-webkit-scrollbar-thumb {
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.55), rgba(99, 102, 241, 0.45));
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.2);
+}
+
+.growth-queue-scroll::-webkit-scrollbar-thumb:hover,
+.growth-terminal-scroll::-webkit-scrollbar-thumb:hover {
+  filter: brightness(1.15);
+}
+
+/* 实时日志 · 终端底 */
+.terminal-log-body {
+  background: linear-gradient(165deg, #05080f 0%, #0a1018 45%, #060912 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(52, 211, 153, 0.06),
+    inset 0 0 48px rgba(0, 175, 255, 0.04);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.terminal-log-line--info {
+  color: rgb(125 211 252);
+}
+
+.terminal-log-line--success {
+  color: rgb(74 222 128);
+}
+
+.terminal-log-line--warn {
+  color: rgb(250 204 21);
+}
+
+.terminal-log-line--error {
+  color: rgb(251 113 133);
+}
+
+/* 账户活动流 · 新行滑入 */
+@keyframes growth-exec-bar-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
+.growth-exec-progress-indeterminate {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 9999px;
+}
+
+.growth-exec-progress-indeterminate::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 42%;
+  height: 100%;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(34, 211, 238, 0.12),
+    rgba(34, 211, 238, 0.88),
+    rgba(167, 139, 250, 0.75),
+    transparent
+  );
+  animation: growth-exec-bar-slide 1.35s ease-in-out infinite;
+}
+
+@keyframes account-activity-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.account-activity-item--enter {
+  animation: account-activity-enter 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
 }

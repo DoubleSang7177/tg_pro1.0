@@ -12,6 +12,7 @@ import {
   Loader,
   MessageCircle,
   Network,
+  Repeat2,
   Server,
   Shield,
   Sparkles,
@@ -30,7 +31,7 @@ import { GlassDropdown } from "./components/GlassDropdown";
 import { EngagementGroupPanel } from "./components/EngagementGroupPanel";
 import { UiSpinner } from "./components/UiSpinner";
 
-const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "用户管理"];
+const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "消息Copy", "用户管理"];
 
 /** 玻璃基底（无纯白/纯黑底板） */
 const CARD_GLASS_CORE =
@@ -68,15 +69,9 @@ const BTN_SECONDARY =
 const BTN_PRIMARY =
   "rounded-xl bg-[linear-gradient(135deg,#00ff87,#60efff)] px-4 py-2 text-sm font-semibold text-slate-900 shadow-[0_0_20px_rgba(0,255,150,0.3),0_6px_20px_rgba(0,0,0,0.25)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_36px_rgba(0,255,180,0.48),0_10px_28px_rgba(96,239,255,0.28)] active:translate-y-0 active:shadow-[0_0_16px_rgba(0,255,150,0.28)]";
 
-/** 账号队列滚动区与终端日志滚动区统一高度 */
-const CONSOLE_PANEL_HEIGHT_PX = 500;
-
 /** 内嵌终端：用户增长队列 = 绿色光，实时日志 = 蓝色光 */
 const GLASS_PANEL_GROWTH =
   "flex flex-col overflow-hidden rounded-2xl border border-emerald-400/14 bg-[rgba(255,255,255,0.03)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(34,197,94,0.08)] backdrop-blur-[20px]";
-
-const GLASS_PANEL_LOG =
-  "flex flex-col overflow-hidden rounded-2xl border border-blue-400/14 bg-[rgba(255,255,255,0.03)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_42px_rgba(59,130,246,0.1)] backdrop-blur-[20px]";
 
 const GLASS_PANEL_CHROME_GROWTH =
   "flex shrink-0 items-center gap-2 border-b border-emerald-400/10 bg-emerald-500/[0.05] px-3 py-2 backdrop-blur-[12px]";
@@ -101,6 +96,32 @@ const SCRAPER_BTN_GLOW_BLOCK = `${SCRAPER_BTN_GLOW} w-full`;
 const SCRAPER_HISTORY_CARD =
   "group rounded-2xl border border-teal-400/14 bg-[rgba(255,255,255,0.03)] p-4 shadow-[0_8px_32px_rgba(0,0,0,0.38),0_0_40px_rgba(0,255,200,0.08),0_0_56px_rgba(34,211,238,0.06)] backdrop-blur-[20px] transition-all duration-[250ms] ease-out will-change-transform hover:-translate-y-0.5 hover:border-cyan-400/25 hover:shadow-[0_18px_48px_rgba(0,0,0,0.42),0_0_52px_rgba(45,212,191,0.14)] active:scale-[0.99]";
 
+/** 消息 Copy：紫罗兰科技光 */
+const COPY_PAGE =
+  "relative overflow-hidden rounded-2xl border border-violet-400/16 bg-[rgba(255,255,255,0.025)] p-5 shadow-[0_8px_40px_rgba(0,0,0,0.38),0_0_48px_rgba(139,92,246,0.1),0_0_64px_rgba(99,102,241,0.06)] backdrop-blur-[16px] sm:p-7";
+const COPY_GLASS_CARD = `${CARD_GLASS_CORE} border border-violet-400/14 p-5 shadow-[0_8px_32px_rgba(0,0,0,0.38),0_0_40px_rgba(139,92,246,0.09)] backdrop-blur-[20px] transition-all duration-[250ms] ease-out hover:-translate-y-0.5 hover:border-violet-400/26`;
+const COPY_FIELD = INPUT_FIELD;
+const COPY_BTN_GLOW_SM =
+  "inline-flex items-center justify-center gap-2 rounded-2xl bg-[linear-gradient(135deg,#a78bfa,#60efff)] px-3 py-2 text-xs font-semibold text-slate-900 shadow-[0_0_18px_rgba(167,139,250,0.35)] transition-all duration-[250ms] ease-out hover:-translate-y-0.5 hover:shadow-[0_0_28px_rgba(96,239,255,0.35)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0";
+
+function mergeCopyTaskIntoList(prev, patch) {
+  if (!patch || patch.id == null) return prev;
+  const i = prev.findIndex((x) => x.id === patch.id);
+  if (i < 0) return prev;
+  const next = [...prev];
+  next[i] = { ...next[i], ...patch };
+  return next;
+}
+
+/** 服务端 status + 点击启动后的乐观 starting */
+function resolveCopyDisplayStatus(task, optimisticStartIds) {
+  const st = (task.status || "").toLowerCase();
+  if (st === "starting") return "starting";
+  if (optimisticStartIds[task.id] && st !== "running" && st !== "error" && st !== "paused") return "starting";
+  if (st === "running" || st === "paused" || st === "error") return st;
+  return "idle";
+}
+
 /** 最多保留日志条数（FIFO 丢弃最早） */
 const MAX_LOG_ENTRIES = 500;
 /** 距底部小于等于该像素视为「在底部」，恢复自动跟随滚动 */
@@ -118,6 +139,7 @@ const MENU_ICONS = {
   群组互动: MessageCircle,
   代理监控: Network,
   用户采集: UserSearch,
+  消息Copy: Repeat2,
   用户管理: UserCog,
 };
 
@@ -134,6 +156,7 @@ const TAB_HEADER_ICONS = {
   群组互动: MessageCircle,
   代理监控: Network,
   用户采集: UserSearch,
+  消息Copy: Repeat2,
   用户管理: UserCog,
 };
 
@@ -189,6 +212,371 @@ function StatTileLg({ title, value, icon: Icon, tone = "growth" }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** 圆环扇区路径：角度自正上方起顺时针（度） */
+function donutSegmentPath(cx, cy, rInner, rOuter, deg0, deg1) {
+  const rad = Math.PI / 180;
+  const p = (r, d) => {
+    const a = (d - 90) * rad;
+    return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+  };
+  const o0 = p(rOuter, deg0);
+  const o1 = p(rOuter, deg1);
+  const i1 = p(rInner, deg1);
+  const i0 = p(rInner, deg0);
+  const sweep = deg1 - deg0;
+  const large = sweep > 180 ? 1 : 0;
+  return `M ${o0.x} ${o0.y} A ${rOuter} ${rOuter} 0 ${large} 1 ${o1.x} ${o1.y} L ${i1.x} ${i1.y} A ${rInner} ${rInner} 0 ${large} 0 ${i0.x} ${i0.y} Z`;
+}
+
+/**
+ * 用户增长 · 左侧账号池分布（纯展示：Donut + 横向比例条）
+ * 数据：total_accounts / active_accounts / limited_accounts / risk_accounts
+ */
+function AccountPoolNeonDistributionPanel({
+  total_accounts,
+  active_accounts,
+  limited_accounts,
+  risk_accounts,
+}) {
+  const [hoverKey, setHoverKey] = useState(null);
+  const total = total_accounts;
+  const active = active_accounts;
+  const limited = limited_accounts;
+  const risk = risk_accounts;
+
+  const pct = (n) => (total > 0 ? (n / total) * 100 : 0);
+  const pctStr = (n) => (total > 0 ? ((n / total) * 100).toFixed(1) : "0.0");
+
+  const segments = useMemo(() => {
+    if (total <= 0) return [];
+    let a = 0;
+    const out = [];
+    const push = (key, count, fill, glow) => {
+      if (count <= 0) return;
+      const span = (count / total) * 360;
+      const d0 = a;
+      const d1 = a + span;
+      out.push({
+        key,
+        d: donutSegmentPath(50, 50, 28, 42, d0, d1),
+        fill,
+        glow,
+        count,
+      });
+      a = d1;
+    };
+    push("active", active, "url(#poolGradActive)", "rgba(52,211,153,0.55)");
+    push("limited", limited, "url(#poolGradLimited)", "rgba(250,204,21,0.5)");
+    push("risk", risk, "url(#poolGradRisk)", "rgba(251,113,133,0.55)");
+    return out;
+  }, [total, active, limited, risk]);
+
+  const rows = [
+    {
+      key: "active",
+      zh: "可用",
+      en: "AVAILABLE",
+      value: active,
+      pct: pct(active),
+      barClass: "bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-400",
+      barGlow: "shadow-[0_0_12px_rgba(52,211,153,0.45)]",
+      numClass: "text-emerald-300",
+    },
+    {
+      key: "limited",
+      zh: "受限",
+      en: "LIMITED",
+      value: limited,
+      pct: pct(limited),
+      barClass: "bg-gradient-to-r from-amber-400 via-yellow-300 to-orange-400",
+      barGlow: "shadow-[0_0_12px_rgba(250,204,21,0.4)]",
+      numClass: "text-amber-300",
+    },
+    {
+      key: "risk",
+      zh: "风控",
+      en: "RISK",
+      value: risk,
+      pct: pct(risk),
+      barClass: "bg-gradient-to-r from-rose-500 via-fuchsia-500 to-violet-500",
+      barGlow: "shadow-[0_0_12px_rgba(251,113,133,0.45)]",
+      numClass: "text-rose-300",
+    },
+  ];
+
+  return (
+    <div
+      className="relative flex h-[240px] max-h-[260px] min-h-[200px] w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-cyan-500/15 bg-[linear-gradient(145deg,rgba(6,10,20,0.92)_0%,rgba(8,14,28,0.88)_45%,rgba(10,8,22,0.9)_100%)] shadow-[0_0_1px_rgba(0,255,200,0.12),0_8px_40px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-[20px]"
+      aria-label="账号池分布"
+    >
+      <div
+        className="pointer-events-none absolute -left-16 top-1/2 h-48 w-48 -translate-y-1/2 rounded-full bg-emerald-500/10 blur-[64px]"
+        aria-hidden
+      />
+      <div
+        className="pointer-events-none absolute -right-12 -top-8 h-40 w-40 rounded-full bg-fuchsia-500/10 blur-[56px]"
+        aria-hidden
+      />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/35 to-transparent" aria-hidden />
+
+      <div className="relative z-[1] flex min-h-0 flex-1 flex-col gap-2 px-3 py-2.5 sm:px-3.5">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] pb-1.5">
+          <span className="font-log text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-400/75">
+            pool.distribution
+          </span>
+          <span className="font-log text-[9px] tabular-nums text-slate-500">LIVE · DB</span>
+        </div>
+
+        <div className="flex min-h-0 flex-1 items-stretch gap-3">
+          <div className="relative w-[118px] shrink-0 sm:w-[128px]">
+            <svg
+              viewBox="0 0 100 100"
+              className="h-full w-full max-h-[132px] overflow-visible drop-shadow-[0_0_20px_rgba(34,211,238,0.15)]"
+              role="img"
+              aria-label="账号状态圆环"
+            >
+              <defs>
+                <linearGradient id="poolGradActive" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#34d399" />
+                  <stop offset="100%" stopColor="#2dd4bf" />
+                </linearGradient>
+                <linearGradient id="poolGradLimited" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#fbbf24" />
+                  <stop offset="100%" stopColor="#f97316" />
+                </linearGradient>
+                <linearGradient id="poolGradRisk" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#fb7185" />
+                  <stop offset="100%" stopColor="#c084fc" />
+                </linearGradient>
+              </defs>
+              {total <= 0 ? (
+                <circle
+                  cx="50"
+                  cy="50"
+                  r="35"
+                  fill="none"
+                  stroke="rgb(51 65 85 / 0.85)"
+                  strokeWidth="14"
+                  className="transition-all duration-[600ms] ease-in-out"
+                />
+              ) : (
+                segments.map((s) => {
+                  const dim = hoverKey && hoverKey !== s.key;
+                  return (
+                    <path
+                      key={s.key}
+                      d={s.d}
+                      fill={s.fill}
+                      stroke="rgba(255,255,255,0.12)"
+                      strokeWidth="0.35"
+                      className="cursor-pointer transition-all duration-[600ms] ease-in-out"
+                      style={{
+                        opacity: dim ? 0.32 : 1,
+                        filter: hoverKey === s.key ? `drop-shadow(0 0 10px ${s.glow})` : "none",
+                      }}
+                      onMouseEnter={() => setHoverKey(s.key)}
+                      onMouseLeave={() => setHoverKey(null)}
+                    />
+                  );
+                })
+              )}
+            </svg>
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center pt-0.5">
+              <span className="font-log text-[9px] font-bold uppercase tracking-[0.28em] text-cyan-500/80">TOTAL</span>
+              <span className="mt-0.5 bg-gradient-to-b from-white to-slate-300 bg-clip-text text-2xl font-bold tabular-nums text-transparent drop-shadow-[0_0_12px_rgba(255,255,255,0.15)]">
+                {total}
+              </span>
+            </div>
+            {hoverKey && total > 0 ? (
+              <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1.5 w-max -translate-x-1/2 rounded-lg border border-cyan-400/30 bg-[#050a14]/95 px-2.5 py-1.5 text-center shadow-[0_0_20px_rgba(34,211,238,0.25)] backdrop-blur-md">
+                <p className="text-[10px] font-semibold text-slate-200">
+                  {hoverKey === "active" ? "可用" : hoverKey === "limited" ? "受限" : "风控"}
+                </p>
+                <p className="mt-0.5 font-mono text-[11px] tabular-nums text-cyan-300/95">
+                  {hoverKey === "active" ? active : hoverKey === "limited" ? limited : risk} ·{" "}
+                  {pctStr(hoverKey === "active" ? active : hoverKey === "limited" ? limited : risk)}%
+                </p>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex min-w-0 flex-1 flex-col justify-center gap-2.5 py-0.5">
+            {rows.map((r) => {
+              const dim = hoverKey && hoverKey !== r.key;
+              return (
+                <div
+                  key={r.key}
+                  className="group/row cursor-default transition-opacity duration-[600ms] ease-in-out"
+                  style={{ opacity: dim ? 0.38 : 1 }}
+                  onMouseEnter={() => setHoverKey(r.key)}
+                  onMouseLeave={() => setHoverKey(null)}
+                  title={`${r.zh} 占比 ${r.pct.toFixed(1)}%`}
+                >
+                  <div className="mb-1 flex items-baseline justify-between gap-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{r.en}</span>
+                    <span className={`font-mono text-sm font-bold tabular-nums ${r.numClass}`}>{r.value}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="w-9 shrink-0 text-[11px] font-medium text-slate-400">{r.zh}</span>
+                    <div className="relative h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-white/[0.06] ring-1 ring-white/[0.05]">
+                      <div
+                        className={`h-full rounded-full transition-all duration-[600ms] ease-in-out ${r.barClass} ${r.barGlow}`}
+                        style={{ width: `${Math.min(100, r.pct)}%` }}
+                      />
+                    </div>
+                  </div>
+                  <p className="invisible mt-0.5 text-[9px] text-slate-500 group-hover/row:visible">
+                    占比 {r.pct.toFixed(1)}%
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatGrowthGroupHandle(raw) {
+  if (raw == null || !String(raw).trim()) return "—";
+  const u = String(raw).trim();
+  return u.startsWith("@") ? u : `@${u}`;
+}
+
+/** 从进度日志解析 [i/n] 与粗略成功/失败条数（仅展示，不参与业务） */
+function parseGrowthTaskProgressLines(lines) {
+  const arr = Array.isArray(lines) ? lines : [];
+  let qi = 0;
+  let qn = 0;
+  const reBracket = /\[(\d+)\/(\d+)\]/g;
+  for (const line of arr) {
+    const s = String(line);
+    reBracket.lastIndex = 0;
+    let m;
+    while ((m = reBracket.exec(s)) !== null) {
+      qi = Number(m[1]) || 0;
+      qn = Number(m[2]) || 0;
+    }
+  }
+  let progressPct = null;
+  if (qn > 0) progressPct = Math.min(100, Math.round((qi / qn) * 100));
+  let success = 0;
+  let failed = 0;
+  for (const line of arr) {
+    const s = String(line);
+    if (/拉入群组.+成功/.test(s)) success += 1;
+    if (/用户 .+ 失败[:：]/.test(s)) failed += 1;
+  }
+  return { queueIndex: qi, queueTotal: qn, progressPct, success, failed };
+}
+
+/** 用户增长 · 执行状态（纯展示，数据来自轮询快照与表单上下文） */
+function GrowthExecutionStatusModule({ selectedGroup, snapshot, taskRunning, taskHighlight }) {
+  const groupDisplay = formatGrowthGroupHandle(snapshot?.groupRaw ?? selectedGroup);
+  const phoneDisplay =
+    snapshot?.phoneDisplay ??
+    taskHighlight?.connecting ??
+    taskHighlight?.active ??
+    taskHighlight?.previous ??
+    "—";
+  const uiStatus = snapshot?.uiStatus ?? "WAITING";
+  const taskKind = snapshot?.taskKind ?? "拉人";
+  const indeterminate = Boolean(snapshot?.indeterminate);
+  const progressPct = snapshot?.progressPct;
+  const success = snapshot?.success ?? 0;
+  const failed = snapshot?.failed ?? 0;
+  const errorHint = snapshot?.errorHint;
+
+  const chipClass =
+    uiStatus === "ERROR"
+      ? "border-rose-400/50 bg-rose-500/[0.12] text-rose-100 shadow-[0_0_14px_rgba(251,113,133,0.35)]"
+      : uiStatus === "RUNNING"
+        ? "border-cyan-400/45 bg-cyan-500/[0.1] text-cyan-100 shadow-[0_0_16px_rgba(34,211,238,0.3)]"
+        : "border-violet-400/30 bg-violet-500/[0.08] text-slate-200 shadow-[0_0_12px_rgba(139,92,246,0.18)]";
+
+  const frameGlow =
+    uiStatus === "ERROR"
+      ? "shadow-[0_0_28px_rgba(251,113,133,0.14),inset_0_0_0_1px_rgba(251,113,133,0.22)]"
+      : uiStatus === "RUNNING"
+        ? "shadow-[0_0_28px_rgba(34,211,238,0.12),inset_0_0_0_1px_rgba(34,211,238,0.2)]"
+        : "shadow-[inset_0_0_0_1px_rgba(139,92,246,0.14)]";
+
+  const pctLabel =
+    indeterminate || progressPct == null ? "—" : `${Math.min(100, Math.max(0, progressPct))}%`;
+
+  return (
+    <section
+      className={`relative flex h-[150px] min-h-[140px] max-h-[170px] min-w-0 shrink-0 grow-0 flex-col overflow-hidden rounded-xl border border-white/[0.09] bg-[linear-gradient(160deg,rgba(6,10,18,0.92)_0%,rgba(10,14,24,0.88)_100%)] px-2.5 py-2 backdrop-blur-[18px] transition-[box-shadow,border-color] duration-500 ease-out ${frameGlow}`}
+      aria-label="执行状态"
+    >
+      <div
+        className="pointer-events-none absolute -right-8 top-0 h-24 w-24 rounded-full bg-cyan-500/10 blur-3xl"
+        aria-hidden
+      />
+      <div className="relative z-[1] flex h-full min-h-0 flex-col justify-between gap-1">
+        <div className="shrink-0 space-y-1">
+          <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] pb-1">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Activity className="h-3.5 w-3.5 shrink-0 text-cyan-400/80" aria-hidden />
+              <span className="truncate font-log text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">
+                execution.status
+              </span>
+            </div>
+            <span
+              className={`shrink-0 rounded-md border px-2 py-0.5 font-log text-[9px] font-bold uppercase tracking-widest transition-all duration-500 ease-out ${chipClass}`}
+            >
+              {uiStatus}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] leading-tight">
+            <div className="text-slate-500">账号</div>
+            <div className="truncate text-right font-mono text-slate-200 tabular-nums" title={phoneDisplay}>
+              {phoneDisplay}
+            </div>
+            <div className="text-slate-500">任务</div>
+            <div className="truncate text-right font-medium text-slate-300">{taskKind}</div>
+            <div className="text-slate-500">群组</div>
+            <div className="truncate text-right font-mono text-cyan-300/90" title={groupDisplay}>
+              {groupDisplay}
+            </div>
+          </div>
+        </div>
+
+        <div className="shrink-0 space-y-1">
+          <div>
+            <div className="mb-0.5 flex items-center justify-between gap-2">
+              <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">progress</span>
+              <span className="font-mono text-[10px] tabular-nums text-cyan-300/90">{pctLabel}</span>
+            </div>
+            <div className="relative h-2 overflow-hidden rounded-full bg-white/[0.07] ring-1 ring-white/[0.06]">
+              {indeterminate ? (
+                <div className="growth-exec-progress-indeterminate" />
+              ) : (
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-500 via-sky-400 to-violet-500 shadow-[0_0_14px_rgba(34,211,238,0.45)] transition-[width] duration-700 ease-out"
+                  style={{ width: `${progressPct != null ? Math.min(100, Math.max(0, progressPct)) : 0}%` }}
+                />
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 border-t border-white/[0.05] pt-0.5 font-mono text-[10px] tabular-nums">
+            <span className="text-emerald-400/90">OK · {success}</span>
+            <span className="text-rose-400/90">FAIL · {failed}</span>
+          </div>
+          {uiStatus === "ERROR" && errorHint ? (
+            <p className="line-clamp-2 text-[9px] leading-snug text-rose-300/90" title={errorHint}>
+              {errorHint}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -568,21 +956,28 @@ function normalizePhoneKey(phone) {
   return String(phone || "").replace(/\D/g, "");
 }
 
+/** 用户增长侧栏行：ACTIVE / LIMITED / RISK / 执行中高亮用 executing */
+function growthQueueRowKind(a, taskHighlight) {
+  const pk = normalizePhoneKey(a.phone);
+  if (a._queueKind === "echo") {
+    if (a.status === "risk_suspected") return "risk";
+    return "limited";
+  }
+  const activePk = taskHighlight?.active ? normalizePhoneKey(taskHighlight.active) : "";
+  const connPk = taskHighlight?.connecting ? normalizePhoneKey(taskHighlight.connecting) : "";
+  if (pk && (pk === activePk || pk === connPk)) return "executing";
+  return "active";
+}
+
 /** 根据全文推断 type：info | success | error | warn */
 function inferLogType(text) {
   const s = String(text);
-  if (/\[ERROR\]|登录超时|Internal Server Error|500|sync failed|任务失败/i.test(s)) return "error";
-  if (/\[WARN(ING)?\]|告警|\[WARN\]/.test(s)) return "warn";
-  if (/\[SUCCESS\]|登录成功|任务已排队|同步成功|执行成功|成功拉入|✓/i.test(s)) return "success";
+  if (/\[INFO\]/i.test(s)) return "info";
+  if (/\[ERROR\]|ERROR\b|登录超时|Internal Server Error|500|sync failed|任务失败/i.test(s)) return "error";
+  if (/\[WARN(ING)?\]|WARNING\b|告警|\[WARN\]/.test(s)) return "warn";
+  if (/\[SUCCESS\]|SUCCESS\b|登录成功|任务已排队|同步成功|执行成功|成功拉入|✓/i.test(s)) return "success";
   return "info";
 }
-
-const LOG_TYPE_CLASS = {
-  error: "text-rose-400",
-  warn: "text-amber-400",
-  success: "text-emerald-400",
-  info: "text-cyan-400",
-};
 
 /** 行级图标：成功 / 错误 / 加载 / 警告 / 信息 */
 function inferLogRowKind(message, type) {
@@ -595,17 +990,26 @@ function inferLogRowKind(message, type) {
 }
 
 function LogLineRow({ time, message, type }) {
-  const cls = LOG_TYPE_CLASS[type] || LOG_TYPE_CLASS.info;
+  const termCls =
+    type === "error"
+      ? "terminal-log-line--error"
+      : type === "warn"
+        ? "terminal-log-line--warn"
+        : type === "success"
+          ? "terminal-log-line--success"
+          : "terminal-log-line--info";
   const kind = inferLogRowKind(message, type);
   let rowIcon = null;
-  if (kind === "error") rowIcon = <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-400" aria-hidden />;
-  else if (kind === "success") rowIcon = <CheckCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" aria-hidden />;
-  else if (kind === "loading") rowIcon = <Loader className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-cyan-400" aria-hidden />;
-  else if (kind === "warn") rowIcon = <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" aria-hidden />;
-  else rowIcon = <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-300" aria-hidden />;
+  if (kind === "error") rowIcon = <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />;
+  else if (kind === "success") rowIcon = <CheckCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />;
+  else if (kind === "loading") rowIcon = <Loader className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin opacity-80" aria-hidden />;
+  else if (kind === "warn") rowIcon = <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />;
+  else rowIcon = <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />;
   return (
-    <div className={`log-line flex gap-2 border-b border-white/[0.06] py-2 font-log text-[11px] leading-6 ${cls}`}>
-      <span className="w-[76px] shrink-0 tabular-nums text-slate-500">{time}</span>
+    <div
+      className={`log-line terminal-log-line flex gap-2 border-b border-emerald-500/[0.07] py-2 font-log text-[11px] leading-6 ${termCls}`}
+    >
+      <span className="w-[76px] shrink-0 tabular-nums text-slate-500/80">{time}</span>
       {rowIcon}
       <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{message}</span>
     </div>
@@ -617,7 +1021,15 @@ export default function App() {
   const [auth, setAuth] = useState({ username: "user", password: "user123" });
   const [profile, setProfile] = useState(null);
   const [tasks, setTasks] = useState([]);
-  const [accounts, setAccounts] = useState({ active: [], limited: [], banned: [], recent_limited_sidebar: [] });
+  const [accounts, setAccounts] = useState({
+    active: [],
+    limited: [],
+    banned: [],
+    recent_sidebar_echo: [],
+    activity_feed: [],
+  });
+  /** 驱动左侧队列中非 ACTIVE 提示行按 status_changed_at 在约 60s 内过期（无需等待手动刷新） */
+  const [sidebarEchoTick, setSidebarEchoTick] = useState(0);
   const [taskHighlight, setTaskHighlight] = useState({ active: null, previous: null, connecting: null });
   const [groups, setGroups] = useState([]);
   const [proxyData, setProxyData] = useState({ summary: { total: 0, idle: 0, used: 0, dead: 0 }, items: [] });
@@ -652,6 +1064,8 @@ export default function App() {
   /** 任务控制面板：就绪 / 执行中 / 已完成（成功后可短暂显示 Completed） */
   const [taskPanelPhase, setTaskPanelPhase] = useState("ready");
   const taskPanelPhaseTimerRef = useRef(null);
+  /** 用户增长任务 · 执行状态条（与 start_task 轮询同步更新，仅展示） */
+  const [growthExecSnapshot, setGrowthExecSnapshot] = useState(null);
 
   const refreshLoadingRef = useRef(false);
   const [refreshLoading, setRefreshLoading] = useState(false);
@@ -692,6 +1106,21 @@ export default function App() {
   const [scraperNeedPassword, setScraperNeedPassword] = useState(false);
   const [scraperBindPassword, setScraperBindPassword] = useState("");
 
+  const [copyBots, setCopyBots] = useState([]);
+  const [copyTasks, setCopyTasks] = useState([]);
+  const [copyLogs, setCopyLogs] = useState([]);
+  const [copyBotForm, setCopyBotForm] = useState({ api_id: "", api_hash: "", bot_token: "" });
+  const [copyTaskForm, setCopyTaskForm] = useState({ source_channel: "", target_channel: "", bot_id: "" });
+  const copyBotSubmitRef = useRef(false);
+  const copyTaskSubmitRef = useRef(false);
+  const [copyBotSaving, setCopyBotSaving] = useState(false);
+  const [copyTaskSaving, setCopyTaskSaving] = useState(false);
+  const copySessionFileInputRef = useRef(null);
+  const [copySessionImportBotId, setCopySessionImportBotId] = useState(null);
+  const [uploadingSessionBotId, setUploadingSessionBotId] = useState(null);
+  /** 点击启动后、服务端尚未返回 starting 之前的乐观状态 */
+  const [copyStartOptimistic, setCopyStartOptimistic] = useState({});
+
   const [engagementSelectedGroups, setEngagementSelectedGroups] = useState([]);
   const [engagementScanLimit, setEngagementScanLimit] = useState(300);
   const [engagementSubmitting, setEngagementSubmitting] = useState(false);
@@ -703,15 +1132,44 @@ export default function App() {
 
   const isAdmin = useMemo(() => profile?.role === "admin", [profile]);
   const availableAccounts = useMemo(() => accounts.active || [], [accounts]);
+
+  useEffect(() => {
+    const id = setInterval(() => setSidebarEchoTick((n) => n + 1), 2000);
+    return () => clearInterval(id);
+  }, []);
+
   const sidebarQueueAccounts = useMemo(() => {
+    const ECHO_TTL_MS = 60_000;
     const act = accounts.active || [];
-    const recent = accounts.recent_limited_sidebar || [];
+    const recent = accounts.recent_sidebar_echo || [];
+    const now = Date.now();
     const phones = new Set(act.map((a) => a.phone));
+    const freshEcho = recent.filter((a) => {
+      if (!a.phone || phones.has(a.phone)) return false;
+      const raw = a.status_changed_at;
+      if (!raw) return false;
+      const t = Date.parse(raw);
+      if (Number.isNaN(t)) return false;
+      return now - t <= ECHO_TTL_MS;
+    });
     return [
       ...act.map((a) => ({ ...a, _queueKind: "active" })),
-      ...recent.filter((a) => a.phone && !phones.has(a.phone)).map((a) => ({ ...a, _queueKind: "echo" })),
+      ...freshEcho.map((a) => ({ ...a, _queueKind: "echo" })),
     ];
-  }, [accounts.active, accounts.recent_limited_sidebar]);
+  }, [accounts.active, accounts.recent_sidebar_echo, sidebarEchoTick]);
+
+  const growthAccountPoolStats = useMemo(() => {
+    const active_accounts = accounts.active?.length || 0;
+    const limited_accounts = accounts.limited?.length || 0;
+    const risk_accounts = accounts.banned?.length || 0;
+    return {
+      total_accounts: active_accounts + limited_accounts + risk_accounts,
+      active_accounts,
+      limited_accounts,
+      risk_accounts,
+    };
+  }, [accounts.active, accounts.limited, accounts.banned]);
+
   const hiddenGroups = useMemo(
     () => groups.filter((g) => !g.available && !removedGroups.includes(g.username)),
     [groups, removedGroups]
@@ -774,10 +1232,10 @@ export default function App() {
     [groups],
   );
 
-  const engagementAccountPoolCount = useMemo(
-    () => (accounts.active?.length || 0) + (accounts.limited?.length || 0),
-    [accounts.active, accounts.limited],
-  );
+  const engagementAccountPoolCount = useMemo(() => {
+    const lim = (accounts.limited || []).filter((x) => x.status === "daily_limited").length;
+    return (accounts.active?.length || 0) + lim;
+  }, [accounts.active, accounts.limited]);
 
   useEffect(() => {
     const allowed = new Set(engagementGroupOptions.map((o) => o.value));
@@ -835,22 +1293,50 @@ export default function App() {
     return () => clearTimeout(t);
   }, [taskHighlight.active, taskHighlight.previous, taskHighlight.connecting]);
 
+  const loadCopyData = useCallback(async () => {
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) return;
+      const [cb, ct] = await Promise.all([api.listCopyBots(), api.listCopyTasks()]);
+      setCopyBots(cb.bots || []);
+      setCopyTasks(ct.tasks || []);
+    } catch {
+      /* Copy 模块可选，失败不阻断主同步 */
+    }
+  }, []);
+
   const refreshBase = async (opts = {}) => {
     const { skipMetadataSync = false, forceMetadataSync = false } = opts;
+    let syncOk = null;
     try {
       if (!skipMetadataSync) {
         try {
           const sr = await api.syncGroupMetadata({ force: forceMetadataSync });
           if (sr?.skipped && sr?.reason === "recently_synced") {
             appendLog("群组元数据：24 小时内已同步，跳过");
+            syncOk = true;
           } else if (sr?.ok && !sr?.skipped) {
             appendLog(`群组元数据已同步（更新 ${sr.updated ?? 0} 条）`);
             (sr.logs || []).slice(-20).forEach((line) => appendLog(`tg-sync | ${line}`));
+            syncOk = true;
           } else if (sr?.ok === false) {
-            appendLog(`群组元数据同步失败 | ${sr.message || "unknown"}`);
+            appendLog(
+              `数据同步失败：${sr.message || "Telegram 账号不可用或未连接"}；任务列表、账号与群组等仍来自数据库`,
+            );
+            syncOk = false;
           }
         } catch (e) {
-          appendLog(`群组元数据同步请求失败 | ${e.message}`);
+          const aborted =
+            e?.name === "AbortError" ||
+            String(e?.message || "")
+              .toLowerCase()
+              .includes("aborted");
+          appendLog(
+            aborted
+              ? "数据同步失败：等待 Telegram 响应超时；任务列表、账号与群组等仍来自数据库"
+              : `数据同步失败：${e.message || "网络或服务异常"}；任务列表、账号与群组等仍来自数据库`,
+          );
+          syncOk = false;
         }
       }
       const baseCalls = [api.listTasks(), api.listAccounts(), api.listGroups(), api.listAccountPaths()];
@@ -862,7 +1348,8 @@ export default function App() {
         active: a.active || [],
         limited: a.limited || [],
         banned: a.banned || [],
-        recent_limited_sidebar: a.recent_limited_sidebar || [],
+        recent_sidebar_echo: a.recent_sidebar_echo || a.recent_limited_sidebar || [],
+        activity_feed: a.activity_feed || [],
       });
       setGroups(g.groups || []);
       setLastGroupMetadataSync(g.last_metadata_sync || null);
@@ -871,20 +1358,23 @@ export default function App() {
         summary: p?.summary || { total: 0, idle: 0, used: 0, dead: 0 },
         items: p?.items || [],
       });
+      await loadCopyData();
       appendLog("sync ok");
+      return { syncOk };
     } catch (e) {
       setMsg(e.message);
       appendLog(`sync failed | ${e.message}`);
+      return { syncOk };
     }
   };
 
   const triggerRefresh = async (opts = {}, intent = "header") => {
-    if (refreshLoadingRef.current) return;
+    if (refreshLoadingRef.current) return undefined;
     refreshLoadingRef.current = true;
     setRefreshPhase(intent);
     setRefreshLoading(true);
     try {
-      await refreshBase(opts);
+      return await refreshBase(opts);
     } finally {
       refreshLoadingRef.current = false;
       setRefreshLoading(false);
@@ -894,8 +1384,13 @@ export default function App() {
 
   const onForceSyncGroups = async () => {
     try {
-      await triggerRefresh({ skipMetadataSync: false, forceMetadataSync: true }, "force");
-      setMsg("已从 Telegram 强制同步群组信息");
+      const r = await triggerRefresh({ skipMetadataSync: false, forceMetadataSync: true }, "force");
+      if (r === undefined) return;
+      if (r.syncOk === false) {
+        setMsg("数据同步失败，界面仍显示数据库中的群组与统计");
+      } else {
+        setMsg("已从 Telegram 强制同步群组信息");
+      }
     } catch (e) {
       setMsg(e.message);
     }
@@ -904,13 +1399,61 @@ export default function App() {
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) return;
-    api.me()
-      .then((r) => setProfile({ username: r.username, role: r.role }))
+    api
+      .me()
+      .then((r) => {
+        const u = r.user || { username: r.username, role: r.role };
+        setProfile({ username: u.username, role: u.role });
+      })
       .then(() => refreshBase())
       .catch(() => localStorage.removeItem("token"));
   }, []);
 
   useEffect(() => () => clearTimeout(taskPanelPhaseTimerRef.current), []);
+
+  useEffect(() => {
+    if (taskRunning || taskPanelPhase !== "ready") return undefined;
+    const t = window.setTimeout(() => setGrowthExecSnapshot(null), 7000);
+    return () => window.clearTimeout(t);
+  }, [taskRunning, taskPanelPhase]);
+
+  useEffect(() => {
+    if (tab !== "消息Copy" || !profile) return undefined;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const [lr, tr] = await Promise.all([api.copyLogs(300), api.listCopyTasks()]);
+        if (cancelled) return;
+        if (Array.isArray(lr.logs)) setCopyLogs(lr.logs);
+        if (Array.isArray(tr.tasks)) setCopyTasks(tr.tasks);
+      } catch {
+        /* ignore */
+      }
+    };
+    tick();
+    const id = setInterval(tick, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [tab, profile]);
+
+  useEffect(() => {
+    setCopyStartOptimistic((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const key of Object.keys(prev)) {
+        const tid = Number(key);
+        if (Number.isNaN(tid)) continue;
+        const row = copyTasks.find((x) => x.id === tid);
+        if (row && row.status !== "starting") {
+          delete next[key];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [copyTasks]);
 
   const loadScraperAccount = useCallback(async () => {
     try {
@@ -980,7 +1523,7 @@ export default function App() {
         return;
       }
       if (engagementAccountPoolCount < 1) {
-        setMsg("当前没有可用或当日受限的账号");
+        setMsg("当前没有可用或当日受限的账号（长期冷却中账号不参与互动）");
         return;
       }
       setEngagementLiveLogs([]);
@@ -1061,13 +1604,18 @@ export default function App() {
     try {
       const res = await api.login(auth.username, auth.password);
       localStorage.setItem("token", res.token);
-      setProfile({ username: res.username, role: res.role });
-      await refreshBase();
-      if (res.role === "admin") {
+      const u = res.user || { username: res.username, role: res.role };
+      setProfile({ username: u.username, role: u.role });
+      const { syncOk } = await refreshBase();
+      if (u.role === "admin") {
         const list = await api.listUsers();
         setUsers(list.users || []);
       }
-      setMsg(`登录成功：${res.username}`);
+      if (syncOk === false) {
+        setMsg(`登录成功：${u.username}（数据同步失败，当前为数据库缓存）`);
+      } else {
+        setMsg(`登录成功：${u.username}`);
+      }
     } catch (e) {
       setMsg(e.message);
     } finally {
@@ -1076,11 +1624,21 @@ export default function App() {
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      await api.logout();
+    } catch {
+      /* 令牌已失效时仍执行本地登出 */
+    }
     localStorage.removeItem("token");
     setProfile(null);
+    setTab("用户增长");
+    setCopyBots([]);
+    setCopyTasks([]);
+    setCopyLogs([]);
+    setCopyStartOptimistic({});
     setTasks([]);
-    setAccounts({ active: [], limited: [], banned: [], recent_limited_sidebar: [] });
+    setAccounts({ active: [], limited: [], banned: [], recent_sidebar_echo: [], activity_feed: [] });
     setTaskHighlight({ active: null, previous: null, connecting: null });
     setGroups([]);
     setUsers([]);
@@ -1093,6 +1651,7 @@ export default function App() {
     setEngagementSelectedGroups([]);
     setEngagementGroupResolution(null);
     setEngagementRegisterLoading(false);
+    setGrowthExecSnapshot(null);
   };
 
   const onUpload = async () => {
@@ -1137,6 +1696,17 @@ export default function App() {
     }
     setTaskRunning(true);
     setTaskPanelPhase("running");
+    setGrowthExecSnapshot({
+      uiStatus: "WAITING",
+      phoneDisplay: "—",
+      taskKind: "拉人",
+      groupRaw: selectedGroup,
+      indeterminate: true,
+      progressPct: null,
+      success: 0,
+      failed: 0,
+      errorHint: null,
+    });
     setMsg("");
     appendLog(
       `开始执行用户增长 | 群组=${selectedGroup} | 用户数=${parsedUsers.length} | 正在提交后台任务…`,
@@ -1163,6 +1733,29 @@ export default function App() {
           connecting: st.highlight_connecting_phone ?? null,
         });
         const pl = st.progress_logs || [];
+        const parsedProg = parseGrowthTaskProgressLines(pl);
+        const conn = st.highlight_connecting_phone ?? null;
+        const act = st.highlight_active_phone ?? null;
+        const prev = st.highlight_previous_phone ?? null;
+        const phoneLine = conn || act || prev || "—";
+        const jobLive = st.status === "running" || st.status === "queued";
+        let uiStatus = "RUNNING";
+        if (st.status === "failed") uiStatus = "ERROR";
+        else if (conn && !act) uiStatus = "WAITING";
+        else if (st.status === "queued" && !conn && !act) uiStatus = "WAITING";
+        const taskKindLine = act ? "拉人" : conn ? "登录" : "拉人";
+        const hasQueue = parsedProg.queueTotal > 0;
+        setGrowthExecSnapshot({
+          uiStatus,
+          phoneDisplay: phoneLine,
+          taskKind: taskKindLine,
+          groupRaw: st.group || selectedGroup,
+          indeterminate: jobLive && !hasQueue,
+          progressPct: hasQueue ? parsedProg.progressPct : jobLive ? null : parsedProg.progressPct,
+          success: parsedProg.success,
+          failed: parsedProg.failed,
+          errorHint: st.error || null,
+        });
         for (let i = streamed; i < pl.length; i++) {
           pushLogLine(pl[i]);
         }
@@ -1181,6 +1774,17 @@ export default function App() {
         await new Promise((r) => setTimeout(r, 1000));
       }
       const summary = data.summary || { success: 0, skipped: 0, failed: 0 };
+      setGrowthExecSnapshot({
+        uiStatus: "WAITING",
+        phoneDisplay: "—",
+        taskKind: "拉人",
+        groupRaw: selectedGroup,
+        indeterminate: false,
+        progressPct: 100,
+        success: summary.success ?? 0,
+        failed: summary.failed ?? 0,
+        errorHint: null,
+      });
       appendLog(`task finished | group=${selectedGroup} accounts_auto=${availableAccounts.length}`);
       appendLog(`result summary | success=${summary.success} skipped=${summary.skipped} failed=${summary.failed}`);
       const h = data.highlight || {};
@@ -1206,6 +1810,17 @@ export default function App() {
     } catch (e) {
       if (taskPanelPhaseTimerRef.current) clearTimeout(taskPanelPhaseTimerRef.current);
       setTaskPanelPhase("ready");
+      setGrowthExecSnapshot((prev) => ({
+        uiStatus: "ERROR",
+        phoneDisplay: prev?.phoneDisplay ?? "—",
+        taskKind: "拉人",
+        groupRaw: selectedGroup,
+        indeterminate: false,
+        progressPct: prev?.progressPct ?? null,
+        success: prev?.success ?? 0,
+        failed: prev?.failed ?? 0,
+        errorHint: e.message || "任务失败",
+      }));
       appendLog(`任务失败 | ${e.message}`);
       setMsg(e.message);
     } finally {
@@ -1301,6 +1916,159 @@ export default function App() {
   const onChangeRole = async (id, role) => {
     await api.updateUserRole(id, role);
     await loadUsersData();
+  };
+
+  const onCreateCopyBot = async () => {
+    if (copyBotSubmitRef.current) return;
+    const apiId = Number(copyBotForm.api_id);
+    if (!apiId || !String(copyBotForm.api_hash || "").trim() || !String(copyBotForm.bot_token || "").trim()) {
+      setMsg("请填写 api_id、api_hash、bot_token");
+      return;
+    }
+    copyBotSubmitRef.current = true;
+    setCopyBotSaving(true);
+    setMsg("");
+    try {
+      await api.createCopyBot(copyBotForm);
+      setCopyBotForm({ api_id: "", api_hash: "", bot_token: "" });
+      await loadCopyData();
+    } catch (e) {
+      setMsg(e?.message || "添加机器人失败");
+    } finally {
+      copyBotSubmitRef.current = false;
+      setCopyBotSaving(false);
+    }
+  };
+
+  const onDeleteCopyBot = async (id) => {
+    if (!window.confirm("删除机器人将同时删除其下所有转发任务，确定？")) return;
+    setMsg("");
+    try {
+      await api.deleteCopyBot(id);
+      await loadCopyData();
+    } catch (e) {
+      setMsg(e?.message || "删除失败");
+    }
+  };
+
+  const onResetCopyBot = async (id) => {
+    setMsg("");
+    try {
+      await api.resetCopyBot(id);
+      await loadCopyData();
+    } catch (e) {
+      setMsg(e?.message || "重置失败");
+    }
+  };
+
+  const onCreateCopyTask = async () => {
+    if (copyTaskSubmitRef.current) return;
+    const botId = Number(copyTaskForm.bot_id);
+    if (!copyTaskForm.source_channel.trim() || !copyTaskForm.target_channel.trim() || !botId) {
+      setMsg("请从机器人库选择 Bot，并填写来源 / 目标频道");
+      return;
+    }
+    copyTaskSubmitRef.current = true;
+    setCopyTaskSaving(true);
+    setMsg("");
+    try {
+      await api.createCopyTask({
+        source_channel: copyTaskForm.source_channel,
+        target_channel: copyTaskForm.target_channel,
+        bot_id: botId,
+      });
+      setCopyTaskForm((f) => ({ ...f, source_channel: "", target_channel: "" }));
+      await loadCopyData();
+    } catch (e) {
+      setMsg(e?.message || "创建任务失败");
+    } finally {
+      copyTaskSubmitRef.current = false;
+      setCopyTaskSaving(false);
+    }
+  };
+
+  const onStartCopyTask = async (id) => {
+    setCopyStartOptimistic((p) => ({ ...p, [id]: true }));
+    setMsg("");
+    try {
+      const res = await api.startCopyTask(id);
+      if (res?.task) {
+        setCopyTasks((prev) => mergeCopyTaskIntoList(prev, res.task));
+      } else {
+        await loadCopyData();
+      }
+    } catch (e) {
+      setCopyStartOptimistic((p) => {
+        if (!p[id]) return p;
+        const n = { ...p };
+        delete n[id];
+        return n;
+      });
+      setMsg(e?.message || "启动失败");
+      await loadCopyData();
+    }
+  };
+
+  const onPauseCopyTask = async (id) => {
+    setMsg("");
+    try {
+      const res = await api.pauseCopyTask(id);
+      setCopyStartOptimistic((p) => {
+        if (!p[id]) return p;
+        const n = { ...p };
+        delete n[id];
+        return n;
+      });
+      if (res?.task) {
+        setCopyTasks((prev) => mergeCopyTaskIntoList(prev, res.task));
+      } else {
+        await loadCopyData();
+      }
+    } catch (e) {
+      setMsg(e?.message || "暂停失败");
+      await loadCopyData();
+    }
+  };
+
+  const onDeleteCopyTask = async (id) => {
+    if (!window.confirm("确定删除此转发任务？")) return;
+    setMsg("");
+    try {
+      await api.deleteCopyTask(id);
+      setCopyStartOptimistic((p) => {
+        if (!p[id]) return p;
+        const n = { ...p };
+        delete n[id];
+        return n;
+      });
+      await loadCopyData();
+    } catch (e) {
+      setMsg(e?.message || "删除失败");
+    }
+  };
+
+  const triggerCopySessionImport = (botId) => {
+    setCopySessionImportBotId(botId);
+    copySessionFileInputRef.current?.click();
+  };
+
+  const onCopySessionFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    const bid = copySessionImportBotId;
+    e.target.value = "";
+    setCopySessionImportBotId(null);
+    if (!file || bid == null) return;
+    setUploadingSessionBotId(bid);
+    setMsg("");
+    try {
+      await api.uploadCopyBotSession(bid, file);
+      await loadCopyData();
+      setMsg("session 已导入");
+    } catch (err) {
+      setMsg(err?.message || "导入失败");
+    } finally {
+      setUploadingSessionBotId(null);
+    }
   };
 
   const onRunScraper = async () => {
@@ -1486,8 +2254,71 @@ export default function App() {
     })[0];
   }, [groups]);
 
+  if (!profile) {
+    return (
+      <div className="relative flex min-h-[100dvh] flex-col items-center justify-center overflow-hidden bg-[#070b12] px-4 py-10 text-slate-200">
+        <div
+          className="pointer-events-none absolute left-[15%] top-0 h-64 w-64 -translate-y-1/2 rounded-full bg-cyan-500/12 blur-[100px]"
+          aria-hidden
+        />
+        <div
+          className="pointer-events-none absolute bottom-0 right-[10%] h-72 w-72 translate-y-1/3 rounded-full bg-emerald-500/10 blur-[110px]"
+          aria-hidden
+        />
+        <div className="relative z-[1] w-full max-w-[400px]">
+          <div className="mb-8 text-center">
+            <div className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-[#00ff87] to-[#60efff] text-lg font-bold text-slate-900 shadow-[0_0_32px_rgba(0,255,150,0.4)]">
+              TG
+            </div>
+            <h1 className="text-xl font-semibold tracking-tight text-white">TG Pro</h1>
+            <p className="mt-1 text-xs font-medium uppercase tracking-wider text-slate-500">请登录以继续</p>
+          </div>
+          <div className="rounded-2xl border border-white/[0.08] bg-[rgba(255,255,255,0.04)] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.5)] backdrop-blur-[22px]">
+            <div className="space-y-3">
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500">用户名</label>
+              <input
+                className={INPUT_FIELD}
+                autoComplete="username"
+                value={auth.username}
+                onChange={(e) => setAuth((v) => ({ ...v, username: e.target.value }))}
+              />
+              <label className="mt-4 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">密码</label>
+              <input
+                type="password"
+                className={INPUT_FIELD}
+                autoComplete="current-password"
+                value={auth.password}
+                onChange={(e) => setAuth((v) => ({ ...v, password: e.target.value }))}
+              />
+              <button
+                type="button"
+                disabled={authLoading}
+                className={`${BTN_PRIMARY} mt-5 w-full justify-center py-2.5 disabled:cursor-not-allowed disabled:opacity-60`}
+                onClick={login}
+              >
+                {authLoading ? (
+                  <>
+                    <UiSpinner tone="primary" />
+                    登录中…
+                  </>
+                ) : (
+                  "登录"
+                )}
+              </button>
+            </div>
+            {msg ? (
+              <p className="mt-4 text-center text-sm font-medium text-rose-400 drop-shadow-[0_0_8px_rgba(251,113,133,0.35)]">
+                {msg}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex min-h-screen min-h-[100dvh] bg-transparent text-slate-200">
+    <div className="flex min-h-0 min-h-[100dvh] bg-transparent text-slate-200">
       <aside className="sticky top-0 flex h-screen w-[220px] shrink-0 flex-col border-r border-white/[0.06] bg-[rgba(10,15,20,0.8)] shadow-[4px_0_48px_rgba(0,0,0,0.5)] backdrop-blur-[20px]">
         <div className="border-b border-white/[0.06] px-4 py-5">
           <div className="flex items-center gap-3">
@@ -1502,7 +2333,10 @@ export default function App() {
         </div>
         <nav className="growth-scroll flex flex-1 flex-col gap-1 overflow-y-auto p-3">
           {menus
-            .filter((m) => (m === "用户管理" ? isAdmin : true))
+            .filter((m) => {
+              if (m === "用户管理" || m === "代理监控") return isAdmin;
+              return true;
+            })
             .map((m) => (
               <button
                 key={m}
@@ -1528,50 +2362,17 @@ export default function App() {
             ))}
         </nav>
         <div className="border-t border-white/[0.06] p-3">
-          {!profile ? (
-            <div className="space-y-2 rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] p-3 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-[20px]">
-              <input
-                className="w-full rounded-lg border border-white/[0.08] bg-[rgba(255,255,255,0.04)] px-2.5 py-1.5 text-xs text-slate-100 outline-none backdrop-blur-[12px] transition placeholder:text-slate-500 focus:border-cyan-400/35 focus:ring-2 focus:ring-cyan-400/15"
-                placeholder="用户名"
-                value={auth.username}
-                onChange={(e) => setAuth((v) => ({ ...v, username: e.target.value }))}
-              />
-              <input
-                type="password"
-                className="w-full rounded-lg border border-white/[0.08] bg-[rgba(255,255,255,0.04)] px-2.5 py-1.5 text-xs text-slate-100 outline-none backdrop-blur-[12px] transition placeholder:text-slate-500 focus:border-cyan-400/35 focus:ring-2 focus:ring-cyan-400/15"
-                placeholder="密码"
-                value={auth.password}
-                onChange={(e) => setAuth((v) => ({ ...v, password: e.target.value }))}
-              />
-              <button
-                type="button"
-                disabled={authLoading}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[linear-gradient(135deg,#00ff87,#60efff)] py-2 text-xs font-semibold text-slate-900 shadow-[0_0_20px_rgba(0,255,150,0.3)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_32px_rgba(0,255,180,0.45)] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
-                onClick={login}
-              >
-                {authLoading ? (
-                  <>
-                    <UiSpinner tone="primary" />
-                    登录中...
-                  </>
-                ) : (
-                  "登录 / 注册"
-                )}
-              </button>
-            </div>
-          ) : (
-            <div className="rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] p-3 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-[20px]">
-              <div className="truncate text-xs font-semibold text-slate-100">{profile.username}</div>
-              <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-500">{profile.role}</div>
-              <button
-                type="button"
-                className="mt-3 w-full rounded-xl border border-white/[0.1] bg-[rgba(255,255,255,0.05)] py-2 text-xs font-medium text-slate-300 shadow-[0_4px_20px_rgba(0,0,0,0.25)] transition hover:border-cyan-400/25 hover:bg-white/[0.08] hover:text-white"
-                onClick={logout}
-              >
-                退出
-              </button>
-            </div>
-          )}
+          <div className="rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] p-3 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-[20px]">
+            <div className="truncate text-xs font-semibold text-slate-100">{profile.username}</div>
+            <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-500">{profile.role}</div>
+            <button
+              type="button"
+              className="mt-3 w-full rounded-xl border border-white/[0.1] bg-[rgba(255,255,255,0.05)] py-2 text-xs font-medium text-slate-300 shadow-[0_4px_20px_rgba(0,0,0,0.25)] transition hover:border-cyan-400/25 hover:bg-white/[0.08] hover:text-white"
+              onClick={logout}
+            >
+              退出登录
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -1628,231 +2429,296 @@ export default function App() {
           </div>
         </header>
 
-        <main className="growth-scroll flex-1 overflow-y-auto px-6 pb-10 pt-6 lg:px-8">
-        {msg ? <p className="mb-6 text-sm font-medium text-rose-400 drop-shadow-[0_0_8px_rgba(251,113,133,0.35)]">{msg}</p> : null}
+        <main
+          className={`flex-1 px-6 pb-10 pt-6 lg:px-8 ${
+            tab === "用户增长" ? "flex min-h-0 flex-col overflow-hidden" : "growth-scroll overflow-y-auto"
+          }`}
+        >
+        {msg ? (
+          <p className="mb-4 shrink-0 text-sm font-medium text-rose-400 drop-shadow-[0_0_8px_rgba(251,113,133,0.35)]">
+            {msg}
+          </p>
+        ) : null}
 
         {tab === "用户增长" && (
-          <div className="grid min-h-0 grid-cols-1 gap-5 lg:grid-cols-[300px_minmax(0,1fr)] lg:items-stretch">
-            <aside className="flex h-full min-h-0 min-w-0 flex-col">
-              <Card title="账号队列" accent="growth" className="flex h-full min-h-0 flex-col !pb-4">
-                <p className="mb-3 text-[11px] leading-relaxed text-slate-500">
-                  ① 默认 = <span className="text-slate-300">可用</span> · ② 灰边 ={" "}
-                  <span className="text-slate-400">刚受限提示</span>（约 1 分钟）· 琥珀 / 绿 / 青 = 任务高亮
-                </p>
-                <p className="mb-3 text-[11px] text-slate-500">
-                  列表区固定 {CONSOLE_PANEL_HEIGHT_PX}px · 与右侧终端同高 · 内部滚动
-                </p>
-                <div className={`${GLASS_PANEL_GROWTH} min-h-0 shrink-0`}>
-                  <div className={GLASS_PANEL_CHROME_GROWTH}>
-                    <span className="h-2 w-2 rounded-full bg-rose-400 shadow-sm" />
-                    <span className="h-2 w-2 rounded-full bg-amber-400 shadow-sm" />
-                    <span className="h-2 w-2 rounded-full bg-[#22c55e] shadow-sm shadow-emerald-400/50" />
-                    <span className="ml-1 font-log text-[10px] uppercase tracking-[0.2em] text-slate-500">accounts.queue</span>
-                    <span className="ml-auto font-log text-[10px] text-slate-400">{sidebarQueueAccounts.length}</span>
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#0b0f1a]/95 via-[#0c1220]/92 to-[#0f172a]/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_12px_48px_rgba(0,0,0,0.35)] backdrop-blur-[12px]">
+            <div
+              className="pointer-events-none absolute left-[12%] top-0 h-48 w-48 -translate-y-1/2 rounded-full bg-cyan-500/10 blur-[80px]"
+              aria-hidden
+            />
+            <div
+              className="pointer-events-none absolute bottom-0 right-[8%] h-56 w-56 translate-y-1/3 rounded-full bg-emerald-500/8 blur-[90px]"
+              aria-hidden
+            />
+            <div
+              className="pointer-events-none absolute right-1/4 top-1/3 h-40 w-40 rounded-full bg-violet-500/10 blur-[70px]"
+              aria-hidden
+            />
+
+            <div className="relative z-[1] flex min-h-0 flex-1 flex-col gap-4 p-4 sm:p-5">
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(300px,340px)_minmax(0,1fr)] lg:items-stretch lg:gap-5">
+                {/* 左侧：统计（shrink-0）→ 执行状态（固定高 ~150px，grow-0）→ 账号队列（flex-1 占余量，列表区仍可滚动） */}
+                <div className="order-1 flex h-full min-h-0 flex-col gap-3 lg:order-none">
+                  <div className="shrink-0">
+                    <AccountPoolNeonDistributionPanel
+                      total_accounts={growthAccountPoolStats.total_accounts}
+                      active_accounts={growthAccountPoolStats.active_accounts}
+                      limited_accounts={growthAccountPoolStats.limited_accounts}
+                      risk_accounts={growthAccountPoolStats.risk_accounts}
+                    />
                   </div>
+                  <GrowthExecutionStatusModule
+                    selectedGroup={selectedGroup}
+                    snapshot={growthExecSnapshot}
+                    taskRunning={taskRunning}
+                    taskHighlight={taskHighlight}
+                  />
                   <div
-                    className="growth-scroll scroll-smooth shrink-0 overflow-y-auto overflow-x-hidden px-3 py-2.5"
-                    style={{ height: CONSOLE_PANEL_HEIGHT_PX }}
+                    className={`${GLASS_PANEL_GROWTH} flex min-h-[12.5rem] flex-1 flex-col overflow-hidden`}
                   >
-                    <div className="flex flex-col gap-2.5 pr-0.5">
-                      {sidebarQueueAccounts.map((a) => {
-                        const pk = normalizePhoneKey(a.phone);
-                        const isActiveHighlight = taskHighlight.active && pk === normalizePhoneKey(taskHighlight.active);
-                        const isConnectingHighlight =
-                          taskHighlight.connecting && pk === normalizePhoneKey(taskHighlight.connecting);
-                        const isPrevHighlight = taskHighlight.previous && pk === normalizePhoneKey(taskHighlight.previous);
-                        const isEcho = a._queueKind === "echo";
-                        let phoneCls = "font-medium tracking-tight";
-                        if (isActiveHighlight) phoneCls += " text-emerald-400";
-                        else if (isConnectingHighlight) phoneCls += " text-amber-400";
-                        else if (isPrevHighlight) phoneCls += " text-cyan-400";
-                        else if (isEcho) phoneCls += " text-slate-500";
-                        else phoneCls += " text-slate-100";
-                        let avatarShell =
-                          "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-400/25";
-                        if (isActiveHighlight)
-                          avatarShell =
-                            "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/35";
-                        else if (isConnectingHighlight)
-                          avatarShell =
-                            "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-amber-500/20 text-amber-300 ring-1 ring-amber-400/35";
-                        else if (isPrevHighlight)
-                          avatarShell =
-                            "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-400/30";
-                        else if (isEcho)
-                          avatarShell =
-                            "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/[0.04] text-slate-500 ring-1 ring-white/[0.08]";
-                        return (
-                          <div
-                            key={`${a.id}-${a._queueKind || "x"}`}
-                            className={`flex gap-2.5 rounded-xl border px-3 py-2.5 text-sm shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-[16px] transition-all duration-[250ms] ease-out will-change-transform hover:translate-x-1 hover:border-cyan-400/20 hover:shadow-[0_8px_32px_rgba(0,255,180,0.06)] ${
-                              isEcho
-                                ? "border-white/[0.06] bg-[rgba(255,255,255,0.03)]"
-                                : "border-white/[0.08] bg-[rgba(255,255,255,0.04)]"
-                            }`}
-                          >
-                            <div className={avatarShell}>
-                              <UserCircle size={18} strokeWidth={1.75} aria-hidden />
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className={phoneCls}>{displayPhone(a)}</div>
-                              <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                                {isEcho ? "状态 · 受限提示" : "状态 · 可用"}
+                    <div className={GLASS_PANEL_CHROME_GROWTH}>
+                      <span className="h-2 w-2 rounded-full bg-rose-400 shadow-sm" />
+                      <span className="h-2 w-2 rounded-full bg-amber-400 shadow-sm" />
+                      <span className="h-2 w-2 rounded-full bg-[#22c55e] shadow-sm shadow-emerald-400/50" />
+                      <span className="ml-1 font-log text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                        accounts.queue
+                      </span>
+                      <span className="ml-auto font-log text-[10px] text-slate-400">{sidebarQueueAccounts.length}</span>
+                    </div>
+                    <p className="shrink-0 border-b border-emerald-400/10 px-3 py-1.5 text-[10px] leading-snug text-slate-500">
+                      ACTIVE / LIMITED / RISK 标签 · 执行中账号高亮 · 非 ACTIVE 提示最多 60s
+                    </p>
+                    <div className="growth-queue-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2.5">
+                      <div className="flex flex-col gap-2.5 pr-0.5">
+                        {sidebarQueueAccounts.map((a) => {
+                          const pk = normalizePhoneKey(a.phone);
+                          const isActiveHighlight = taskHighlight.active && pk === normalizePhoneKey(taskHighlight.active);
+                          const isConnectingHighlight =
+                            taskHighlight.connecting && pk === normalizePhoneKey(taskHighlight.connecting);
+                          const isPrevHighlight = taskHighlight.previous && pk === normalizePhoneKey(taskHighlight.previous);
+                          const isEcho = a._queueKind === "echo";
+                          const rowKind = growthQueueRowKind(a, taskHighlight);
+                          const isExecuting = rowKind === "executing";
+
+                          let phoneCls = "font-medium tracking-tight";
+                          if (isActiveHighlight) phoneCls += " text-emerald-400";
+                          else if (isConnectingHighlight) phoneCls += " text-amber-400";
+                          else if (isPrevHighlight) phoneCls += " text-cyan-400";
+                          else if (isEcho) phoneCls += " text-slate-500";
+                          else phoneCls += " text-slate-100";
+
+                          let avatarShell =
+                            "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-400/25";
+                          if (isActiveHighlight)
+                            avatarShell =
+                              "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-500/25 text-emerald-200 ring-1 ring-emerald-400/45";
+                          else if (isConnectingHighlight)
+                            avatarShell =
+                              "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-amber-500/20 text-amber-300 ring-1 ring-amber-400/35";
+                          else if (isPrevHighlight)
+                            avatarShell =
+                              "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-400/30";
+                          else if (isEcho)
+                            avatarShell =
+                              "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/[0.04] text-slate-500 ring-1 ring-white/[0.08]";
+
+                          const pill =
+                            rowKind === "risk" ? (
+                              <span className="badge-glow-risk inline-flex rounded-full border border-rose-400/35 bg-rose-500/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-rose-200">
+                                RISK
+                              </span>
+                            ) : rowKind === "limited" ? (
+                              <span className="badge-glow-warn inline-flex rounded-full border border-amber-400/35 bg-amber-500/12 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-200">
+                                LIMITED
+                              </span>
+                            ) : (
+                              <span className="badge-glow-available inline-flex rounded-full border border-emerald-400/35 bg-emerald-500/12 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-200">
+                                ACTIVE
+                              </span>
+                            );
+
+                          const cardRing = isExecuting
+                            ? "ring-2 ring-cyan-400/75 shadow-[0_0_32px_rgba(34,211,238,0.45),0_0_48px_rgba(52,211,153,0.2)]"
+                            : "ring-1 ring-transparent";
+
+                          return (
+                            <div
+                              key={`${a.id}-${a._queueKind || "x"}`}
+                              className={`group flex gap-2.5 rounded-xl border px-3 py-2.5 text-sm shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-[16px] transition-all duration-300 ease-out will-change-transform hover:-translate-y-0.5 hover:border-emerald-400/25 hover:shadow-[0_12px_40px_rgba(0,255,180,0.12),0_0_28px_rgba(96,239,255,0.1)] ${cardRing} ${
+                                isEcho
+                                  ? "border-white/[0.06] bg-[rgba(255,255,255,0.03)]"
+                                  : "border-white/[0.08] bg-[rgba(255,255,255,0.04)]"
+                              }`}
+                            >
+                              <div className={avatarShell}>
+                                <UserCircle size={18} strokeWidth={1.75} aria-hidden />
                               </div>
-                              {isEcho ? (
-                                <p className="mt-1 text-[10px] leading-snug text-amber-400/90">
-                                  daily_limited · 不参与拉人
-                                </p>
-                              ) : null}
-                              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-500">
-                                <Globe className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
-                                <span
-                                  className={
-                                    a.proxy_type === "direct"
-                                      ? "font-medium text-amber-400"
-                                      : "font-medium text-emerald-400"
-                                  }
-                                >
-                                  {a.proxy_type || "direct"}
-                                </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className={phoneCls}>{displayPhone(a)}</div>
+                                  {pill}
+                                </div>
+                                <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                                  {isEcho ? "侧栏提示 · 非拉人队列" : "拉人队列"}
+                                </div>
+                                {isEcho ? (
+                                  <p className="mt-1 text-[10px] leading-snug text-amber-400/90">
+                                    {(a.echo_label || a.lifecycle_sub || "—") + " · 不参与拉人"}
+                                  </p>
+                                ) : null}
+                                <div className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-500">
+                                  <Globe className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
+                                  <span
+                                    className={
+                                      a.proxy_type === "direct"
+                                        ? "font-medium text-amber-400"
+                                        : "font-medium text-emerald-400"
+                                    }
+                                  >
+                                    {a.proxy_type || "direct"}
+                                  </span>
+                                </div>
                               </div>
                             </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 右侧：任务控制 + 实时日志（日志紧贴任务下沿，flex 铺满剩余高度） */}
+                <div className="order-2 flex min-h-0 min-w-0 flex-col gap-3 lg:order-none lg:min-h-0">
+                  <div className="flex shrink-0 flex-col gap-4">
+                    <div className="grid shrink-0 grid-cols-3 gap-2 sm:gap-3">
+                      <StatTile title="今日新增" value={stats.todayAdd} icon={TrendingUp} tone="growth" />
+                      <StatTile title="昨日新增" value={stats.yestAdd} icon={CalendarClock} tone="info" />
+                      <StatTile title="累计新增" value={stats.total} icon={Layers} tone="info" />
+                    </div>
+                    <section className="task-control-panel shrink-0" aria-label="任务控制面板">
+                    <div className="task-control-panel-inner">
+                      <div className="mb-5 flex flex-col gap-4 border-b border-white/[0.08] pb-5 lg:flex-row lg:items-end lg:justify-between lg:gap-6">
+                        <div className="min-w-0">
+                          <h3 className="task-control-panel-title">TASK CONTROL PANEL</h3>
+                          <p className="mt-2 text-xs leading-relaxed text-slate-400">
+                            实时任务配置 <span className="text-[#00AFFF]/80">/</span> 自动执行系统
+                          </p>
+                        </div>
+                        <TaskControlStatusBar phase={taskPanelPhase} />
+                      </div>
+                      <div className="flex flex-col gap-5">
+                        <div className="flex flex-wrap items-end gap-2 gap-y-3">
+                          <div className="flex min-w-[200px] flex-1 flex-col gap-1.5">
+                            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                              目标群组
+                            </span>
+                            <GlassDropdown
+                              variant="task"
+                              value={selectedGroup}
+                              onChange={setSelectedGroup}
+                              options={selectedGroupDropdownOptions}
+                              placeholder="选择群组…"
+                              searchable
+                              className="w-full"
+                            />
                           </div>
-                        );
-                      })}
+                          <div className="flex min-w-[160px] flex-1 flex-col gap-1.5">
+                            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                              强制加入
+                            </span>
+                            <GlassDropdown
+                              variant="task"
+                              value={forceCandidate}
+                              onChange={setForceCandidate}
+                              options={forceCandidateDropdownOptions}
+                              placeholder="隐藏群组…"
+                              searchable
+                              className="w-full"
+                            />
+                          </div>
+                          <div className="flex gap-1.5">
+                            <button
+                              type="button"
+                              className="rounded-xl border border-[#00AFFF]/35 bg-[rgba(0,175,255,0.1)] px-3 py-2 text-sm font-bold text-sky-200 shadow-[0_0_16px_rgba(0,175,255,0.2)] transition hover:scale-105 hover:border-[#7A5CFF]/40 hover:shadow-[0_0_28px_rgba(122,92,255,0.3)] active:scale-95"
+                              onClick={onForceAddGroup}
+                            >
+                              +
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-300 shadow-[0_0_12px_rgba(251,113,133,0.15)] transition hover:scale-105 hover:shadow-[0_0_24px_rgba(251,113,133,0.28)] active:scale-95"
+                              onClick={onRemoveGroup}
+                            >
+                              −
+                            </button>
+                          </div>
+                        </div>
+                        <label className="flex flex-col gap-1.5">
+                          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                            用户列表
+                          </span>
+                          <textarea
+                            className="growth-scroll task-control-field max-h-[200px] min-h-[80px] resize-y"
+                            rows={4}
+                            placeholder="每行一个 @username 或用户标识…"
+                            value={form.users}
+                            onChange={(e) => setForm((v) => ({ ...v, users: e.target.value }))}
+                          />
+                        </label>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <button
+                            type="button"
+                            disabled={false}
+                            onClick={taskRunning ? onStopRunningTask : onStartTask}
+                            className={
+                              taskRunning
+                                ? "inline-flex items-center justify-center gap-2 rounded-xl border border-rose-400/40 bg-rose-500/20 px-6 py-2.5 text-sm font-bold text-rose-100 shadow-[0_0_20px_rgba(251,113,133,0.25)] transition-all duration-200 hover:bg-rose-500/30"
+                                : "task-control-start-btn inline-flex items-center justify-center gap-2"
+                            }
+                          >
+                            {taskRunning ? "停止" : "开始增长"}
+                          </button>
+                          {taskRunning ? (
+                            <span className="inline-flex items-center gap-2 text-xs font-medium text-cyan-300/90">
+                              <UiSpinner tone="primary" />
+                              执行中…
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                  </div>
+                  <div className="flex min-h-[200px] min-w-0 flex-1 flex-col lg:min-h-0">
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-blue-400/18 bg-[rgba(6,10,18,0.65)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_42px_rgba(59,130,246,0.12)] backdrop-blur-[18px]">
+                    <div className={GLASS_PANEL_CHROME_LOG}>
+                      <span className="h-2 w-2 rounded-full bg-rose-400 shadow-sm" />
+                      <span className="h-2 w-2 rounded-full bg-amber-400 shadow-sm" />
+                      <span className="h-2 w-2 rounded-full bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.6)]" />
+                      <span className="ml-1 font-log text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                        session.log
+                      </span>
+                      <span className="ml-auto font-log text-[10px] text-slate-400">live</span>
+                    </div>
+                    <p className="shrink-0 border-b border-blue-400/10 bg-blue-500/[0.04] px-3 py-1.5 text-[10px] text-slate-500">
+                      终端视图 · 最多 {MAX_LOG_ENTRIES} 条 · 上滑暂停跟随，回到底部恢复 · INFO / SUCCESS / WARN / ERROR 分色
+                    </p>
+                    <div
+                      ref={logRef}
+                      role="log"
+                      aria-live="polite"
+                      aria-relevant="additions"
+                      onScroll={handleLogScroll}
+                      className="growth-terminal-scroll terminal-log-body log-container min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2 font-log"
+                    >
+                      {logs.map(({ id, time, message, type }) => (
+                        <LogLineRow key={id} time={time} message={message} type={type} />
+                      ))}
                     </div>
                   </div>
+                  </div>
                 </div>
-              </Card>
-            </aside>
-
-            <div className="flex h-full min-h-0 min-w-0 flex-col gap-4">
-              <div className="grid shrink-0 grid-cols-2 gap-3 sm:grid-cols-4">
-                <StatTile title="今日新增" value={stats.todayAdd} icon={TrendingUp} tone="growth" />
-                <StatTile title="昨日新增" value={stats.yestAdd} icon={CalendarClock} tone="info" />
-                <StatTile title="累计新增" value={stats.total} icon={Layers} tone="info" />
-                <StatTile title="可用账号" value={stats.accounts} icon={Users} tone="growth" />
               </div>
-
-              <section className="task-control-panel shrink-0" aria-label="任务控制面板">
-                <div className="task-control-panel-inner">
-                  <div className="mb-5 flex flex-col gap-4 border-b border-white/[0.08] pb-5 lg:flex-row lg:items-end lg:justify-between lg:gap-6">
-                    <div className="min-w-0">
-                      <h3 className="task-control-panel-title">TASK CONTROL PANEL</h3>
-                      <p className="mt-2 text-xs leading-relaxed text-slate-400">
-                        实时任务配置 <span className="text-[#00AFFF]/80">/</span> 自动执行系统
-                      </p>
-                    </div>
-                    <TaskControlStatusBar phase={taskPanelPhase} />
-                  </div>
-                  <div className="flex flex-col gap-5">
-                    <div className="flex flex-wrap items-end gap-2 gap-y-3">
-                      <div className="flex min-w-[200px] flex-1 flex-col gap-1.5">
-                        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                          目标群组
-                        </span>
-                        <GlassDropdown
-                          variant="task"
-                          value={selectedGroup}
-                          onChange={setSelectedGroup}
-                          options={selectedGroupDropdownOptions}
-                          placeholder="选择群组…"
-                          searchable
-                          className="w-full"
-                        />
-                      </div>
-                      <div className="flex min-w-[160px] flex-1 flex-col gap-1.5">
-                        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                          强制加入
-                        </span>
-                        <GlassDropdown
-                          variant="task"
-                          value={forceCandidate}
-                          onChange={setForceCandidate}
-                          options={forceCandidateDropdownOptions}
-                          placeholder="隐藏群组…"
-                          searchable
-                          className="w-full"
-                        />
-                      </div>
-                      <div className="flex gap-1.5">
-                        <button
-                          type="button"
-                          className="rounded-xl border border-[#00AFFF]/35 bg-[rgba(0,175,255,0.1)] px-3 py-2 text-sm font-bold text-sky-200 shadow-[0_0_16px_rgba(0,175,255,0.2)] transition hover:scale-105 hover:border-[#7A5CFF]/40 hover:shadow-[0_0_22px_rgba(122,92,255,0.25)] active:scale-95"
-                          onClick={onForceAddGroup}
-                        >
-                          +
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-300 shadow-[0_0_12px_rgba(251,113,133,0.15)] transition hover:scale-105 hover:shadow-[0_0_20px_rgba(251,113,133,0.22)] active:scale-95"
-                          onClick={onRemoveGroup}
-                        >
-                          −
-                        </button>
-                      </div>
-                    </div>
-                    <label className="flex flex-col gap-1.5">
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">用户列表</span>
-                      <textarea
-                        className="growth-scroll task-control-field max-h-[200px] min-h-[80px] resize-y"
-                        rows={4}
-                        placeholder="每行一个 @username 或用户标识…"
-                        value={form.users}
-                        onChange={(e) => setForm((v) => ({ ...v, users: e.target.value }))}
-                      />
-                    </label>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <button
-                        type="button"
-                        disabled={false}
-                        onClick={taskRunning ? onStopRunningTask : onStartTask}
-                        className={
-                          taskRunning
-                            ? "inline-flex items-center justify-center gap-2 rounded-xl border border-rose-400/40 bg-rose-500/20 px-6 py-2.5 text-sm font-bold text-rose-100 shadow-[0_0_20px_rgba(251,113,133,0.25)] transition-all duration-200 hover:bg-rose-500/30"
-                            : "task-control-start-btn inline-flex items-center justify-center gap-2"
-                        }
-                      >
-                        {taskRunning ? "停止" : "开始增长"}
-                      </button>
-                      {taskRunning ? (
-                        <span className="inline-flex items-center gap-2 text-xs font-medium text-cyan-300/90">
-                          <UiSpinner tone="primary" />
-                          执行中…
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <Card title="实时日志" accent="log" className="!pb-4">
-                <p className="mb-3 text-[11px] text-slate-500">
-                  可视区固定 {CONSOLE_PANEL_HEIGHT_PX}px（与账号队列同高）· 最多 {MAX_LOG_ENTRIES} 条（先进先出）· 上滑暂停自动滚底，回到底部恢复
-                </p>
-                <div className={`${GLASS_PANEL_LOG} shrink-0`}>
-                  <div className={GLASS_PANEL_CHROME_LOG}>
-                    <span className="h-2 w-2 rounded-full bg-rose-400 shadow-sm" />
-                    <span className="h-2 w-2 rounded-full bg-amber-400 shadow-sm" />
-                    <span className="h-2 w-2 rounded-full bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.6)]" />
-                    <span className="ml-1 font-log text-[10px] uppercase tracking-[0.2em] text-slate-500">session.log</span>
-                    <span className="ml-auto font-log text-[10px] text-slate-400">live</span>
-                  </div>
-                  <div
-                    ref={logRef}
-                    role="log"
-                    aria-live="polite"
-                    aria-relevant="additions"
-                    onScroll={handleLogScroll}
-                    className="growth-scroll log-container shrink-0 overflow-y-auto overflow-x-hidden px-3 py-2 font-log"
-                    style={{ height: CONSOLE_PANEL_HEIGHT_PX }}
-                  >
-                    {logs.map(({ id, time, message, type }) => (
-                      <LogLineRow key={id} time={time} message={message} type={type} />
-                    ))}
-                  </div>
-                </div>
-              </Card>
             </div>
           </div>
         )}
@@ -1890,7 +2756,7 @@ export default function App() {
                     <p className="font-log text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-400/70">exec.terminal</p>
                     <h2 className="mt-1 text-lg font-bold tracking-tight text-white">群组互动</h2>
                     <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                      <span className="text-fuchsia-200/80">可用 + 当日受限</span> 账号 · 今日消息随机表情 · 群间隔 5–15s
+                      <span className="text-fuchsia-200/80">可用 + 当日受限</span> 账号（不含冷却中）· 今日消息随机表情 · 群间隔 5–15s
                     </p>
                   </div>
                   <div className="rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/[0.06] px-3 py-2 text-center backdrop-blur-md sm:text-right">
@@ -2133,8 +2999,8 @@ export default function App() {
               </AccountMonitorColumn>
               <AccountMonitorColumn
                 variant="limited"
-                title="当日受限"
-                titleEn="Limited · Cooldown"
+                title="受限账号"
+                titleEn="Limited · Daily / Long-term"
                 count={(accounts.limited || []).length}
                 countClassName="stat-num-warn text-3xl md:text-4xl"
               >
@@ -2143,15 +3009,15 @@ export default function App() {
                     key={a.id}
                     variant="limited"
                     phoneLine={displayPhone(a)}
-                    subLine={`今日使用: ${a.today_used_count || 0}`}
-                    badge={<Badge glow status="当日受限" />}
+                    subLine={`${a.lifecycle_primary || "LIMITED"} · 今日成功拉人: ${a.today_count ?? 0}`}
+                    badge={<Badge glow status={a.lifecycle_sub || "受限"} />}
                   />
                 ))}
               </AccountMonitorColumn>
               <AccountMonitorColumn
                 variant="banned"
-                title="风控账号"
-                titleEn="At Risk · Review"
+                title="疑似风控"
+                titleEn="Risk · Review"
                 count={(accounts.banned || []).length}
                 countClassName="stat-num-risk text-3xl md:text-4xl"
               >
@@ -2160,17 +3026,11 @@ export default function App() {
                     key={a.id}
                     variant="banned"
                     phoneLine={displayPhone(a)}
-                    subLine={`今日使用: ${a.today_used_count || 0}`}
+                    subLine={`${a.lifecycle_primary || "RISK"} · 今日成功拉人: ${a.today_count ?? 0}`}
                     badge={
                       <Badge
                         glow
-                        status={
-                          a.status === "risk_suspected"
-                            ? "疑似风控"
-                            : a.status === "limited_long"
-                              ? "长期受限"
-                              : "风控"
-                        }
+                        status={a.lifecycle_sub || "疑似风控"}
                       />
                     }
                     right={
@@ -2480,6 +3340,356 @@ export default function App() {
                   </ul>
                 )}
               </aside>
+            </div>
+          </div>
+        )}
+
+        {tab === "消息Copy" && (
+          <div className={`${COPY_PAGE} mx-auto max-w-7xl`}>
+            <input
+              ref={copySessionFileInputRef}
+              type="file"
+              accept=".session,application/octet-stream"
+              className="hidden"
+              onChange={onCopySessionFileSelected}
+            />
+            <div className="pointer-events-none absolute right-[10%] top-0 h-40 w-40 rounded-full bg-violet-500/10 blur-[72px]" aria-hidden />
+            <div className="pointer-events-none absolute bottom-[20%] left-[5%] h-36 w-36 rounded-full bg-cyan-500/8 blur-[64px]" aria-hidden />
+            <div className="relative z-[1] flex flex-col gap-6">
+              <div
+                className={`grid grid-cols-1 gap-6 ${isAdmin ? "xl:grid-cols-[minmax(300px,380px)_minmax(0,1fr)]" : ""}`}
+              >
+                {isAdmin ? (
+                  <div className="flex min-w-0 flex-col gap-4">
+                  <div className={COPY_GLASS_CARD}>
+                    <h3 className="text-base font-bold tracking-tight text-slate-100">机器人库</h3>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                      Telethon 监听源频道；发送走 Bot API <span className="font-log">copyMessage</span>。凭证仅存服务端。
+                    </p>
+                    <div className="mt-4 space-y-3">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">api_id</span>
+                        <input
+                          type="number"
+                          className={COPY_FIELD}
+                          placeholder="整数"
+                          value={copyBotForm.api_id}
+                          onChange={(e) => setCopyBotForm((f) => ({ ...f, api_id: e.target.value }))}
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">api_hash</span>
+                        <input className={COPY_FIELD} placeholder="来自 my.telegram.org" value={copyBotForm.api_hash} onChange={(e) => setCopyBotForm((f) => ({ ...f, api_hash: e.target.value }))} />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">bot_token</span>
+                        <input
+                          type="password"
+                          className={COPY_FIELD}
+                          placeholder="BotFather 下发"
+                          value={copyBotForm.bot_token}
+                          onChange={(e) => setCopyBotForm((f) => ({ ...f, bot_token: e.target.value }))}
+                        />
+                      </label>
+                      <button type="button" disabled={copyBotSaving} className={`${COPY_BTN_GLOW_SM} w-full justify-center`} onClick={onCreateCopyBot}>
+                        {copyBotSaving ? "提交中…" : "添加到库"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    {copyBots.length === 0 ? (
+                      <p className="text-sm text-slate-500">暂无机器人，请先添加。</p>
+                    ) : (
+                      copyBots.map((b) => (
+                        <div key={b.id} className={COPY_GLASS_CARD}>
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <p className="font-log text-xs text-slate-500">#{b.id}</p>
+                              <p className="mt-0.5 text-sm font-semibold text-slate-200">
+                                api_id <span className="tabular-nums text-violet-200">{b.api_id}</span>
+                              </p>
+                              <p className="mt-1 font-log text-[11px] text-slate-500">{b.bot_token_masked}</p>
+                            </div>
+                            <span
+                              className={`shrink-0 rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                                b.status === "active"
+                                  ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-200"
+                                  : "border-rose-400/35 bg-rose-500/10 text-rose-200"
+                              }`}
+                            >
+                              {b.status === "active" ? "ACTIVE" : "ERROR"}
+                            </span>
+                            <span
+                              className={`shrink-0 rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                                b.session_ready
+                                  ? "border-cyan-400/35 bg-cyan-500/10 text-cyan-200"
+                                  : "border-rose-400/40 bg-rose-500/12 text-rose-200"
+                              }`}
+                              title={b.session_name || ""}
+                            >
+                              {b.session_ready ? "SESSION OK" : "无 SESSION"}
+                            </span>
+                          </div>
+                          {!b.session_ready ? (
+                            <p className="mt-2 text-xs text-rose-400/90">未生成 session：请使用「导入 session」或删除后重新添加 Bot。</p>
+                          ) : null}
+                          {b.last_error ? (
+                            <p className="mt-2 line-clamp-3 text-xs text-rose-400/90" title={b.last_error}>
+                              {b.last_error}
+                            </p>
+                          ) : null}
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              disabled={uploadingSessionBotId != null}
+                              className="rounded-xl border border-violet-400/35 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50"
+                              onClick={() => triggerCopySessionImport(b.id)}
+                            >
+                              {uploadingSessionBotId === b.id ? "导入中…" : "导入 session"}
+                            </button>
+                            {b.status === "error" ? (
+                              <button type="button" className={COPY_BTN_GLOW_SM} onClick={() => onResetCopyBot(b.id)}>
+                                清除错误
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 transition hover:-translate-y-0.5"
+                              onClick={() => onDeleteCopyBot(b.id)}
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+                ) : null}
+
+                <div className="flex min-w-0 flex-col gap-4">
+                  <div className={COPY_GLASS_CARD}>
+                    <h3 className="text-base font-bold tracking-tight text-slate-100">新建转发任务</h3>
+                    {!isAdmin ? (
+                      <p className="mt-1 text-xs text-slate-500">
+                        Bot 由管理员在「机器人库」维护；你可从下拉框选择可用 Bot，仅可查看与管理自己的转发任务。
+                      </p>
+                    ) : null}
+                    <p className="mt-1 text-xs text-slate-500">
+                      只能从库中选择 Bot；新建为 <span className="font-log">idle</span>，点「启动」经{" "}
+                      <span className="font-log">starting</span> 进入 <span className="font-log">running</span>。服务重启会自动恢复{" "}
+                      <span className="font-log">running</span> 任务。
+                    </p>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <label className="flex flex-col gap-1 sm:col-span-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">机器人</span>
+                        <select
+                          className={COPY_FIELD}
+                          value={copyTaskForm.bot_id}
+                          onChange={(e) => setCopyTaskForm((f) => ({ ...f, bot_id: e.target.value }))}
+                        >
+                          <option value="">选择库中 Bot…</option>
+                          {copyBots.map((b) => (
+                            <option key={b.id} value={String(b.id)} disabled={!b.session_ready}>
+                              #{b.id} · {b.bot_token_masked}
+                              {b.session_ready ? "" : " · 无session"} ({b.status})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1 sm:col-span-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">来源频道 / 群</span>
+                        <input className={COPY_FIELD} placeholder="@username 或 -100…" value={copyTaskForm.source_channel} onChange={(e) => setCopyTaskForm((f) => ({ ...f, source_channel: e.target.value }))} />
+                      </label>
+                      <label className="flex flex-col gap-1 sm:col-span-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">目标频道 / 群</span>
+                        <input className={COPY_FIELD} placeholder="@username 或 -100…" value={copyTaskForm.target_channel} onChange={(e) => setCopyTaskForm((f) => ({ ...f, target_channel: e.target.value }))} />
+                      </label>
+                    </div>
+                    <button type="button" disabled={copyTaskSaving} className={`${COPY_BTN_GLOW_SM} mt-4 w-full justify-center`} onClick={onCreateCopyTask}>
+                      {copyTaskSaving ? "创建中…" : "创建任务（idle）"}
+                    </button>
+                  </div>
+
+                  <div className={`${TABLE_WRAP} border-violet-400/12`}>
+                    <div className="border-b border-violet-400/10 px-3 py-2">
+                      <h4 className="text-sm font-semibold text-slate-200">Copy 任务</h4>
+                      <p className="text-[11px] text-slate-500">
+                        状态：<span className="font-log">idle / starting / running / paused / error</span> · 约 1.5s 轮询同步 · 今日/累计（UTC 日切）
+                      </p>
+                    </div>
+                    <div className="max-h-[min(52vh,520px)] overflow-auto">
+                      <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+                        <thead className="sticky top-0 z-[1] bg-[rgba(12,16,28,0.92)] backdrop-blur-md">
+                          <tr className="border-b border-white/[0.06] text-[11px] uppercase tracking-wider text-slate-500">
+                            <th className="px-3 py-2 font-semibold">来源</th>
+                            <th className="px-3 py-2 font-semibold">目标</th>
+                            <th className="px-3 py-2 font-semibold">Bot</th>
+                            <th className="px-3 py-2 font-semibold">状态</th>
+                            <th className="px-3 py-2 font-semibold">今日/总计</th>
+                            <th className="px-3 py-2 font-semibold">操作</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {copyTasks.length === 0 ? (
+                            <tr>
+                              <td colSpan={6} className="px-3 py-8 text-center text-slate-500">
+                                暂无任务
+                              </td>
+                            </tr>
+                          ) : (
+                            copyTasks.map((t) => {
+                              const taskBot = copyBots.find((b) => b.id === t.bot_id);
+                              const sessionOk = Boolean(taskBot?.session_ready);
+                              const displaySt = resolveCopyDisplayStatus(t, copyStartOptimistic);
+                              let stWrap =
+                                "inline-flex items-center gap-1.5 rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide";
+                              let stLabel = "IDLE";
+                              if (displaySt === "running") {
+                                stWrap +=
+                                  " border-emerald-400/45 bg-emerald-500/15 text-emerald-200 shadow-[0_0_16px_rgba(34,197,94,0.35)] ring-1 ring-emerald-400/20";
+                                stLabel = "RUNNING";
+                              } else if (displaySt === "starting") {
+                                stWrap +=
+                                  " animate-pulse border-amber-400/45 bg-amber-500/15 text-amber-200 shadow-[0_0_14px_rgba(251,191,36,0.28)] ring-1 ring-amber-400/25";
+                                stLabel = "STARTING";
+                              } else if (displaySt === "error") {
+                                stWrap += " border-rose-400/45 bg-rose-500/12 text-rose-200 ring-1 ring-rose-400/20";
+                                stLabel = "ERROR";
+                              } else if (displaySt === "paused") {
+                                stWrap += " border-slate-500/35 bg-slate-600/15 text-slate-400";
+                                stLabel = "PAUSED";
+                              } else {
+                                stWrap += " border-slate-500/30 bg-slate-600/12 text-slate-400";
+                                stLabel = "IDLE";
+                              }
+                              const canPause = displaySt === "running" || displaySt === "starting";
+                              const showMainSpinner = displaySt === "starting";
+                              const primaryIsRetry = displaySt === "error";
+                              const primaryHidden = displaySt === "running";
+                              return (
+                                <tr key={t.id} className="border-t border-white/[0.06] hover:bg-white/[0.03]">
+                                  <td className="max-w-[140px] truncate px-3 py-2.5 font-log text-xs text-slate-200" title={t.source_channel}>
+                                    {t.source_channel}
+                                  </td>
+                                  <td className="max-w-[140px] truncate px-3 py-2.5 font-log text-xs text-slate-200" title={t.target_channel}>
+                                    {t.target_channel}
+                                  </td>
+                                  <td className="px-3 py-2.5 font-log text-xs text-violet-200/90">#{t.bot_id}</td>
+                                  <td className="px-3 py-2.5">
+                                    <span className={stWrap}>
+                                      {displaySt === "starting" ? (
+                                        <Loader className="h-3 w-3 shrink-0 animate-spin text-amber-200" aria-hidden />
+                                      ) : null}
+                                      {stLabel}
+                                    </span>
+                                    {displaySt === "error" && t.last_error ? (
+                                      <p className="mt-1 line-clamp-2 text-[10px] text-rose-400/90" title={t.last_error}>
+                                        {t.last_error}
+                                      </p>
+                                    ) : null}
+                                    {displaySt !== "error" && t.last_error ? (
+                                      <p className="mt-1 line-clamp-2 text-[10px] text-slate-500" title={t.last_error}>
+                                        {t.last_error}
+                                      </p>
+                                    ) : null}
+                                  </td>
+                                  <td className="px-3 py-2.5 tabular-nums text-slate-300">
+                                    {t.today_forwarded ?? 0} / {t.total_forwarded ?? 0}
+                                  </td>
+                                  <td className="px-3 py-2.5">
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {primaryHidden ? null : showMainSpinner ? (
+                                        <button
+                                          type="button"
+                                          disabled
+                                          className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-amber-400/35 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-200 opacity-80"
+                                        >
+                                          <UiSpinner tone="muted" />
+                                          启动中…
+                                        </button>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          disabled={!sessionOk || displaySt === "starting"}
+                                          title={
+                                            !sessionOk ? "未生成 session，请导入或由管理员处理" : undefined
+                                          }
+                                          className="rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-200 transition hover:-translate-y-0.5 hover:shadow-[0_0_12px_rgba(52,211,153,0.2)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
+                                          onClick={() => onStartCopyTask(t.id)}
+                                        >
+                                          {primaryIsRetry ? "重试" : "启动"}
+                                        </button>
+                                      )}
+                                      {displaySt === "running" ? (
+                                        <button
+                                          type="button"
+                                          className="rounded-lg border border-amber-400/35 bg-amber-500/12 px-2 py-1 text-[11px] font-medium text-amber-200 transition hover:-translate-y-0.5 hover:shadow-[0_0_12px_rgba(251,191,36,0.18)]"
+                                          onClick={() => onPauseCopyTask(t.id)}
+                                        >
+                                          暂停
+                                        </button>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          disabled={!canPause}
+                                          className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-[11px] font-medium text-slate-500 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
+                                          onClick={() => onPauseCopyTask(t.id)}
+                                        >
+                                          {displaySt === "starting" ? "取消" : "暂停"}
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2 py-1 text-[11px] font-medium text-rose-200 transition hover:-translate-y-0.5"
+                                        onClick={() => onDeleteCopyTask(t.id)}
+                                      >
+                                        删除
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`${COPY_GLASS_CARD} flex min-h-[200px] flex-col overflow-hidden`}>
+                <div className="mb-2 flex items-center justify-between gap-2 border-b border-violet-400/10 pb-2">
+                  <h3 className="text-sm font-bold text-slate-100">实时日志</h3>
+                  <span className="text-[10px] text-slate-500">约每 1.5s 拉取任务与日志</span>
+                </div>
+                <div className="growth-scroll max-h-56 min-h-[160px] flex-1 overflow-y-auto rounded-lg border border-white/[0.06] bg-black/25 px-2 py-2 font-log text-[11px] leading-relaxed">
+                  {copyLogs.length === 0 ? (
+                    <p className="px-2 py-4 text-slate-500">暂无日志</p>
+                  ) : (
+                    copyLogs.map((line, idx) => {
+                      const lv = (line.level || "info").toLowerCase();
+                      const cls =
+                        lv === "error"
+                          ? "text-rose-400"
+                          : lv === "warn"
+                            ? "text-amber-300"
+                            : "text-slate-300";
+                      const tail = [line.task_id != null ? `task=${line.task_id}` : null, line.bot_id != null ? `bot=${line.bot_id}` : null]
+                        .filter(Boolean)
+                        .join(" ");
+                      return (
+                        <div key={`${line.ts}-${idx}`} className={`border-b border-white/[0.04] py-1.5 last:border-b-0 ${cls}`}>
+                          <span className="text-slate-500">{line.ts}</span>
+                          {tail ? <span className="ml-2 text-slate-500">[{tail}]</span> : null}
+                          <span className="ml-2 break-words">{line.message}</span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}

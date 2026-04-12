@@ -196,6 +196,16 @@ export const api = {
     }),
   getProxyCheckJob: (jobId) =>
     request(`/proxy/pool/check-job/${encodeURIComponent(jobId)}`),
+  cancelProxyPoolCheck: (jobId) =>
+    request(`/proxy/pool/check/cancel/${encodeURIComponent(jobId)}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  stopProxyPoolCheck: (jobId) =>
+    request(`/proxy/pool/check/stop/${encodeURIComponent(jobId)}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   matchProxies: (body, opts = {}) =>
     request("/proxy/match", {
       method: "POST",

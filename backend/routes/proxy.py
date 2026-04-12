@@ -6,14 +6,20 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from auth import get_current_user_optional, require_admin
 from database import SessionLocal, get_db
 from logger import get_logger
 from models import AccountFile, Proxy, User
-from services.proxy_check_service import CHECK_JOBS, get_check_job, run_checks_for_ids, run_manual_check_job
+from services.proxy_check_service import (
+    CHECK_JOBS,
+    RUNNING_TASKS,
+    fetch_pending_proxy_ids_sync,
+    get_check_job,
+    run_checks_for_ids,
+    run_manual_check_job,
+)
 from services.proxy_service import assign_proxy_to_account, import_proxies_from_file, import_proxies_from_text
 
 
@@ -66,25 +72,7 @@ def list_proxy_pool(
 async def start_proxy_pool_check(
     _admin: User = Depends(require_admin),
 ) -> dict:
-    # 独立短会话：避免与本请求鉴权用的 get_db 会话并存，减少 SQLite 与后台写入抢锁导致长时间挂起
-    db = SessionLocal()
-    try:
-        q = (
-            db.query(Proxy)
-            .filter(
-                or_(
-                    Proxy.proxy_status.is_(None),
-                    Proxy.proxy_status == "",
-                    Proxy.proxy_status.in_(["unknown", "dead"]),
-                )
-            )
-            .order_by(Proxy.id.asc())
-        )
-        rows = q.all()
-        ids = [p.id for p in rows]
-    finally:
-        db.close()
-
+    ids = fetch_pending_proxy_ids_sync()
     if not ids:
         return {
             "ok": True,
@@ -93,22 +81,65 @@ async def start_proxy_pool_check(
             "message": "没有待检测的代理（均为可用 ok 或列表为空）",
         }
     job_id = uuid4().hex
-    CHECK_JOBS[job_id] = {"logs": [], "done": False}
-    # 先写入一条同步日志，避免 BackgroundTasks+线程池投递协程失败时前端一直空白
-    CHECK_JOBS[job_id]["logs"].append(f"[INFO] 任务已受理，共 {len(ids)} 条，正在启动异步检测…")
-    task = asyncio.create_task(run_manual_check_job(job_id, ids))
+    CHECK_JOBS[job_id] = {"logs": [], "done": False, "cancel": False}
+    CHECK_JOBS[job_id]["logs"].append("[INFO] 任务已受理，正在启动检测...")
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(run_manual_check_job(job_id))
+    RUNNING_TASKS[job_id] = task
 
-    def _done(t: asyncio.Task) -> None:
-        try:
-            t.result()
-        except Exception as exc:
-            _proxy_check_route_log.exception("proxy check job crashed: %s", exc)
-            if job_id in CHECK_JOBS:
-                CHECK_JOBS[job_id]["logs"].append(f"[ERROR] 检测任务异常: {exc}")
-                CHECK_JOBS[job_id]["done"] = True
+    def _cleanup(t: asyncio.Task) -> None:
+        RUNNING_TASKS.pop(job_id, None)
+        if job_id not in CHECK_JOBS:
+            return
+        if t.cancelled():
+            CHECK_JOBS[job_id]["done"] = True
+            return
+        exc = t.exception()
+        if exc is not None:
+            CHECK_JOBS[job_id]["logs"].append(f"[ERROR] 任务异常: {exc}")
+            _proxy_check_route_log.error(
+                "proxy check job failed job_id=%s",
+                job_id,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+        CHECK_JOBS[job_id]["done"] = True
 
-    task.add_done_callback(_done)
+    task.add_done_callback(_cleanup)
     return {"ok": True, "job_id": job_id, "count": len(ids)}
+
+
+@router.post("/proxy/pool/check/cancel/{job_id}")
+def cancel_proxy_pool_check(
+    job_id: str,
+    _admin: User = Depends(require_admin),
+) -> dict:
+    job = get_check_job(job_id)
+    if job is None:
+        return {"ok": False, "message": "任务不存在或已结束"}
+    if job.get("done"):
+        return {"ok": False, "message": "任务已结束"}
+    job["cancel"] = True
+    return {"ok": True, "message": "已发送取消指令"}
+
+
+@router.post("/proxy/pool/check/stop/{job_id}")
+def stop_proxy_pool_check(
+    job_id: str,
+    _admin: User = Depends(require_admin),
+) -> dict:
+    """立即中断检测：协作取消 + 取消 asyncio 任务，并标记 job 已结束。"""
+    job = get_check_job(job_id)
+    if job is None:
+        return {"ok": False, "message": "任务不存在或已结束"}
+    if job.get("done"):
+        return {"ok": False, "message": "任务已结束"}
+    job["cancel"] = True
+    job["logs"].append("[INFO] 用户中断检测任务")
+    job["done"] = True
+    task = RUNNING_TASKS.get(job_id)
+    if task is not None and not task.done():
+        task.cancel()
+    return {"ok": True, "message": "已停止检测"}
 
 
 @router.get("/proxy/pool/check-job/{job_id}")
@@ -118,8 +149,13 @@ def get_proxy_check_job(
 ) -> dict:
     job = get_check_job(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="任务不存在或已过期")
-    return {"ok": True, "logs": list(job["logs"]), "done": bool(job["done"])}
+        return {"ok": True, "logs": [], "done": True, "cancel": False}
+    return {
+        "ok": True,
+        "logs": list(job["logs"]),
+        "done": bool(job["done"]),
+        "cancel": bool(job.get("cancel")),
+    }
 
 
 @router.post("/proxy/pool/dedupe")
@@ -216,7 +252,8 @@ async def upload_proxy_file(
             text = content.decode("utf-8", errors="replace")
         imported_count, new_ids = import_proxies_from_text(text)
         if new_ids:
-            t = asyncio.create_task(run_checks_for_ids(new_ids, job_id=None))
+            loop = asyncio.get_running_loop()
+            t = loop.create_task(run_checks_for_ids(new_ids, job_id=None))
 
             def _log_import_check(err_task: asyncio.Task) -> None:
                 try:
@@ -237,7 +274,8 @@ async def upload_proxy_file(
         target.write_bytes(content)
         imported_count, new_ids = import_proxies_from_file()
         if new_ids:
-            t = asyncio.create_task(run_checks_for_ids(new_ids, job_id=None))
+            loop = asyncio.get_running_loop()
+            t = loop.create_task(run_checks_for_ids(new_ids, job_id=None))
 
             def _log_import_check_json(err_task: asyncio.Task) -> None:
                 try:

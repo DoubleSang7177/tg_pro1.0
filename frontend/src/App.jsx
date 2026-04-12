@@ -4,9 +4,12 @@ import { useAutoRefresh } from "./hooks/useAutoRefresh";
 import {
   Activity,
   AlertCircle,
+  ArrowDown,
+  ArrowUp,
   BarChart3,
   CalendarClock,
   CheckCircle,
+  Copy,
   Cpu,
   Database,
   Download,
@@ -18,8 +21,11 @@ import {
   Network,
   Radar,
   Repeat2,
+  Rocket,
+  Search,
   Server,
   Shield,
+  Zap,
   Sparkles,
   Upload,
   TrendingUp,
@@ -34,6 +40,7 @@ import {
 import { api, downloadScraperFile, downloadScraperTaskById, getWebSocketUrl } from "./api";
 import { AuthModal } from "./components/AuthModal";
 import { GlassDropdown } from "./components/GlassDropdown";
+import { AdminTradingSelect } from "./components/AdminTradingSelect";
 import { EngagementGroupPanel } from "./components/EngagementGroupPanel";
 import { ProxyCheckGlassModal, ProxyMatchGlassModal, ProxyPoolGlassModal } from "./components/ProxyGlassModals";
 import { UiSpinner } from "./components/UiSpinner";
@@ -78,18 +85,111 @@ function proxyListStatusLabel(status) {
   return String(status || "—");
 }
 
-function countryFlagEmoji(code) {
-  const c = String(code || "").trim().toUpperCase();
-  if (c.length !== 2 || !/^[A-Z]{2}$/.test(c)) return "";
-  const cp = (ch) => 0x1f1e6 + (ch.charCodeAt(0) - 65);
-  return String.fromCodePoint(cp(c[0]), cp(c[1]));
+/** Unicode 国旗（ISO 3166-1 alpha-2）；非法或空码为 🌐 */
+function countryCodeToFlag(code) {
+  if (!code || String(code).trim() === "") return "🌐";
+  const s = String(code).trim().toUpperCase();
+  if (s.length !== 2 || !/^[A-Z]{2}$/.test(s)) return "🌐";
+  return s.replace(/./g, (char) => String.fromCodePoint(127397 + char.charCodeAt(0)));
 }
 
-function proxyCheckStatusUi(checkStatus) {
+const countryMap = {
+  TH: "泰国",
+  TR: "土耳其",
+  MY: "马来西亚",
+  CU: "古巴",
+  KR: "韩国",
+};
+
+function proxyGeoRegionCell(p) {
+  const cc = String(p.country_code || "").trim().toUpperCase();
+  const validCode = cc.length === 2 && /^[A-Z]{2}$/.test(cc);
+  const flag = validCode ? countryCodeToFlag(cc) : "🌐";
+  const countryName = validCode && countryMap[cc] ? countryMap[cc] : "未知地区";
+  const cityLine = String(p.check_city || "").trim() || "-";
+
+  return (
+    <div className="country-block min-w-0 max-w-[12rem] py-0.5">
+      <div className="country-row flex items-center">
+        <span
+          className="flag mr-[6px] text-base leading-none [filter:drop-shadow(0_0_4px_rgba(255,255,255,0.2))]"
+          aria-hidden
+        >
+          {flag}
+        </span>
+        <span className="country-name text-[13px] font-medium leading-tight text-[#e2e8f0]">{countryName}</span>
+      </div>
+      <div className="city ml-[22px] text-xs leading-snug text-[#94a3b8]">{cityLine}</div>
+    </div>
+  );
+}
+
+/** 出口检测结果：圆点 + 文案（与左侧状态点语义一致） */
+function proxyExportCheckVisual(checkStatus) {
   const s = String(checkStatus || "unknown").toLowerCase();
-  if (s === "ok") return { emoji: "🟢", label: "正常", cls: "text-emerald-300" };
-  if (s === "dead") return { emoji: "🔴", label: "代理失效", cls: "text-rose-300" };
-  return { emoji: "⚪", label: "未检测", cls: "text-slate-400" };
+  if (s === "ok")
+    return {
+      label: "正常",
+      dot: "bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.85)]",
+      text: "text-emerald-300/95",
+    };
+  if (s === "dead")
+    return {
+      label: "失败",
+      dot: "bg-rose-500 shadow-[0_0_12px_rgba(248,113,113,0.8)]",
+      text: "text-rose-300/95",
+    };
+  return {
+    label: "未检测",
+    dot: "bg-amber-400/90 shadow-[0_0_10px_rgba(251,191,36,0.4)]",
+    text: "text-slate-300/90",
+  };
+}
+
+function proxyTypeRowVisual(proxyType) {
+  const raw = String(proxyType || "").trim();
+  const t = raw.toLowerCase();
+  const isDirect = t === "direct" || t.includes("direct");
+  if (isDirect) return { Icon: Zap, label: raw || "-", iconClass: "text-amber-400/95 drop-shadow-[0_0_6px_rgba(251,191,36,0.35)]" };
+  return { Icon: Shield, label: raw || "-", iconClass: "text-cyan-400/90 drop-shadow-[0_0_6px_rgba(34,211,238,0.25)]" };
+}
+
+function formatUserRelativeZh(iso, nowMs = Date.now()) {
+  if (!iso) return "—";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "—";
+  const diff = Math.max(0, (nowMs - t) / 1000);
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} 天前`;
+  return new Date(iso).toLocaleString("zh-CN", { hour12: false });
+}
+
+function userAvatarHue(username) {
+  let h = 0;
+  const s = String(username || "?");
+  for (let i = 0; i < s.length; i++) h = (h + s.charCodeAt(i) * (i + 1)) % 360;
+  return h;
+}
+
+function formatUserLogTime(iso) {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "—";
+  }
+}
+
+/** 5 分钟内活跃视为在线（与后端一致，前端随 tick 刷新文案） */
+function userIsOnlineByActivity(lastActiveIso, nowMs = Date.now()) {
+  if (!lastActiveIso) return false;
+  const t = new Date(lastActiveIso).getTime();
+  if (Number.isNaN(t)) return false;
+  return (nowMs - t) / 1000 <= 300;
 }
 
 /** 玻璃基底（无纯白/纯黑底板） */
@@ -188,6 +288,224 @@ function resolveCopyDisplayStatus(task, optimisticStartIds) {
   if (optimisticStartIds[task.id] && st !== "running" && st !== "error" && st !== "paused") return "starting";
   if (st === "running" || st === "paused" || st === "error") return st;
   return "idle";
+}
+
+function parseEngagementProgressPct(logs) {
+  const arr = Array.isArray(logs) ? logs : [];
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const p = String(arr[i]?.progress || "").trim();
+    const m = p.match(/(\d+)\s*%/);
+    if (m) return Math.min(100, Number(m[1]));
+    const m2 = p.match(/(\d+)\s*\/\s*(\d+)/);
+    if (m2 && Number(m2[2]) > 0) return Math.min(100, Math.round((Number(m2[1]) / Number(m2[2])) * 100));
+  }
+  return null;
+}
+
+function formatElapsedMinutesShort(fromIso, nowMs) {
+  if (!fromIso) return 0;
+  const t = new Date(fromIso).getTime();
+  if (Number.isNaN(t)) return 0;
+  return Math.max(0, Math.floor((nowMs - t) / 60000));
+}
+
+/** 左侧栏 · 全局任务监控（仅展示：用户增长 / 消息 Copy / 群组互动） */
+function GlobalSidebarTaskMonitor({
+  taskRunning,
+  growthExecSnapshot,
+  copyTasks,
+  copyStartOptimistic,
+  engagementJobId,
+  engagementSubmitting,
+  engagementLiveLogs,
+  nowMs,
+}) {
+  const rows = [];
+
+  const growthVisible = Boolean(taskRunning || growthExecSnapshot);
+  if (growthVisible) {
+    const snap = growthExecSnapshot;
+    const ui = snap?.uiStatus || (taskRunning ? "WAITING" : "WAITING");
+    const errHint = snap?.errorHint;
+    const qi = Number(snap?.queueIndex ?? 0);
+    const qn = Number(snap?.queueTotal ?? 0);
+    let unified = "WAITING";
+    if (ui === "ERROR") unified = "ERROR";
+    else if (ui === "STOPPED") unified = "DONE";
+    else if (ui === "RUNNING") unified = "RUNNING";
+    else if (taskRunning) unified = "WAITING";
+    else unified = "DONE";
+
+    let sub = "—";
+    if (unified === "ERROR") sub = `异常 · ${String(errHint || "任务失败").slice(0, 28)}`;
+    else if (unified === "DONE") sub = ui === "STOPPED" ? "已停止" : "已完成";
+    else if (unified === "RUNNING" && qn > 0) sub = `进度 ${qi} / ${qn}`;
+    else if (unified === "RUNNING") sub = `进行中 · ${snap?.taskKind || "拉人"}`;
+    else sub = `等待 · ${snap?.taskKind || "就绪"}`;
+
+    let progressPct = 0;
+    if (qn > 0) progressPct = Math.min(100, Math.round((qi / qn) * 100));
+    else if (snap?.progressPct != null && snap.progressPct !== "") progressPct = Math.min(100, Number(snap.progressPct) || 0);
+    else if (unified === "RUNNING") progressPct = 36;
+    else if (unified === "WAITING") progressPct = 12;
+    else if (unified === "DONE") progressPct = 100;
+    else if (unified === "ERROR") progressPct = 100;
+
+    rows.push({
+      key: "growth",
+      variant: "growth",
+      Icon: Rocket,
+      title: "用户增长",
+      subtitle: sub,
+      unified,
+      progressPct,
+      iconPulse: unified === "RUNNING",
+      errorGlow: unified === "ERROR",
+    });
+  }
+
+  const copyEnriched = (copyTasks || []).map((t) => ({
+    t,
+    st: resolveCopyDisplayStatus(t, copyStartOptimistic || {}),
+  }));
+  const copyActive = copyEnriched.filter((x) => ["running", "starting", "error", "paused"].includes(x.st));
+  if (copyActive.length > 0) {
+    const hasErr = copyActive.some((x) => x.st === "error");
+    const nRun = copyActive.filter((x) => x.st === "running" || x.st === "starting").length;
+    let unified = "WAITING";
+    if (hasErr) unified = "ERROR";
+    else if (nRun > 0) unified = "RUNNING";
+    else unified = "WAITING";
+
+    const errTask = copyActive.find((x) => x.st === "error");
+    const errMsg = errTask?.t?.last_error ? String(errTask.t.last_error).slice(0, 32) : "任务错误";
+
+    const tsList = copyActive.map((x) => x.t.last_run_at || x.t.created_at).filter(Boolean);
+    const elapsedMin =
+      tsList.length > 0 ? Math.min(...tsList.map((iso) => formatElapsedMinutesShort(iso, nowMs))) : 0;
+
+    const allPaused = copyActive.every((x) => x.st === "paused");
+
+    let sub = "";
+    if (unified === "ERROR") sub = `异常 · ${errMsg}`;
+    else if (allPaused) sub = `${copyActive.length}任务 · ${elapsedMin}分钟`;
+    else sub = `${nRun || copyActive.length}任务 · ${elapsedMin}分钟`;
+
+    let progressPct = 18;
+    if (unified === "ERROR") progressPct = 100;
+    else if (unified === "RUNNING") progressPct = Math.min(92, 38 + Math.min(48, elapsedMin * 5));
+    else if (unified === "WAITING") progressPct = allPaused ? 28 : 22;
+
+    rows.push({
+      key: "copy",
+      variant: "copy",
+      Icon: Copy,
+      title: "消息Copy",
+      subtitle: sub,
+      unified,
+      progressPct,
+      iconPulse: unified === "RUNNING",
+      errorGlow: unified === "ERROR",
+    });
+  }
+
+  const engVisible = Boolean(engagementSubmitting || engagementJobId);
+  if (engVisible) {
+    const logs = engagementLiveLogs || [];
+    const errLine = [...logs].reverse().find((l) => String(l?.level || "").toLowerCase() === "error");
+    const engPct = parseEngagementProgressPct(logs);
+    let unified = "WAITING";
+    let sub = "正在启动…";
+    if (engagementJobId && errLine) {
+      unified = "ERROR";
+      sub = `异常 · ${String(errLine.message || errLine.layer || "已中断").slice(0, 28)}`;
+    } else if (engagementJobId) {
+      unified = "RUNNING";
+      sub = engPct != null ? `进度 ${engPct}%` : "处理中…";
+    }
+
+    let progressPct = 12;
+    if (unified === "ERROR") progressPct = 100;
+    else if (unified === "RUNNING") progressPct = engPct != null ? engPct : 44;
+    else if (unified === "WAITING") progressPct = 14;
+
+    rows.push({
+      key: "engagement",
+      variant: "interact",
+      Icon: MessageCircle,
+      title: "群组互动",
+      subtitle: sub,
+      unified,
+      progressPct,
+      iconPulse: unified === "RUNNING",
+      errorGlow: unified === "ERROR",
+    });
+  }
+
+  if (!rows.length) return null;
+
+  const statusPillClass = (u) => {
+    if (u === "RUNNING") return "sidebar-task-status sidebar-task-status--running";
+    if (u === "WAITING") return "sidebar-task-status sidebar-task-status--waiting";
+    if (u === "ERROR") return "sidebar-task-status sidebar-task-status--error";
+    return "sidebar-task-status sidebar-task-status--done";
+  };
+
+  const cardClass = (variant, errorGlow) => {
+    const base = "sidebar-task-card";
+    const v =
+      variant === "growth" ? "sidebar-task-card--growth" : variant === "copy" ? "sidebar-task-card--copy" : "sidebar-task-card--interact";
+    return `${base} ${v}${errorGlow ? " sidebar-task-card--error" : ""}`;
+  };
+
+  const iconWrapClass = (variant, pulse) => {
+    const v =
+      variant === "growth"
+        ? "sidebar-task-icon-wrap--growth"
+        : variant === "copy"
+          ? "sidebar-task-icon-wrap--copy"
+          : "sidebar-task-icon-wrap--interact";
+    return `sidebar-task-icon-wrap ${v}${pulse ? " sidebar-task-icon-wrap--pulse" : ""}`;
+  };
+
+  const fillClass = (variant) =>
+    variant === "growth"
+      ? "sidebar-task-progress-fill sidebar-task-progress-fill--growth"
+      : variant === "copy"
+        ? "sidebar-task-progress-fill sidebar-task-progress-fill--copy"
+        : "sidebar-task-progress-fill sidebar-task-progress-fill--interact";
+
+  return (
+    <div className="shrink-0 border-t border-white/[0.06] px-2 pb-3 pt-2">
+      <div className="mb-2 flex items-center gap-1.5 px-1">
+        <Zap className="h-3.5 w-3.5 shrink-0 text-cyan-400/85" strokeWidth={2.25} aria-hidden />
+        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">系统任务</span>
+      </div>
+      <div className="max-h-[180px] space-y-2.5 overflow-y-auto pr-0.5 [scrollbar-width:thin]">
+        {rows.map((r) => {
+          const Icon = r.Icon;
+          const w = Math.min(100, Math.max(0, Number(r.progressPct) || 0));
+          return (
+            <div key={r.key} className={cardClass(r.variant, r.errorGlow)}>
+              <span className={statusPillClass(r.unified)}>{r.unified}</span>
+              <div className="relative flex gap-3">
+                <div className={iconWrapClass(r.variant, r.iconPulse)}>
+                  <Icon className="h-[18px] w-[18px]" strokeWidth={2.25} aria-hidden />
+                </div>
+                <div className="min-w-0 flex-1 pr-[4.5rem]">
+                  <div className="sidebar-task-title">{r.title}</div>
+                  <div className="sidebar-task-sub">{r.subtitle}</div>
+                  <div className="sidebar-task-progress-track">
+                    <div className={fillClass(r.variant)} style={{ width: `${w}%` }} />
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 /** 最多保留日志条数（FIFO 丢弃最早） */
@@ -1271,6 +1589,8 @@ export default function App() {
   const [proxyCheckJobId, setProxyCheckJobId] = useState(null);
   const [proxyCheckLogs, setProxyCheckLogs] = useState([]);
   const [proxyCheckRunning, setProxyCheckRunning] = useState(false);
+  const [proxyCheckCancelled, setProxyCheckCancelled] = useState(false);
+  const [proxyCheckStopping, setProxyCheckStopping] = useState(false);
   const proxyCheckLogEndRef = useRef(null);
   const [matchUnbound, setMatchUnbound] = useState(true);
   const [matchDeadProxy, setMatchDeadProxy] = useState(true);
@@ -1279,6 +1599,17 @@ export default function App() {
   const matchAbortRef = useRef(null);
   const proxyMatchLogEndRef = useRef(null);
   const [users, setUsers] = useState([]);
+  const [usersSummary, setUsersSummary] = useState({
+    total_users: 0,
+    active_users_today: 0,
+    today_actions: 0,
+    admin_count: 0,
+  });
+  const [userMgmtQuery, setUserMgmtQuery] = useState("");
+  const [userMgmtSortKey, setUserMgmtSortKey] = useState("actions");
+  const [userMgmtSortDesc, setUserMgmtSortDesc] = useState(true);
+  const [userMgmtNowTick, setUserMgmtNowTick] = useState(() => Date.now());
+  const [userDetailModal, setUserDetailModal] = useState(null);
   const [accountPaths, setAccountPaths] = useState([]);
   const [showPathModal, setShowPathModal] = useState(false);
   const [newPath, setNewPath] = useState("");
@@ -1313,6 +1644,49 @@ export default function App() {
       setToasts((prev) => prev.filter((x) => x.id !== id));
     }, 2000);
   }, []);
+
+  const applyUsersListPayload = useCallback((list) => {
+    const raw = list?.users || [];
+    const s = list?.summary;
+    setUsersSummary(
+      s && typeof s === "object"
+        ? {
+            total_users: Number(s.total_users ?? raw.length),
+            active_users_today: Number(s.active_users_today ?? 0),
+            today_actions: Number(s.today_actions ?? 0),
+            admin_count: Number(
+              s.admin_count ?? raw.filter((u) => (u.role || "").toLowerCase() === "admin").length,
+            ),
+          }
+        : {
+            total_users: raw.length,
+            active_users_today: 0,
+            today_actions: 0,
+            admin_count: raw.filter((u) => (u.role || "").toLowerCase() === "admin").length,
+          },
+    );
+    setUsers(
+      raw.map((u) => {
+        const st = u.stats || {};
+        return {
+          ...u,
+          stats: {
+            action_count_today: Number(st.action_count_today ?? 0),
+            total_actions: Number(st.total_actions ?? 0),
+            last_active_at: st.last_active_at ?? u.created_at ?? null,
+            status: (st.status || "").toLowerCase() === "online" ? "online" : "offline",
+            activity_log: Array.isArray(st.activity_log) ? st.activity_log : [],
+          },
+        };
+      }),
+    );
+  }, []);
+
+  const loadUsersData = useCallback(async () => {
+    const list = await api.listUsers();
+    applyUsersListPayload(list);
+  }, [applyUsersListPayload]);
+
   /** 用户增长：任务被用户停止后，控制按钮保持「已停止」直至下次开始 */
   const [growthTaskStoppedUi, setGrowthTaskStoppedUi] = useState(false);
   const logRef = useRef(null);
@@ -1322,6 +1696,8 @@ export default function App() {
   const [lastGroupMetadataSync, setLastGroupMetadataSync] = useState(null);
   const [taskRunning, setTaskRunning] = useState(false);
   const growthJobIdRef = useRef(null);
+  /** 用户增长 [i/n] 进度，供侧栏监控在任务收尾帧读取 */
+  const growthQueueRef = useRef({ qi: 0, qn: 0 });
   const stopGrowthLoadingRef = useRef(false);
   const [stopGrowthLoading, setStopGrowthLoading] = useState(false);
   /** 任务控制面板：就绪 / 执行中 / 已完成（成功后可短暂显示 Completed） */
@@ -1395,9 +1771,25 @@ export default function App() {
   const engagementLogRef = useRef(null);
   const [engagementGroupResolution, setEngagementGroupResolution] = useState(null);
   const [engagementRegisterLoading, setEngagementRegisterLoading] = useState(false);
+  const [sidebarMonitorNow, setSidebarMonitorNow] = useState(() => Date.now());
 
   const isAdmin = useMemo(() => profile?.role === "admin", [profile]);
   const availableAccounts = useMemo(() => accounts.active || [], [accounts]);
+
+  useEffect(() => {
+    if (tab !== "用户管理" || !isAdmin) return undefined;
+    const id = window.setInterval(() => setUserMgmtNowTick(Date.now()), 30000);
+    return () => window.clearInterval(id);
+  }, [tab, isAdmin]);
+
+  useEffect(() => {
+    if (tab !== "用户管理" || !isAdmin) return undefined;
+    loadUsersData().catch(() => {});
+  }, [tab, isAdmin, loadUsersData]);
+
+  useEffect(() => {
+    if (tab !== "用户管理") setUserDetailModal(null);
+  }, [tab]);
 
   const toggleProxyTableSort = useCallback((key) => {
     setProxyTableSort((s) => (s.key === key ? { key, asc: !s.asc } : { key, asc: true }));
@@ -1685,6 +2077,37 @@ export default function App() {
     [],
   );
 
+  const userMgmtSortOptions = useMemo(
+    () => [
+      { value: "actions-desc", label: "今日操作 · 高 → 低", TrailingIcon: ArrowUp },
+      { value: "actions-asc", label: "今日操作 · 低 → 高", TrailingIcon: ArrowDown },
+      { value: "last-desc", label: "最近活跃 · 新 → 旧", TrailingIcon: ArrowUp },
+      { value: "last-asc", label: "最近活跃 · 旧 → 新", TrailingIcon: ArrowDown },
+    ],
+    [],
+  );
+
+  const userMgmtFilteredSorted = useMemo(() => {
+    const q = userMgmtQuery.trim().toLowerCase();
+    let rows = users.filter((u) => (u.username || "").toLowerCase().includes(q));
+    rows = [...rows].sort((a, b) => {
+      if (userMgmtSortKey === "last") {
+        const ta = new Date(a.stats?.last_active_at || 0).getTime();
+        const tb = new Date(b.stats?.last_active_at || 0).getTime();
+        return userMgmtSortDesc ? tb - ta : ta - tb;
+      }
+      const ca = Number(a.stats?.action_count_today ?? 0);
+      const cb = Number(b.stats?.action_count_today ?? 0);
+      return userMgmtSortDesc ? cb - ca : ca - cb;
+    });
+    return rows;
+  }, [users, userMgmtQuery, userMgmtSortKey, userMgmtSortDesc]);
+
+  const userDetailResolved = useMemo(() => {
+    if (!userDetailModal) return null;
+    return users.find((x) => x.id === userDetailModal.id) || userDetailModal;
+  }, [userDetailModal, users]);
+
   const engagementGroupOptions = useMemo(
     () =>
       (groups || []).map((g) => ({
@@ -1764,6 +2187,15 @@ export default function App() {
       /* Copy 模块可选，失败不阻断主同步 */
     }
   }, []);
+
+  useEffect(() => {
+    if (!profile) return undefined;
+    const id = window.setInterval(() => {
+      setSidebarMonitorNow(Date.now());
+      loadCopyData().catch(() => {});
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [profile, loadCopyData]);
 
   const refreshBase = async (opts = {}) => {
     const { skipMetadataSync = false, forceMetadataSync = false, silent = false } = opts;
@@ -1863,7 +2295,7 @@ export default function App() {
     if (u.role === "admin") {
       try {
         const list = await api.listUsers();
-        setUsers(list.users || []);
+        applyUsersListPayload(list);
       } catch {
         /* ignore */
       }
@@ -2001,7 +2433,7 @@ export default function App() {
     if (t === "用户管理" && prof?.role === "admin") {
       try {
         const list = await api.listUsers();
-        setUsers(list.users || []);
+        applyUsersListPayload(list);
       } catch {
         /* ignore */
       }
@@ -2011,7 +2443,7 @@ export default function App() {
     if (baseTabs.has(t)) {
       await refreshBaseRef.current({ skipMetadataSync: true, silent: true });
     }
-  }, [loadScraperAccount, loadScraperTasks]);
+  }, [loadScraperAccount, loadScraperTasks, applyUsersListPayload]);
 
   const { lastUpdatedAt, isTicking } = useAutoRefresh({
     tickFn: autoRefreshTickFn,
@@ -2269,6 +2701,7 @@ export default function App() {
     setGrowthTaskStoppedUi(false);
     setTaskRunning(true);
     setTaskPanelPhase("running");
+    growthQueueRef.current = { qi: 0, qn: 0 };
     setGrowthExecSnapshot({
       uiStatus: "WAITING",
       phoneDisplay: "—",
@@ -2279,6 +2712,8 @@ export default function App() {
       success: 0,
       failed: 0,
       errorHint: null,
+      queueIndex: 0,
+      queueTotal: 0,
     });
     setMsg("");
     appendLog(
@@ -2320,6 +2755,7 @@ export default function App() {
         else if (st.status === "queued" && !conn && !act) uiStatus = "WAITING";
         const taskKindLine = act ? "拉人" : conn ? "登录" : "拉人";
         const hasQueue = parsedProg.queueTotal > 0;
+        growthQueueRef.current = { qi: parsedProg.queueIndex, qn: parsedProg.queueTotal };
         setGrowthExecSnapshot({
           uiStatus,
           phoneDisplay: phoneLine,
@@ -2330,6 +2766,8 @@ export default function App() {
           success: parsedProg.success,
           failed: parsedProg.failed,
           errorHint: st.error || null,
+          queueIndex: parsedProg.queueIndex,
+          queueTotal: parsedProg.queueTotal,
         });
         for (let i = streamed; i < pl.length; i++) {
           pushLogLine(pl[i]);
@@ -2353,6 +2791,7 @@ export default function App() {
       }
       const wasStopped = terminalStatus === "stopped" || Boolean(data?.stopped);
       const summary = (data && data.summary) || { success: 0, skipped: 0, failed: 0 };
+      const { qi: qEnd, qn: qnEnd } = growthQueueRef.current;
       setGrowthExecSnapshot({
         uiStatus: wasStopped ? "STOPPED" : "WAITING",
         phoneDisplay: "—",
@@ -2363,6 +2802,8 @@ export default function App() {
         success: summary.success ?? 0,
         failed: summary.failed ?? 0,
         errorHint: null,
+        queueIndex: qEnd,
+        queueTotal: qnEnd,
       });
       appendLog(`task finished | group=${selectedGroup} accounts_auto=${availableAccounts.length}`);
       appendLog(`result summary | success=${summary.success} skipped=${summary.skipped} failed=${summary.failed}`);
@@ -2399,6 +2840,8 @@ export default function App() {
         success: prev?.success ?? 0,
         failed: prev?.failed ?? 0,
         errorHint: e.message || "任务失败",
+        queueIndex: prev?.queueIndex ?? growthQueueRef.current.qi,
+        queueTotal: prev?.queueTotal ?? growthQueueRef.current.qn,
       }));
       appendLog(`任务失败 | ${e.message}`);
       pushToast(e.message);
@@ -2481,11 +2924,6 @@ export default function App() {
   const onEditPath = (item) => {
     setEditingPathId(item.id);
     setNewPath(item.path);
-  };
-
-  const loadUsersData = async () => {
-    const list = await api.listUsers();
-    setUsers(list.users || []);
   };
 
   const onMarkProxyDead = async (proxyId) => {
@@ -2571,6 +3009,8 @@ export default function App() {
       if (r.job_id) {
         setProxyCheckLogs([]);
         setProxyCheckRunning(true);
+        setProxyCheckCancelled(false);
+        setProxyCheckStopping(false);
         setProxyCheckJobId(r.job_id);
         setProxyCheckModalOpen(true);
         pushToast(`已开始检测 ${Number(r.count ?? 0)} 条代理…`);
@@ -2583,6 +3023,25 @@ export default function App() {
       pushToast(e?.message || "启动检测失败");
     }
   };
+
+  const onStopProxyPoolCheck = useCallback(async () => {
+    if (!proxyCheckJobId || (profile?.role || "").toLowerCase() !== "admin") return;
+    if (proxyCheckStopping) return;
+    setProxyCheckStopping(true);
+    try {
+      const r = await api.stopProxyPoolCheck(proxyCheckJobId);
+      pushToast(r.message || (r.ok ? "已停止检测" : "无法停止"));
+      if (r.ok) {
+        setProxyCheckCancelled(true);
+        setProxyCheckRunning(false);
+      } else {
+        setProxyCheckStopping(false);
+      }
+    } catch (e) {
+      pushToast(e?.message || "停止失败");
+      setProxyCheckStopping(false);
+    }
+  }, [proxyCheckJobId, profile?.role, pushToast, proxyCheckStopping]);
 
   const onStartProxyMatch = async () => {
     if (!guardLoggedIn() || profile?.role !== "admin") return;
@@ -2636,7 +3095,9 @@ export default function App() {
         const st = await api.getProxyCheckJob(proxyCheckJobId);
         if (cancelled) return;
         setProxyCheckLogs(Array.isArray(st.logs) ? st.logs : []);
+        setProxyCheckCancelled(Boolean(st.cancel));
         setProxyCheckRunning(!st.done);
+        if (st.done) setProxyCheckStopping(false);
         if (st.done) {
           try {
             const d = await api.listProxyPool();
@@ -2647,11 +3108,14 @@ export default function App() {
           await refreshBaseRef.current({ skipMetadataSync: true, silent: true });
         }
       } catch {
-        if (!cancelled) setProxyCheckRunning(false);
+        if (!cancelled) {
+          setProxyCheckRunning(false);
+          setProxyCheckStopping(false);
+        }
       }
     };
     poll();
-    const t = window.setInterval(poll, 400);
+    const t = window.setInterval(poll, 1000);
     return () => {
       cancelled = true;
       window.clearInterval(t);
@@ -2660,8 +3124,13 @@ export default function App() {
 
   const onChangeRole = async (id, role) => {
     if (!guardLoggedIn()) return;
-    await api.updateUserRole(id, role);
-    await loadUsersData();
+    try {
+      await api.updateUserRole(id, role);
+      pushToast("已更新用户权限");
+      await loadUsersData();
+    } catch (e) {
+      pushToast(e?.message || "更新权限失败");
+    }
   };
 
   const onCreateCopyBot = async () => {
@@ -3063,6 +3532,18 @@ export default function App() {
               </button>
             ))}
         </nav>
+        {op ? (
+          <GlobalSidebarTaskMonitor
+            taskRunning={taskRunning}
+            growthExecSnapshot={growthExecSnapshot}
+            copyTasks={copyTasks}
+            copyStartOptimistic={copyStartOptimistic}
+            engagementJobId={engagementJobId}
+            engagementSubmitting={engagementSubmitting}
+            engagementLiveLogs={engagementLiveLogs}
+            nowMs={sidebarMonitorNow}
+          />
+        ) : null}
       </aside>
 
       <div className="main-content flex min-h-0 min-w-0 flex-col overflow-x-visible text-slate-200">
@@ -3524,11 +4005,20 @@ export default function App() {
                       aria-live="polite"
                       aria-relevant="additions"
                       onScroll={handleLogScroll}
-                      className={`growth-terminal-scroll terminal-log-body log-container ${GROWTH_QUEUE_LOG_MAX_H} min-h-[12rem] overflow-y-auto overflow-x-hidden px-3 py-2 font-log`}
+                      className={`session-log-panel growth-terminal-scroll terminal-log-body log-container ${GROWTH_QUEUE_LOG_MAX_H} min-h-[12rem] overflow-y-auto overflow-x-hidden font-log`}
                     >
-                      {logs.map(({ id, time, message, type }) => (
-                        <LogLineRow key={id} time={time} message={message} type={type} />
-                      ))}
+                      <div
+                        className="session-log-empty"
+                        style={{ opacity: logs.length === 0 ? 1 : 0 }}
+                        aria-hidden={logs.length > 0}
+                      >
+                        <span>系统运行中 · 等待日志...</span>
+                      </div>
+                      <div className="session-log-content px-3 py-2">
+                        {logs.map(({ id, time, message, type }) => (
+                          <LogLineRow key={id} time={time} message={message} type={type} />
+                        ))}
+                      </div>
                     </div>
                   </div>
                   </div>
@@ -3963,6 +4453,7 @@ export default function App() {
                 <table className="w-full min-w-[1000px] border-separate border-spacing-0 text-sm">
                   <thead className="border-b border-white/[0.06] bg-[rgba(255,255,255,0.04)] text-left text-[11px] font-medium uppercase tracking-wider text-slate-400">
                     <tr>
+                      <th className="w-9 px-2 py-3" aria-label="出口检测" title="出口检测状态" />
                       <th className="px-3 py-3">
                         <button
                           type="button"
@@ -4000,8 +4491,7 @@ export default function App() {
                         </button>
                       </th>
                       <th className="px-3 py-3 whitespace-nowrap">出口 IP</th>
-                      <th className="px-3 py-3 whitespace-nowrap">国家</th>
-                      <th className="px-3 py-3 whitespace-nowrap">城市</th>
+                      <th className="px-3 py-3 whitespace-nowrap">国家 / 城市</th>
                       <th className="px-3 py-3 whitespace-nowrap">检测</th>
                       <th className="px-3 py-3">
                         <button
@@ -4029,31 +4519,46 @@ export default function App() {
                       proxyTableRows.map((p) => (
                         <tr
                           key={p.id}
-                          className="border-t border-white/[0.06] transition-colors duration-150 first:border-t-0 hover:bg-white/[0.04]"
+                          className="group/pxrow border-t border-white/[0.06] transition-[background-color,backdrop-filter] duration-200 first:border-t-0 hover:rounded-lg hover:bg-[rgba(255,255,255,0.03)] hover:[backdrop-filter:blur(6px)]"
                         >
+                          <td className="px-2 py-2.5 align-middle">
+                            <span
+                              className={`mx-auto block h-2 w-2 shrink-0 rounded-full ${proxyExportCheckVisual(p.check_status).dot}`}
+                              title={proxyExportCheckVisual(p.check_status).label}
+                              aria-hidden
+                            />
+                          </td>
                           <td className="px-3 py-2.5 text-slate-200">{p.phone || "-"}</td>
                           <td className="px-3 py-2.5 text-slate-400">
-                            <span className="inline-flex items-center gap-1.5">
-                              <Globe className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
-                              {p.proxy_type || "-"}
-                            </span>
+                            {(() => {
+                              const { Icon, label, iconClass } = proxyTypeRowVisual(p.proxy_type);
+                              return (
+                                <span className="inline-flex items-center gap-1.5">
+                                  <Icon className={`h-3.5 w-3.5 shrink-0 ${iconClass}`} aria-hidden strokeWidth={2.25} />
+                                  <span className="font-medium text-slate-300/95">{label}</span>
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td className="max-w-[380px] truncate px-3 py-2.5 font-log text-xs text-slate-500">{p.proxy_value || "-"}</td>
-                          <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs text-slate-400">{p.check_ip || "—"}</td>
-                          <td className="max-w-[10rem] truncate px-3 py-2.5 text-xs text-slate-300" title={p.check_country || ""}>
-                            <span className="mr-1" aria-hidden>
-                              {countryFlagEmoji(p.country_code)}
-                            </span>
-                            {p.check_country || "—"}
+                          <td className="whitespace-nowrap px-3 py-2.5 align-top">
+                            {p.check_ip ? (
+                              <span className="inline-flex cursor-default items-center gap-1.5 font-mono text-xs font-medium tracking-[0.5px] text-[#60a5fa] [text-shadow:0_0_10px_rgba(96,165,250,0.35)] transition-[color,text-shadow] duration-200 hover:text-sky-300 hover:[text-shadow:0_0_14px_rgba(56,189,248,0.55)]">
+                                <Globe className="h-3.5 w-3.5 shrink-0 text-[#4fd1c5]" aria-hidden strokeWidth={2.25} />
+                                {p.check_ip}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-slate-500">🌐 未检测</span>
+                            )}
                           </td>
-                          <td className="max-w-[8rem] truncate px-3 py-2.5 text-xs text-slate-400">{p.check_city || "—"}</td>
+                          <td className="max-w-[12rem] px-3 py-2.5 align-top text-slate-300">{proxyGeoRegionCell(p)}</td>
                           <td className="whitespace-nowrap px-3 py-2.5 text-xs">
                             {(() => {
-                              const u = proxyCheckStatusUi(p.check_status);
+                              const v = proxyExportCheckVisual(p.check_status);
                               return (
-                                <span className={`inline-flex items-center gap-1 font-medium ${u.cls}`}>
-                                  <span aria-hidden>{u.emoji}</span>
-                                  {u.label}
+                                <span className="inline-flex items-center gap-2">
+                                  <span className={`h-2 w-2 shrink-0 rounded-full ${v.dot}`} aria-hidden />
+                                  <span className={`font-semibold ${v.text}`}>{v.label}</span>
                                 </span>
                               );
                             })()}
@@ -4806,44 +5311,324 @@ export default function App() {
         )}
 
         {tab === "用户管理" && (
-          <Card title="用户权限管理">
+          <div className="mx-auto max-w-6xl space-y-6 pb-8">
+            <div className="flex flex-col gap-1 px-1">
+              <h2 className="flex items-center gap-2 text-xl font-bold tracking-tight text-slate-50">
+                <UserCog className="h-6 w-6 text-cyan-400/90" aria-hidden strokeWidth={2} />
+                用户运营中心
+              </h2>
+              <p className="text-xs font-medium text-slate-500">权限与角色逻辑不变；以下为全局行为视图与快捷管控</p>
+            </div>
             {!isAdmin ? (
-              <p className="text-sm text-slate-500">仅管理员可查看和修改用户权限</p>
+              <Card title="访问受限">
+                <p className="text-sm text-slate-500">仅管理员可查看用户列表与修改权限</p>
+              </Card>
             ) : (
-              <div className="space-y-2">
-                {users.map((u) => (
-                  <div
-                    key={u.id}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] px-3 py-2.5 text-sm shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-[16px] transition-all duration-[250ms] ease-out hover:-translate-y-1 hover:border-cyan-400/20 hover:shadow-[0_12px_40px_rgba(0,255,180,0.06)]"
-                  >
-                    <div className="flex min-w-0 flex-1 items-center gap-3">
-                      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-cyan-500/12 text-cyan-300 ring-1 ring-cyan-400/25">
-                        <UserCog size={18} strokeWidth={1.75} aria-hidden />
+              <>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-2xl border border-sky-400/18 bg-[rgba(255,255,255,0.03)] p-4 shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(59,130,246,0.1)] backdrop-blur-[20px] transition-all duration-300 hover:border-sky-400/35 hover:shadow-[0_0_24px_rgba(80,200,255,0.15)]">
+                    <div className="flex items-start gap-3">
+                      <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-sky-500/15 text-sky-300 ring-1 ring-sky-400/25">
+                        <Users className="h-5 w-5" aria-hidden strokeWidth={2} />
                       </div>
-                      <div className="min-w-0 text-slate-200">
-                        <div className="font-medium">
-                          #{u.id} {u.username}
-                        </div>
-                        <div className="text-xs text-slate-500">角色 · {u.role}</div>
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">用户总数</p>
+                        <p className="stat-num-log mt-0.5 text-3xl font-bold tabular-nums">{usersSummary.total_users}</p>
                       </div>
                     </div>
-                    <GlassDropdown
-                      value={u.role}
-                      onChange={(role) => onChangeRole(u.id, role)}
-                      options={userRoleDropdownOptions}
-                      placeholder="角色"
-                      className="min-w-[132px] max-w-[200px]"
-                      triggerClassName="px-2.5 py-1.5 text-xs"
-                      disabled={!op}
+                  </div>
+                  <div className="rounded-2xl border border-emerald-400/18 bg-[rgba(255,255,255,0.03)] p-4 shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(52,211,153,0.1)] backdrop-blur-[20px] transition-all duration-300 hover:border-emerald-400/35 hover:shadow-[0_0_24px_rgba(52,211,153,0.18)]">
+                    <div className="flex items-start gap-3">
+                      <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/25">
+                        <Activity className="h-5 w-5" aria-hidden strokeWidth={2} />
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">活跃用户</p>
+                        <p className="stat-num-growth mt-0.5 text-3xl font-bold tabular-nums">{usersSummary.active_users_today}</p>
+                        <p className="mt-1 text-[10px] text-slate-600">今日有任务操作</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-violet-400/18 bg-[rgba(255,255,255,0.03)] p-4 shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(139,92,246,0.12)] backdrop-blur-[20px] transition-all duration-300 hover:border-violet-400/35 hover:shadow-[0_0_24px_rgba(167,139,250,0.2)]">
+                    <div className="flex items-start gap-3">
+                      <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-violet-500/15 text-violet-300 ring-1 ring-violet-400/25">
+                        <BarChart3 className="h-5 w-5" aria-hidden strokeWidth={2} />
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">今日操作</p>
+                        <p className="mt-0.5 bg-gradient-to-r from-violet-200 to-fuchsia-200 bg-clip-text text-3xl font-bold tabular-nums text-transparent">
+                          {usersSummary.today_actions}
+                        </p>
+                        <p className="mt-1 text-[10px] text-slate-600">任务记录条数（今日）</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-amber-400/18 bg-[rgba(255,255,255,0.03)] p-4 shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(251,191,36,0.1)] backdrop-blur-[20px] transition-all duration-300 hover:border-amber-400/35 hover:shadow-[0_0_24px_rgba(251,191,36,0.18)]">
+                    <div className="flex items-start gap-3">
+                      <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-amber-500/15 text-amber-300 ring-1 ring-amber-400/25">
+                        <Shield className="h-5 w-5" aria-hidden strokeWidth={2} />
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">管理员</p>
+                        <p className="mt-0.5 text-3xl font-bold tabular-nums text-amber-200/95">{usersSummary.admin_count}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-3 rounded-2xl border border-white/[0.08] bg-[rgba(255,255,255,0.02)] p-4 backdrop-blur-[18px] sm:flex-row sm:items-center sm:justify-between">
+                  <label className="relative flex min-w-0 flex-1 items-center gap-2">
+                    <Search className="pointer-events-none absolute left-3 h-4 w-4 text-slate-500" aria-hidden strokeWidth={2} />
+                    <input
+                      type="search"
+                      value={userMgmtQuery}
+                      onChange={(e) => setUserMgmtQuery(e.target.value)}
+                      placeholder="按用户名搜索…"
+                      className="w-full rounded-xl border border-white/[0.1] bg-[rgba(255,255,255,0.04)] py-2.5 pl-9 pr-3 text-sm text-slate-200 placeholder:text-slate-600 outline-none backdrop-blur-[16px] transition focus:border-cyan-400/35 focus:ring-2 focus:ring-cyan-400/15"
+                    />
+                  </label>
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">排序</span>
+                    <AdminTradingSelect
+                      className="w-[min(100%,14rem)]"
+                      value={`${userMgmtSortKey}-${userMgmtSortDesc ? "desc" : "asc"}`}
+                      onChange={(v) => {
+                        const i = String(v).lastIndexOf("-");
+                        if (i <= 0) return;
+                        const k = String(v).slice(0, i);
+                        const d = String(v).slice(i + 1);
+                        setUserMgmtSortKey(k);
+                        setUserMgmtSortDesc(d === "desc");
+                      }}
+                      options={userMgmtSortOptions}
+                      placeholder="选择排序"
                     />
                   </div>
-                ))}
-              </div>
+                </div>
+
+                <div className="space-y-3">
+                  {userMgmtFilteredSorted.length === 0 ? (
+                    <p className="rounded-xl border border-white/[0.06] bg-[rgba(255,255,255,0.02)] px-4 py-10 text-center text-sm text-slate-500 backdrop-blur-[16px]">
+                      没有匹配的用户
+                    </p>
+                  ) : (
+                    userMgmtFilteredSorted.map((u) => {
+                      const hue = userAvatarHue(u.username);
+                      const online = userIsOnlineByActivity(u.stats?.last_active_at, userMgmtNowTick);
+                      const roleUp = String(u.role || "user").toUpperCase();
+                      return (
+                        <div
+                          key={u.id}
+                          className="flex flex-col gap-4 rounded-2xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] p-4 shadow-[0_8px_36px_rgba(0,0,0,0.38)] backdrop-blur-[20px] transition-all duration-300 ease-out hover:border-cyan-400/22 hover:shadow-[0_0_20px_rgba(80,200,255,0.15)] sm:flex-row sm:items-stretch"
+                        >
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            className="flex min-w-0 flex-1 cursor-pointer gap-4 rounded-xl outline-none transition hover:bg-white/[0.02] focus-visible:ring-2 focus-visible:ring-cyan-400/35 sm:pr-2"
+                            onClick={() => setUserDetailModal(u)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                setUserDetailModal(u);
+                              }
+                            }}
+                          >
+                            <div
+                              className="grid h-14 w-14 shrink-0 place-items-center rounded-full text-lg font-bold text-white shadow-[0_0_20px_rgba(0,0,0,0.35)] ring-2 ring-white/10"
+                              style={{
+                                background: `linear-gradient(145deg, hsl(${hue}, 58%, 46%), hsl(${(hue + 42) % 360}, 52%, 32%))`,
+                              }}
+                              aria-hidden
+                            >
+                              {(u.username || "?").slice(0, 1).toUpperCase()}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="truncate text-base font-semibold text-slate-100">{u.username}</span>
+                                <span
+                                  className={`rounded-md border px-2 py-0.5 text-[10px] font-bold tracking-wide ${
+                                    roleUp === "ADMIN"
+                                      ? "border-amber-400/40 bg-amber-500/15 text-amber-200"
+                                      : "border-slate-500/35 bg-slate-500/10 text-slate-300"
+                                  }`}
+                                >
+                                  {roleUp}
+                                </span>
+                              </div>
+                              <p className="mt-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">行为数据</p>
+                              <div className="mt-1.5 flex flex-col gap-1 text-sm text-slate-300">
+                                <span>
+                                  <span className="text-slate-500">今日操作</span>{" "}
+                                  <span className="font-semibold tabular-nums text-sky-200/95">{u.stats?.action_count_today ?? 0}</span>
+                                </span>
+                                <span className="flex flex-wrap items-center gap-1.5">
+                                  <CalendarClock className="h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden strokeWidth={2} />
+                                  <span className="text-slate-500">最近操作</span>{" "}
+                                  <span className="text-slate-200/95">
+                                    {formatUserRelativeZh(u.stats?.last_active_at, userMgmtNowTick)}
+                                  </span>
+                                </span>
+                                <span className="inline-flex items-center gap-2">
+                                  <span
+                                    className={`h-2 w-2 shrink-0 rounded-full ${
+                                      online ? "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.75)]" : "bg-slate-600"
+                                    }`}
+                                    aria-hidden
+                                  />
+                                  <span className={online ? "font-medium text-emerald-300/95" : "text-slate-500"}>
+                                    {online ? "在线" : "离线"}
+                                  </span>
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <div
+                            className="flex shrink-0 flex-col justify-center gap-2 border-t border-white/[0.06] pt-4 sm:w-[min(100%,280px)] sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <AdminTradingSelect
+                              value={u.role}
+                              onChange={(role) => onChangeRole(u.id, role)}
+                              options={userRoleDropdownOptions}
+                              placeholder="权限"
+                              triggerPrefix="权限 · "
+                              className="w-full min-w-0"
+                              disabled={!op}
+                            />
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                className="rounded-xl border border-cyan-400/35 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_16px_rgba(34,211,238,0.2)]"
+                                onClick={() => setUserDetailModal(u)}
+                              >
+                                详情
+                              </button>
+                              <button
+                                type="button"
+                                disabled
+                                title="暂不支持删除用户"
+                                className="cursor-not-allowed rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs font-medium text-slate-500 opacity-50"
+                              >
+                                删除
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </>
             )}
-          </Card>
+          </div>
         )}
         </main>
       </div>
+
+      {userDetailResolved && isAdmin ? (
+        <div
+          className="fixed inset-0 z-[3000] flex items-center justify-center bg-[rgba(11,15,20,0.55)] p-4 backdrop-blur-md"
+          role="presentation"
+          onClick={() => setUserDetailModal(null)}
+        >
+          <div
+            className={`${MODAL_SHELL} max-h-[min(90vh,720px)] w-full max-w-lg overflow-y-auto`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="user-detail-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b border-white/[0.06] px-5 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 id="user-detail-modal-title" className="text-lg font-bold tracking-tight text-slate-50">
+                    用户档案
+                  </h3>
+                  <p className="mt-1 font-mono text-sm text-cyan-300/90">{userDetailResolved.username}</p>
+                </div>
+                <button
+                  type="button"
+                  className={`${BTN_SECONDARY} shrink-0 px-3 py-1.5 text-sm`}
+                  onClick={() => setUserDetailModal(null)}
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+            <div className="space-y-5 px-5 py-4">
+              <section>
+                <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">基础信息</p>
+                <div className="space-y-2 rounded-xl border border-white/[0.08] bg-black/20 p-3 text-sm">
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">用户名</span>
+                    <span className="font-medium text-slate-200">{userDetailResolved.username}</span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">创建时间</span>
+                    <span className="text-right text-slate-300">
+                      {userDetailResolved.created_at
+                        ? new Date(userDetailResolved.created_at).toLocaleString("zh-CN", { hour12: false })
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">角色</span>
+                    <span className="font-semibold text-amber-200/90">
+                      {String(userDetailResolved.role || "user").toUpperCase()}
+                    </span>
+                  </div>
+                </div>
+              </section>
+              <section>
+                <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">行为统计</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-xl border border-sky-400/20 bg-sky-500/10 p-3">
+                    <p className="text-[10px] font-medium text-sky-200/80">今日操作</p>
+                    <p className="mt-1 text-2xl font-bold tabular-nums text-sky-100">
+                      {userDetailResolved.stats?.action_count_today ?? 0}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-violet-400/20 bg-violet-500/10 p-3">
+                    <p className="text-[10px] font-medium text-violet-200/80">总操作</p>
+                    <p className="mt-1 text-2xl font-bold tabular-nums text-violet-100">
+                      {userDetailResolved.stats?.total_actions ?? 0}
+                    </p>
+                  </div>
+                  <div className="col-span-2 rounded-xl border border-white/[0.08] bg-black/20 p-3">
+                    <p className="text-[10px] font-medium text-slate-500">最近活跃</p>
+                    <p className="mt-1 text-sm font-medium text-slate-200">
+                      {userDetailResolved.stats?.last_active_at
+                        ? new Date(userDetailResolved.stats.last_active_at).toLocaleString("zh-CN", { hour12: false })
+                        : "—"}
+                    </p>
+                    <p className="mt-0.5 text-[10px] text-slate-600">基于任务记录；与列表「在线」状态一致（5 分钟内）</p>
+                  </div>
+                </div>
+              </section>
+              <section>
+                <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">操作记录（最近 10 条）</p>
+                <div className="max-h-[220px] overflow-y-auto rounded-xl border border-white/[0.08] bg-black/30 p-2 font-mono text-[11px] leading-relaxed">
+                  {(userDetailResolved.stats?.activity_log || []).length === 0 ? (
+                    <p className="px-2 py-6 text-center text-slate-500">暂无任务类操作记录</p>
+                  ) : (
+                    (userDetailResolved.stats?.activity_log || []).map((line, idx) => (
+                      <div key={`${line.at}-${idx}`} className="border-b border-white/[0.05] py-2 last:border-b-0">
+                        <span className="text-slate-500">[{formatUserLogTime(line.at)}]</span>{" "}
+                        <span className="text-slate-200">{line.message}</span>
+                        {line.detail ? (
+                          <span className="mt-0.5 block truncate text-slate-500" title={line.detail}>
+                            {line.detail}
+                          </span>
+                        ) : null}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showPathModal && (
         <div
@@ -5089,10 +5874,15 @@ export default function App() {
           setProxyCheckJobId(null);
           setProxyCheckLogs([]);
           setProxyCheckRunning(false);
+          setProxyCheckCancelled(false);
+          setProxyCheckStopping(false);
         }}
         running={proxyCheckRunning}
         logs={proxyCheckLogs}
         logEndRef={proxyCheckLogEndRef}
+        cancelRequested={proxyCheckCancelled}
+        isStopping={proxyCheckStopping}
+        onCancelCheck={onStopProxyPoolCheck}
       />
       <ProxyMatchGlassModal
         open={proxyMatchModalOpen && isAdmin}

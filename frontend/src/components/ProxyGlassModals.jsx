@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
 import { useEffect, useRef } from "react";
-import { Cpu, Database, Eraser, Loader2, Play, Radar, Sparkles, Square, Upload } from "lucide-react";
+import { Cpu, Database, Eraser, Globe, Loader2, Play, Radar, Sparkles, Square, Upload } from "lucide-react";
 import { UiSpinner } from "./UiSpinner";
 
 function poolStatusDot(status) {
@@ -26,9 +26,23 @@ function countryFlagEmoji(code) {
 
 function poolCheckStatusUi(checkStatus) {
   const s = String(checkStatus || "unknown").toLowerCase();
-  if (s === "ok") return { emoji: "🟢", label: "正常", cls: "text-emerald-300/95" };
-  if (s === "dead") return { emoji: "🔴", label: "失效", cls: "text-rose-300/95" };
-  return { emoji: "⚪", label: "未检测", cls: "text-slate-500" };
+  if (s === "ok")
+    return {
+      label: "正常",
+      dot: "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]",
+      cls: "text-emerald-300/95",
+    };
+  if (s === "dead")
+    return {
+      label: "失败",
+      dot: "bg-rose-500 shadow-[0_0_10px_rgba(248,113,113,0.75)]",
+      cls: "text-rose-300/95",
+    };
+  return {
+    label: "未检测",
+    dot: "bg-amber-400/90 shadow-[0_0_8px_rgba(251,191,36,0.35)]",
+    cls: "text-slate-300/90",
+  };
 }
 
 function useModalEscape(open, onClose) {
@@ -166,15 +180,22 @@ export function ProxyPoolGlassModal({
                                 <span className="ml-2 text-sky-400/80">· 已关联账号</span>
                               ) : null}
                             </p>
-                            <p className="mt-1 font-mono text-[10px] leading-relaxed text-slate-500">
-                              <span className="text-slate-600">出口</span> {row.check_ip || "—"}{" "}
-                              <span className="text-slate-600">·</span>{" "}
-                              <span aria-hidden>{countryFlagEmoji(row.country_code)}</span>{" "}
-                              {row.check_country || "—"}{" "}
-                              <span className="text-slate-600">·</span> {row.check_city || "—"}{" "}
-                              <span className="text-slate-600">·</span>{" "}
-                              <span className={chk.cls}>
-                                {chk.emoji} {chk.label}
+                            <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[10px] leading-relaxed text-slate-500">
+                              <span className="inline-flex items-center gap-1 text-[#60a5fa] [text-shadow:0_0_8px_rgba(96,165,250,0.25)]">
+                                <Globe className="h-3 w-3 shrink-0 text-[#4fd1c5]" aria-hidden strokeWidth={2.25} />
+                                {row.check_ip || "—"}
+                              </span>
+                              <span className="text-slate-600">·</span>
+                              <span>
+                                <span aria-hidden>{countryFlagEmoji(row.country_code)}</span>{" "}
+                                {row.check_country || "—"}
+                              </span>
+                              <span className="text-slate-600">·</span>
+                              <span>{row.check_city || "—"}</span>
+                              <span className="text-slate-600">·</span>
+                              <span className={`inline-flex items-center gap-1.5 font-sans font-semibold ${chk.cls}`}>
+                                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${chk.dot}`} aria-hidden />
+                                {chk.label}
                               </span>
                             </p>
                           </div>
@@ -200,12 +221,28 @@ export function ProxyPoolGlassModal({
 }
 
 /** 批量检测代理 · 实时日志 */
-export function ProxyCheckGlassModal({ open, onClose, running, logs, logEndRef }) {
+export function ProxyCheckGlassModal({
+  open,
+  onClose,
+  running,
+  logs,
+  logEndRef,
+  cancelRequested = false,
+  isStopping = false,
+  onCancelCheck,
+}) {
   useModalEscape(open, onClose);
 
   if (!open || typeof document === "undefined") return null;
 
   const text = Array.isArray(logs) && logs.length ? logs.join("\n") : running ? "等待日志…" : "无日志";
+  const sub = isStopping
+    ? "正在停止任务…"
+    : !running && cancelRequested
+      ? "检测已由用户停止"
+      : running
+        ? "正在检测（并发 ≤5）…"
+        : "本轮检测已结束";
 
   return createPortal(
     <>
@@ -228,9 +265,7 @@ export function ProxyCheckGlassModal({ open, onClose, running, logs, logEndRef }
                 <h2 id="proxy-check-title" className="text-lg font-bold tracking-tight text-slate-50">
                   代理出口检测
                 </h2>
-                <p className="mt-1 text-xs font-medium text-slate-500">
-                  {running ? "正在检测（并发 ≤5）…" : "本轮检测已结束"}
-                </p>
+                <p className="mt-1 text-xs font-medium text-slate-500">{sub}</p>
               </div>
             </div>
           </header>
@@ -245,9 +280,33 @@ export function ProxyCheckGlassModal({ open, onClose, running, logs, logEndRef }
             </div>
           </div>
 
-          <footer className="mt-5 flex shrink-0 justify-end border-t border-white/[0.06] pt-4">
+          <footer className="mt-5 flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-white/[0.06] pt-4">
+            {typeof onCancelCheck === "function" && running ? (
+              <button
+                type="button"
+                disabled={isStopping}
+                onClick={() => onCancelCheck()}
+                className={`proxy-glass-btn inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed ${
+                  isStopping
+                    ? "border-slate-500/35 bg-slate-600/25 text-slate-300 shadow-none disabled:opacity-90"
+                    : "proxy-glass-btn--stop disabled:opacity-40"
+                }`}
+              >
+                {isStopping ? (
+                  <>
+                    <UiSpinner tone="muted" />
+                    正在停止…
+                  </>
+                ) : (
+                  <>
+                    <Square className="h-3.5 w-3.5" aria-hidden />
+                    取消检测
+                  </>
+                )}
+              </button>
+            ) : null}
             <button type="button" onClick={onClose} className="proxy-glass-btn proxy-glass-btn--ghost px-4 py-2 text-sm text-slate-400">
-              关闭
+              {!running && cancelRequested ? "关闭（已停止）" : "关闭"}
             </button>
           </footer>
         </div>

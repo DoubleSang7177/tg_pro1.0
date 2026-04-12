@@ -135,7 +135,8 @@ async def _client_start_with_hard_timeout(client: Client, timeout: float) -> Non
     """
     不用 client.start()（会触发交互）；connect 硬超时后 stop。
     """
-    task = asyncio.create_task(_pyrogram_connect_noninteractive(client))
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(_pyrogram_connect_noninteractive(client))
     try:
         done, _ = await asyncio.wait({task}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
         if task.done():
@@ -174,7 +175,8 @@ async def _pyrogram_start_with_task_timeout(
     """
     非交互 connect + 初始化；wait_for 硬超时后 cancel 并 stop，避免单账号拖死队列。
     """
-    task = asyncio.create_task(_pyrogram_connect_noninteractive(client))
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(_pyrogram_connect_noninteractive(client))
     try:
         print(
             f"[_pyrogram_start] await asyncio.wait_for(connect) 前 phone={phone_label!r} "

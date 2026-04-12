@@ -173,8 +173,9 @@ async def start_task(
             [payload.group],
             len(payload.users),
         )
-        print("[start_task] 9 asyncio.create_task(_drive_growth_runner) 前", flush=True)
-        asyncio.create_task(_drive_growth_runner(job_id, runner))
+        print("[start_task] 9 loop.create_task(_drive_growth_runner) 前", flush=True)
+        _loop = asyncio.get_running_loop()
+        _loop.create_task(_drive_growth_runner(job_id, runner))
         print("[start_task] 10 create_task 已提交，即将 return job_id", flush=True)
         return {"ok": True, "job_id": job_id}
     except Exception:

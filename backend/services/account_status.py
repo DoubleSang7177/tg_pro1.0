@@ -1,4 +1,4 @@
-"""账号生命周期：normal(ACTIVE) / daily_limited(DAILY) / cooldown(COOLDOWN) / risk_suspected(RISK)，兼容旧库 status 字符串。"""
+"""账号生命周期：normal / daily_limited / cooldown / risk_suspected / banned(已封号)，兼容旧库 status 字符串。"""
 from __future__ import annotations
 
 import os
@@ -12,6 +12,7 @@ ST_NORMAL = "normal"
 ST_DAILY_LIMITED = "daily_limited"
 ST_COOLDOWN = "cooldown"
 ST_RISK_SUSPECTED = "risk_suspected"
+ST_BANNED = "banned"
 
 NOTE_LONG_TERM = "long_term"
 
@@ -27,7 +28,7 @@ _LEGACY_TO_NEW = {
     "daily_limited": ST_DAILY_LIMITED,
     "cooldown": ST_COOLDOWN,
     "limited_long": ST_RISK_SUSPECTED,
-    "banned": ST_RISK_SUSPECTED,
+    "banned": ST_BANNED,
     "risk_suspected": ST_RISK_SUSPECTED,
 }
 
@@ -46,6 +47,8 @@ def _as_utc(dt: datetime | None) -> datetime | None:
 
 def normalize_stored_status(raw: str | None) -> str:
     s = (raw or ST_NORMAL).strip().lower()
+    if s == ST_BANNED:
+        return ST_BANNED
     if s == ST_COOLDOWN:
         return ST_COOLDOWN
     return _LEGACY_TO_NEW.get(s, ST_NORMAL)
@@ -92,6 +95,15 @@ def touch_status_change(account: AccountFile, now_utc: datetime) -> None:
     account.status_changed_at = now_utc
 
 
+def _broadcast_account(account: AccountFile) -> None:
+    try:
+        from services.account_realtime import schedule_account_broadcast
+
+        schedule_account_broadcast(account)
+    except Exception:
+        pass
+
+
 def recover_daily_limited_if_expired(account: AccountFile, now_utc: datetime) -> None:
     if account.status != ST_DAILY_LIMITED:
         return
@@ -120,8 +132,32 @@ def recover_cooldown_if_expired(account: AccountFile, now_utc: datetime) -> None
 
 def recover_and_normalize(account: AccountFile, now_utc: datetime) -> None:
     account.status = normalize_stored_status(account.status)
+    if account.status == ST_BANNED:
+        return
     recover_cooldown_if_expired(account, now_utc)
     recover_daily_limited_if_expired(account, now_utc)
+
+
+def mark_telegram_banned(
+    account: AccountFile,
+    now_utc: datetime,
+    *,
+    logger: LoggerLike | None = None,
+    task_notify: Callable[[str], None] | None = None,
+) -> None:
+    """Telegram 明确封号（如 PHONE_NUMBER_BANNED），不可自动恢复为 active。"""
+    account.status = ST_BANNED
+    account.limited_until = None
+    account.status_note = None
+    account.last_used_time = now_utc
+    touch_status_change(account, now_utc)
+    phone_disp = status_log_phone(account.phone)
+    err_line = f"[ERROR] {phone_disp} 已封号（Telegram banned）"
+    if logger is not None:
+        logger.error("%s", err_line)
+    if task_notify is not None:
+        task_notify(err_line)
+    _broadcast_account(account)
 
 
 def mark_daily_limited(
@@ -137,6 +173,7 @@ def mark_daily_limited(
     account.last_used_time = now_utc
     touch_status_change(account, now_utc)
     emit_status_line(account.phone, "DAILY", "当日受限", logger=logger, task_notify=task_notify)
+    _broadcast_account(account)
 
 
 def mark_risk_login_failed(
@@ -153,6 +190,7 @@ def mark_risk_login_failed(
     account.last_used_time = now_utc
     touch_status_change(account, now_utc)
     emit_status_line(account.phone, "RISK", status_reason_cn, logger=logger, task_notify=task_notify)
+    _broadcast_account(account)
 
 
 def mark_risk_session_or_auth(
@@ -168,6 +206,7 @@ def mark_risk_session_or_auth(
     account.last_used_time = now_utc
     touch_status_change(account, now_utc)
     emit_status_line(account.phone, "RISK", "会话/鉴权失效", logger=logger, task_notify=task_notify)
+    _broadcast_account(account)
 
 
 def mark_risk_after_cooldown_cycles(
@@ -183,6 +222,7 @@ def mark_risk_after_cooldown_cycles(
     account.invite_fail_streak_days = 0
     touch_status_change(account, now_utc)
     emit_status_line(account.phone, "RISK", "多次冷却后仍失败", logger=logger, task_notify=task_notify)
+    _broadcast_account(account)
 
 
 def enter_long_term_cooldown(
@@ -199,6 +239,7 @@ def enter_long_term_cooldown(
     account.last_used_time = now_utc
     touch_status_change(account, now_utc)
     emit_status_line(account.phone, "LONG_TERM", "长期受限", logger=logger, task_notify=task_notify)
+    _broadcast_account(account)
 
 
 def lifecycle_ui_labels(status: str, status_note: str | None) -> tuple[str, str]:
@@ -214,6 +255,8 @@ def lifecycle_ui_labels(status: str, status_note: str | None) -> tuple[str, str]
         return "COOLDOWN", "冷却中"
     if st == ST_RISK_SUSPECTED:
         return "RISK", "疑似风控"
+    if st == ST_BANNED:
+        return "BANNED", "已封号"
     return "ACTIVE", "可用"
 
 

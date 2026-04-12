@@ -8,12 +8,13 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from auth import require_user_or_admin
+from auth import get_current_user_optional, require_user_or_admin
 from database import get_db
 from logger import get_logger
 from models import AccountFile, AccountPath, Proxy, User
 from services.account_status import (
     RECENT_SIDEBAR_SECONDS,
+    ST_BANNED,
     ST_COOLDOWN,
     ST_DAILY_LIMITED,
     ST_NORMAL,
@@ -67,6 +68,7 @@ def _account_payload(row: AccountFile, proxy_ip: str | None = None) -> dict:
         "login_fail_count": getattr(row, "login_fail_count", 0) or 0,
         "last_login_fail_at": row.last_login_fail_at.isoformat() if getattr(row, "last_login_fail_at", None) else None,
         "status_changed_at": row.status_changed_at.isoformat() if getattr(row, "status_changed_at", None) else None,
+        "last_update": row.last_update.isoformat() if getattr(row, "last_update", None) else None,
         "status_note": getattr(row, "status_note", None),
         "lifecycle_primary": lifecycle_ui_labels(row.status, getattr(row, "status_note", None))[0],
         "lifecycle_sub": lifecycle_ui_labels(row.status, getattr(row, "status_note", None))[1],
@@ -197,13 +199,14 @@ async def upload_account_v2(
 
 @router.get("/accounts")
 def list_accounts(
-    user: User = Depends(require_user_or_admin),
+    user: User | None = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ) -> dict:
     perform_daily_reset_if_needed(db)
-    _scan_accounts(user, db)
+    if user is not None:
+        _scan_accounts(user, db)
     query = db.query(AccountFile).order_by(AccountFile.id.desc())
-    if user.role != "admin":
+    if user is not None and user.role != "admin":
         query = query.filter(AccountFile.owner_id == user.id)
     rows = query.all()
     proxy_ids = [r.proxy_id for r in rows if r.proxy_id]
@@ -211,7 +214,12 @@ def list_accounts(
     if proxy_ids:
         proxy_rows = db.query(Proxy).filter(Proxy.id.in_(proxy_ids)).all()
         proxy_map = {p.id: f"{p.host}:{p.port}" for p in proxy_rows}
-    log.info("accounts list user_id=%s role=%s count=%s", user.id, user.role, len(rows))
+    log.info(
+        "accounts list user_id=%s role=%s count=%s",
+        user.id if user else None,
+        user.role if user else "guest",
+        len(rows),
+    )
     grouped = {"active": [], "limited": [], "banned": []}
     recent_sidebar_echo: list[dict] = []
     now_utc = datetime.now(timezone.utc)
@@ -222,7 +230,7 @@ def list_accounts(
             bucket = "active"
         elif st in (ST_DAILY_LIMITED, ST_COOLDOWN):
             bucket = "limited"
-        elif st == ST_RISK_SUSPECTED:
+        elif st in (ST_RISK_SUSPECTED, ST_BANNED):
             bucket = "banned"
         else:
             bucket = "active"
@@ -239,8 +247,8 @@ def list_accounts(
         if item.get("formatted_phone"):
             flat_accounts.append(item["formatted_phone"])
     activity_feed = list_account_activity_for_user(
-        viewer_id=user.id,
-        is_admin=user.role == "admin",
+        viewer_id=user.id if user else 0,
+        is_admin=user is None or user.role == "admin",
         limit=15,
     )
     return {
@@ -253,6 +261,25 @@ def list_accounts(
         "recent_limited_sidebar": recent_sidebar_echo,
         "activity_feed": activity_feed,
     }
+
+
+@router.delete("/accounts/id/{account_id:int}")
+def delete_account_by_id(
+    account_id: int,
+    user: User = Depends(require_user_or_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    row = db.query(AccountFile).filter(AccountFile.id == account_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    if user.role != "admin" and row.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="无权限删除该账号")
+    phone = row.phone
+    saved_path = row.saved_path
+    db.delete(row)
+    db.commit()
+    log.info("account unbound_from_db id=%s phone=%s by_user=%s path=%s", account_id, phone, user.id, saved_path)
+    return {"ok": True, "id": account_id, "phone": phone}
 
 
 @router.delete("/accounts/{phone}")

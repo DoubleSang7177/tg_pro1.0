@@ -1,11 +1,13 @@
 import asyncio
 import threading
 import time
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from auth import complete_login, hash_password, require_admin
@@ -22,6 +24,7 @@ from routes.proxy import router as proxy_router
 from routes.scraper import router as scraper_router
 from routes.interaction import router as interaction_router
 from routes.copy_forward import router as copy_forward_router
+from routes.realtime_ws import router as realtime_ws_router
 from routes.auth import LoginRequest
 from models import Group, User
 from services.copy_forward_service import spawn_copy_forward_thread
@@ -32,6 +35,8 @@ app = FastAPI(title="Telegram System API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    # 允许用 http://192.168.x.x:5173 等打开前端时直连 API（未走 Vite /api 代理时）
+    allow_origin_regex=r"https?://(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,6 +52,13 @@ app.include_router(proxy_router)
 app.include_router(scraper_router)
 app.include_router(interaction_router)
 app.include_router(copy_forward_router)
+app.include_router(realtime_ws_router)
+
+_upload_root = Path(__file__).resolve().parent / "uploads"
+_upload_root.mkdir(parents=True, exist_ok=True)
+(_upload_root / "avatars").mkdir(exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(_upload_root)), name="uploads")
+
 api_logger = get_logger("api")
 
 

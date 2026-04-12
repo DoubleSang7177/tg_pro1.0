@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
-from auth import require_admin, require_user_or_admin
+from auth import get_current_user_optional, require_admin, require_user_or_admin
 from database import get_db
 from models import CopyBot, CopyTask, ForwardRecord, User
 from services import copy_forward_service as cfs
@@ -15,18 +15,25 @@ from services import copy_forward_service as cfs
 router = APIRouter(prefix="/copy", tags=["copy_forward"])
 
 
-def _bot_q(db: Session, user: User):
-    q = db.query(CopyBot)
-    if user.role != "admin":
-        q = q.filter(CopyBot.owner_id == user.id)
-    return q
+def _is_copy_admin(user: User) -> bool:
+    return (user.role or "").lower() == "admin"
 
 
-def _task_q(db: Session, user: User):
-    q = db.query(CopyTask)
-    if user.role != "admin":
-        q = q.filter(CopyTask.owner_id == user.id)
-    return q
+def _can_modify_copy_task(user: User, task: CopyTask) -> bool:
+    return _is_copy_admin(user) or task.owner_id == user.id
+
+
+def _copy_task_by_id(db: Session, task_id: int) -> CopyTask | None:
+    return db.query(CopyTask).filter(CopyTask.id == task_id).first()
+
+
+def _copy_task_with_owner(db: Session, task_id: int) -> CopyTask | None:
+    return (
+        db.query(CopyTask)
+        .options(joinedload(CopyTask.owner))
+        .filter(CopyTask.id == task_id)
+        .first()
+    )
 
 
 class CopyBotCreate(BaseModel):
@@ -50,8 +57,11 @@ def _mask(s: str, keep: int = 4) -> str:
 
 def _task_to_dict(r: CopyTask, day: str) -> dict:
     today = r.today_forwarded if r.stats_utc_date == day else 0
+    owner_username = getattr(getattr(r, "owner", None), "username", None)
     return {
         "id": r.id,
+        "owner_id": r.owner_id,
+        "owner_username": owner_username,
         "source_channel": r.source_channel,
         "target_channel": r.target_channel,
         "bot_id": r.bot_id,
@@ -65,10 +75,9 @@ def _task_to_dict(r: CopyTask, day: str) -> dict:
 
 
 @router.get("/bots", response_model=dict)
-def list_bots(user: User = Depends(require_user_or_admin), db: Session = Depends(get_db)):
-    # 管理员只看自己录入的库；普通用户可看全部 Bot（管理员维护的共享池）供建任务时选择
-    q = _bot_q(db, user) if user.role == "admin" else db.query(CopyBot)
-    rows = q.order_by(CopyBot.id.desc()).all()
+def list_bots(user: User | None = Depends(get_current_user_optional), db: Session = Depends(get_db)):
+    _ = user
+    rows = db.query(CopyBot).order_by(CopyBot.id.desc()).all()
     for r in rows:
         cfs.reconcile_copy_bot_session_name(r, db)
     items = [
@@ -79,6 +88,7 @@ def list_bots(user: User = Depends(require_user_or_admin), db: Session = Depends
             "bot_token_masked": _mask(r.bot_token, 6),
             "session_name": r.session_name,
             "session_ready": cfs.bot_session_ready(r),
+            "session_ok": cfs.bot_session_ready(r) and (r.status or "").lower() == "active",
             "status": r.status,
             "last_error": r.last_error,
             "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -182,7 +192,7 @@ async def upload_bot_session(
             pass
     dest.write_bytes(content)
     try:
-        cfs.verify_session_connect(int(row.api_id), row.api_hash, name)
+        cfs.verify_session_connect(int(row.api_id), row.api_hash, name, bot_id=bot_id)
     except Exception as exc:
         try:
             dest.unlink(missing_ok=True)
@@ -215,8 +225,14 @@ def reset_bot_error(
 
 
 @router.get("/tasks", response_model=dict)
-def list_tasks(user: User = Depends(require_user_or_admin), db: Session = Depends(get_db)):
-    rows = _task_q(db, user).order_by(CopyTask.id.desc()).all()
+def list_tasks(user: User | None = Depends(get_current_user_optional), db: Session = Depends(get_db)):
+    _ = user
+    rows = (
+        db.query(CopyTask)
+        .options(joinedload(CopyTask.owner))
+        .order_by(CopyTask.id.desc())
+        .all()
+    )
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     items = [_task_to_dict(r, day) for r in rows]
     return {"ok": True, "tasks": items}
@@ -228,10 +244,7 @@ def create_task(
     user: User = Depends(require_user_or_admin),
     db: Session = Depends(get_db),
 ):
-    if user.role == "admin":
-        bot = _bot_q(db, user).filter(CopyBot.id == payload.bot_id).first()
-    else:
-        bot = db.query(CopyBot).filter(CopyBot.id == payload.bot_id).first()
+    bot = db.query(CopyBot).filter(CopyBot.id == payload.bot_id).first()
     if not bot:
         raise HTTPException(status_code=400, detail="请从机器人库选择有效的 Bot")
     cfs.reconcile_copy_bot_session_name(bot, db)
@@ -261,9 +274,11 @@ def create_task(
 
 @router.post("/tasks/{task_id}/start", response_model=dict)
 def start_task_route(task_id: int, user: User = Depends(require_user_or_admin), db: Session = Depends(get_db)):
-    row = _task_q(db, user).filter(CopyTask.id == task_id).first()
+    row = _copy_task_by_id(db, task_id)
     if not row:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if not _can_modify_copy_task(user, row):
+        raise HTTPException(status_code=403, detail="无权限操作该任务")
     if row.status in ("running", "starting"):
         raise HTTPException(status_code=400, detail="任务已在运行或正在启动中")
     bot = db.query(CopyBot).filter(CopyBot.id == row.bot_id).first()
@@ -276,21 +291,23 @@ def start_task_route(task_id: int, user: User = Depends(require_user_or_admin), 
     row.last_error = None
     db.add(row)
     db.commit()
-    db.refresh(row)
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     cfs.schedule_start_task(task_id)
-    return {"ok": True, "message": "已提交启动", "task": _task_to_dict(row, day)}
+    row_out = _copy_task_with_owner(db, task_id)
+    return {"ok": True, "message": "已提交启动", "task": _task_to_dict(row_out, day) if row_out else None}
 
 
 @router.post("/tasks/{task_id}/pause", response_model=dict)
 def pause_task_route(task_id: int, user: User = Depends(require_user_or_admin), db: Session = Depends(get_db)):
-    row = _task_q(db, user).filter(CopyTask.id == task_id).first()
+    row = _copy_task_by_id(db, task_id)
     if not row:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if not _can_modify_copy_task(user, row):
+        raise HTTPException(status_code=403, detail="无权限操作该任务")
     cfs.schedule_pause_task(task_id)
     cfs.wait_pause_task(task_id)
     db.expire_all()
-    row2 = _task_q(db, user).filter(CopyTask.id == task_id).first()
+    row2 = _copy_task_with_owner(db, task_id)
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return {
         "ok": True,
@@ -301,9 +318,11 @@ def pause_task_route(task_id: int, user: User = Depends(require_user_or_admin), 
 
 @router.delete("/tasks/{task_id}", response_model=dict)
 def delete_task_route(task_id: int, user: User = Depends(require_user_or_admin), db: Session = Depends(get_db)):
-    row = _task_q(db, user).filter(CopyTask.id == task_id).first()
+    row = _copy_task_by_id(db, task_id)
     if not row:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if not _can_modify_copy_task(user, row):
+        raise HTTPException(status_code=403, detail="无权限操作该任务")
     cfs.wait_pause_task(task_id)
     db.query(ForwardRecord).filter(ForwardRecord.task_id == task_id).delete(synchronize_session=False)
     db.delete(row)
@@ -313,6 +332,6 @@ def delete_task_route(task_id: int, user: User = Depends(require_user_or_admin),
 
 
 @router.get("/logs", response_model=dict)
-def get_logs(limit: int = 200, user: User = Depends(require_user_or_admin)):
+def get_logs(limit: int = 200, user: User | None = Depends(get_current_user_optional)):
     _ = user
     return {"ok": True, "logs": cfs.log_snapshot(min(limit, 500))}

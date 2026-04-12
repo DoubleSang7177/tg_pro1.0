@@ -86,7 +86,7 @@ export function EngagementGroupPanel({ options, values, onChange, disabled = fal
         />
       </div>
 
-      <div className="engagement-group-panel-list growth-scroll max-h-[min(280px,42vh)] overflow-y-auto rounded-xl border border-white/[0.06] bg-[rgba(0,0,0,0.25)] p-1.5 backdrop-blur-md">
+      <div className="engagement-group-panel-list growth-scroll max-h-[calc(100vh-300px)] max-h-[calc(100dvh-300px)] overflow-y-auto rounded-xl border border-white/[0.06] bg-[rgba(0,0,0,0.25)] p-1.5 backdrop-blur-md">
         {filtered.length === 0 ? (
           <p className="py-10 text-center text-xs text-slate-500">无匹配项</p>
         ) : (

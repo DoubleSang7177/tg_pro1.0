@@ -16,6 +16,8 @@ class User(Base):
     password_hash = Column(String(128), nullable=False)
     role = Column(String(20), nullable=False, default="user")
     token = Column(String(128), nullable=True, unique=True)
+    # 相对 URL，如 /uploads/avatars/1.jpg，前端拼接 BASE_URL
+    avatar_url = Column(String(512), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     tasks = relationship("TaskRecord", back_populates="owner")
@@ -45,6 +47,8 @@ class AccountFile(Base):
     invite_fail_streak_days = Column(Integer, nullable=False, default=0)
     cooldown_completed_count = Column(Integer, nullable=False, default=0)
     status_note = Column(String(32), nullable=True)
+    # 最近一次账号状态推送/同步时间（与 WebSocket 事件、列表 API 对齐）
+    last_update = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
@@ -157,7 +161,7 @@ class InteractionTask(Base):
 
 
 class CopyBot(Base):
-    """Copy 转发：机器人库（Telethon 监听 + Bot API 发送）"""
+    """Copy 转发：机器人库（Telethon session 监听 + 同 session MTProto 转发）"""
 
     __tablename__ = "copy_bots"
 
@@ -194,6 +198,7 @@ class CopyTask(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     bot = relationship("CopyBot", back_populates="tasks")
+    owner = relationship("User", foreign_keys=[owner_id])
     forwards = relationship("ForwardRecord", back_populates="task", cascade="all, delete-orphan")
 
 

@@ -1,4 +1,24 @@
-export const BASE_URL = "http://localhost:8000";
+const envApi = import.meta.env.VITE_API_BASE_URL;
+/** 生产默认直连 8000；开发默认走同源 /api（由 vite 代理），避免 192.168.x.x:5173 访问时跨域被拒 */
+export const BASE_URL =
+  typeof envApi === "string" && envApi.trim() !== ""
+    ? envApi.trim().replace(/\/$/, "")
+    : import.meta.env.DEV
+      ? "/api"
+      : "http://localhost:8000";
+
+/** 账号状态 WebSocket（与 BASE_URL 同源；token 走 query） */
+export function getWebSocketUrl(token) {
+  const t = encodeURIComponent(token || "");
+  if (typeof window === "undefined") return "";
+  if (BASE_URL.startsWith("/")) {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const path = `${BASE_URL.replace(/\/$/, "")}/ws?token=${t}`;
+    return `${proto}//${window.location.host}${path}`;
+  }
+  const u = BASE_URL.replace(/^http/, "ws").replace(/\/$/, "");
+  return `${u}/ws?token=${t}`;
+}
 
 function jsonErrorMessage(data) {
   let detail = data?.detail;
@@ -10,6 +30,25 @@ function jsonErrorMessage(data) {
     detail = detail.msg || JSON.stringify(detail);
   }
   return detail || data?.message || "请求失败";
+}
+
+async function fetchApi(path, init) {
+  const url = `${BASE_URL}${path}`;
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    if (e?.name === "AbortError") throw e;
+    const isNet =
+      e instanceof TypeError ||
+      (typeof e?.message === "string" &&
+        (e.message === "Failed to fetch" || e.message.includes("NetworkError")));
+    if (isNet) {
+      throw new Error(
+        `无法连接后端（${BASE_URL}）。常见原因：1) uvicorn 未在 8000 端口运行；2) 用局域网 IP 打开页面却直连了错误的 API 地址——开发环境请使用 npm run dev（走 /api 代理），或在 .env 设置 VITE_API_BASE_URL=http://本机IP:8000。原始错误：${e?.message || e}`,
+      );
+    }
+    throw e;
+  }
 }
 
 async function request(path, options = {}) {
@@ -24,7 +63,7 @@ async function request(path, options = {}) {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  const res = await fetchApi(path, { ...options, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(jsonErrorMessage(data));
@@ -35,7 +74,7 @@ async function request(path, options = {}) {
 /** 采集登录类接口：始终解析 JSON，业务错误用 body.ok / need_password 表示，不抛异常 */
 async function scraperPost(path, body) {
   const token = localStorage.getItem("token") || "";
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetchApi(path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -56,6 +95,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ username, password }),
     }),
+  register: (username, password) =>
+    request("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  updateProfile: (username) =>
+    request("/auth/profile", {
+      method: "PATCH",
+      body: JSON.stringify({ username }),
+    }),
+  changePassword: (current_password, new_password) =>
+    request("/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ current_password, new_password }),
+    }),
+  uploadAvatar: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request("/auth/avatar", { method: "POST", body: form });
+  },
   logout: () => request("/auth/logout", { method: "POST", body: "{}" }),
   me: () => request("/auth/me"),
   systemStatus: () => request("/"),
@@ -72,7 +131,7 @@ export const api = {
     const token = localStorage.getItem("token") || "";
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    return fetch(`${BASE_URL}/groups/sync-metadata`, {
+    return fetchApi("/groups/sync-metadata", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -102,7 +161,11 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   taskJobStatus: (jobId) => request(`/start_task/status/${encodeURIComponent(jobId)}`),
+  /** 群组互动等：全局停止信号 */
   stopTask: () => request("/stop-task", { method: "POST" }),
+  /** 用户增长：按 job_id 停止对应 TaskRunner */
+  stopGrowthTask: (jobId) =>
+    request(`/tasks/${encodeURIComponent(jobId)}/stop`, { method: "POST" }),
   uploadAccount: (file) => {
     const form = new FormData();
     form.append("file", file);
@@ -131,6 +194,10 @@ export const api = {
     }),
   deleteAccount: (phone) =>
     request(`/accounts/${encodeURIComponent(phone)}`, {
+      method: "DELETE",
+    }),
+  deleteAccountById: (accountId) =>
+    request(`/accounts/id/${Number(accountId)}`, {
       method: "DELETE",
     }),
   listUsers: () => request("/users"),
@@ -214,7 +281,7 @@ export const api = {
 /** 携带 Token 下载采集结果 txt（浏览器保存文件，兼容旧版按文件名） */
 export async function downloadScraperFile(filename) {
   const token = localStorage.getItem("token") || "";
-  const res = await fetch(`${BASE_URL}/scraper/download/${encodeURIComponent(filename)}`, {
+  const res = await fetchApi(`/scraper/download/${encodeURIComponent(filename)}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -242,7 +309,7 @@ export async function downloadScraperFile(filename) {
 /** 按任务 ID 下载（会递增服务端 download_count） */
 export async function downloadScraperTaskById(taskId) {
   const token = localStorage.getItem("token") || "";
-  const res = await fetch(`${BASE_URL}/scraper/download/${Number(taskId)}`, {
+  const res = await fetchApi(`/scraper/download/${Number(taskId)}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {

@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useAutoRefresh } from "./hooks/useAutoRefresh";
 import {
   Activity,
   AlertCircle,
@@ -26,10 +28,12 @@ import {
   Users2,
   XCircle,
 } from "lucide-react";
-import { api, downloadScraperFile, downloadScraperTaskById } from "./api";
+import { api, downloadScraperFile, downloadScraperTaskById, getWebSocketUrl } from "./api";
+import { AuthModal } from "./components/AuthModal";
 import { GlassDropdown } from "./components/GlassDropdown";
 import { EngagementGroupPanel } from "./components/EngagementGroupPanel";
 import { UiSpinner } from "./components/UiSpinner";
+import { UserAccountDock } from "./components/UserAccountDock";
 
 const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "消息Copy", "用户管理"];
 
@@ -70,8 +74,17 @@ const BTN_PRIMARY =
   "rounded-xl bg-[linear-gradient(135deg,#00ff87,#60efff)] px-4 py-2 text-sm font-semibold text-slate-900 shadow-[0_0_20px_rgba(0,255,150,0.3),0_6px_20px_rgba(0,0,0,0.25)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_36px_rgba(0,255,180,0.48),0_10px_28px_rgba(96,239,255,0.28)] active:translate-y-0 active:shadow-[0_0_16px_rgba(0,255,150,0.28)]";
 
 /** 内嵌终端：用户增长队列 = 绿色光，实时日志 = 蓝色光 */
+/** 用户列表 / 日志等区域：视口内可滚动高度 */
+const PANEL_SCROLL_MAX_H =
+  "max-h-[calc(100vh-300px)] max-h-[calc(100dvh-300px)]";
+
+/** 用户增长页：session.log 滚动区上限 */
+const GROWTH_QUEUE_LOG_MAX_H = "max-h-[min(36rem,calc(100dvh-15rem))]";
+/** 账号队列：略高于日志区，补偿左侧上方（POOL + 执行状态）比右侧（统计 + 任务面板）矮，使两格外框底边对齐 */
+const GROWTH_ACCOUNTS_QUEUE_MAX_H = "max-h-[min(46rem,calc(100dvh-9rem))]";
+
 const GLASS_PANEL_GROWTH =
-  "flex flex-col overflow-hidden rounded-2xl border border-emerald-400/14 bg-[rgba(255,255,255,0.03)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(34,197,94,0.08)] backdrop-blur-[20px]";
+  "flex flex-col overflow-visible rounded-2xl border border-emerald-400/14 bg-[rgba(255,255,255,0.03)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(34,197,94,0.08)] backdrop-blur-[20px]";
 
 const GLASS_PANEL_CHROME_GROWTH =
   "flex shrink-0 items-center gap-2 border-b border-emerald-400/10 bg-emerald-500/[0.05] px-3 py-2 backdrop-blur-[12px]";
@@ -81,11 +94,11 @@ const GLASS_PANEL_CHROME_LOG =
 
 /** 代理监控表格：蓝色信息光晕 */
 const TABLE_WRAP =
-  "overflow-x-auto overflow-hidden rounded-xl border border-blue-400/12 bg-[rgba(255,255,255,0.03)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(59,130,246,0.09)] backdrop-blur-[20px]";
+  "overflow-x-auto overflow-y-visible rounded-xl border border-blue-400/12 bg-[rgba(255,255,255,0.03)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_40px_rgba(59,130,246,0.09)] backdrop-blur-[20px]";
 
 /** 用户采集：青绿双色环境光 */
 const SCRAPER_PAGE =
-  "relative overflow-hidden rounded-2xl border border-teal-400/18 bg-[rgba(255,255,255,0.025)] p-5 shadow-[0_8px_40px_rgba(0,0,0,0.38),0_0_48px_rgba(0,255,200,0.1),0_0_72px_rgba(34,211,238,0.07)] backdrop-blur-[16px] sm:p-7";
+  "relative overflow-visible rounded-2xl border border-teal-400/18 bg-[rgba(255,255,255,0.025)] p-5 shadow-[0_8px_40px_rgba(0,0,0,0.38),0_0_48px_rgba(0,255,200,0.1),0_0_72px_rgba(34,211,238,0.07)] backdrop-blur-[16px] sm:p-7";
 const SCRAPER_GLASS_CARD = cardShellClass("scraper");
 const SCRAPER_FIELD = INPUT_FIELD;
 const SCRAPER_BTN_GLOW =
@@ -98,7 +111,7 @@ const SCRAPER_HISTORY_CARD =
 
 /** 消息 Copy：紫罗兰科技光 */
 const COPY_PAGE =
-  "relative overflow-hidden rounded-2xl border border-violet-400/16 bg-[rgba(255,255,255,0.025)] p-5 shadow-[0_8px_40px_rgba(0,0,0,0.38),0_0_48px_rgba(139,92,246,0.1),0_0_64px_rgba(99,102,241,0.06)] backdrop-blur-[16px] sm:p-7";
+  "relative overflow-visible rounded-2xl border border-violet-400/16 bg-[rgba(255,255,255,0.025)] p-5 shadow-[0_8px_40px_rgba(0,0,0,0.38),0_0_48px_rgba(139,92,246,0.1),0_0_64px_rgba(99,102,241,0.06)] backdrop-blur-[16px] sm:p-7";
 const COPY_GLASS_CARD = `${CARD_GLASS_CORE} border border-violet-400/14 p-5 shadow-[0_8px_32px_rgba(0,0,0,0.38),0_0_40px_rgba(139,92,246,0.09)] backdrop-blur-[20px] transition-all duration-[250ms] ease-out hover:-translate-y-0.5 hover:border-violet-400/26`;
 const COPY_FIELD = INPUT_FIELD;
 const COPY_BTN_GLOW_SM =
@@ -242,6 +255,11 @@ function AccountPoolNeonDistributionPanel({
   risk_accounts,
 }) {
   const [hoverKey, setHoverKey] = useState(null);
+  const [tipPos, setTipPos] = useState({ x: 0, y: 0 });
+  const donutWrapRef = useRef(null);
+  const hoverSourceRef = useRef("none");
+  const rowElRef = useRef(null);
+
   const total = total_accounts;
   const active = active_accounts;
   const limited = limited_accounts;
@@ -249,6 +267,59 @@ function AccountPoolNeonDistributionPanel({
 
   const pct = (n) => (total > 0 ? (n / total) * 100 : 0);
   const pctStr = (n) => (total > 0 ? ((n / total) * 100).toFixed(1) : "0.0");
+
+  const placeTooltip = useCallback(() => {
+    if (!hoverKey) return;
+    if (hoverSourceRef.current === "row" && rowElRef.current) {
+      const r = rowElRef.current.getBoundingClientRect();
+      setTipPos({ x: r.left + r.width / 2, y: r.top - 6 });
+    } else if (donutWrapRef.current) {
+      const r = donutWrapRef.current.getBoundingClientRect();
+      setTipPos({ x: r.left + r.width / 2, y: r.top - 8 });
+    }
+  }, [hoverKey]);
+
+  useLayoutEffect(() => {
+    if (!hoverKey) return undefined;
+    placeTooltip();
+    const ro = new ResizeObserver(() => placeTooltip());
+    if (donutWrapRef.current) ro.observe(donutWrapRef.current);
+    if (rowElRef.current) ro.observe(rowElRef.current);
+    window.addEventListener("scroll", placeTooltip, true);
+    window.addEventListener("resize", placeTooltip);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("scroll", placeTooltip, true);
+      window.removeEventListener("resize", placeTooltip);
+    };
+  }, [hoverKey, placeTooltip]);
+
+  const clearHover = useCallback(() => {
+    setHoverKey(null);
+    hoverSourceRef.current = "none";
+    rowElRef.current = null;
+  }, []);
+
+  const onDonutSegmentEnter = (key) => {
+    hoverSourceRef.current = "donut";
+    setHoverKey(key);
+  };
+
+  const onRowEnter = (r) => (e) => {
+    hoverSourceRef.current = "row";
+    rowElRef.current = e.currentTarget;
+    const rect = e.currentTarget.getBoundingClientRect();
+    setTipPos({ x: rect.left + rect.width / 2, y: rect.top - 6 });
+    setHoverKey(r.key);
+  };
+
+  const poolTooltipMeta = useMemo(() => {
+    if (!hoverKey) return null;
+    const count = hoverKey === "active" ? active : hoverKey === "limited" ? limited : risk;
+    const zh = hoverKey === "active" ? "可用" : hoverKey === "limited" ? "受限" : "风控账号";
+    const pctLabel = total > 0 ? ((count / total) * 100).toFixed(1) : "0.0";
+    return { count, zh, pct: pctLabel };
+  }, [hoverKey, active, limited, risk, total]);
 
   const segments = useMemo(() => {
     if (total <= 0) return [];
@@ -297,7 +368,7 @@ function AccountPoolNeonDistributionPanel({
     },
     {
       key: "risk",
-      zh: "风控",
+      zh: "风控账号",
       en: "RISK",
       value: risk,
       pct: pct(risk),
@@ -307,9 +378,31 @@ function AccountPoolNeonDistributionPanel({
     },
   ];
 
+  const poolChartTooltip =
+    poolTooltipMeta && hoverKey
+      ? createPortal(
+          <div
+            className="pointer-events-none fixed z-[9999] flex w-max flex-col items-center gap-1 rounded-lg border border-cyan-400/35 bg-[#050a14]/95 px-3 py-2 text-center shadow-[0_8px_32px_rgba(0,0,0,0.55),0_0_24px_rgba(34,211,238,0.2)] backdrop-blur-md"
+            style={{
+              left: tipPos.x,
+              top: tipPos.y,
+              transform: "translate(-50%, calc(-100% - 6px))",
+            }}
+            role="tooltip"
+          >
+            <p className="text-[10px] font-semibold tracking-wide text-slate-200">{poolTooltipMeta.zh}</p>
+            <p className="font-mono text-[11px] font-semibold tabular-nums text-cyan-300/95">
+              {poolTooltipMeta.count} · {poolTooltipMeta.pct}%
+            </p>
+          </div>,
+          document.body,
+        )
+      : null;
+
   return (
+    <>
     <div
-      className="relative flex h-[240px] max-h-[260px] min-h-[200px] w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-cyan-500/15 bg-[linear-gradient(145deg,rgba(6,10,20,0.92)_0%,rgba(8,14,28,0.88)_45%,rgba(10,8,22,0.9)_100%)] shadow-[0_0_1px_rgba(0,255,200,0.12),0_8px_40px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-[20px]"
+      className="relative flex h-[240px] max-h-[260px] min-h-[200px] w-full shrink-0 flex-col overflow-visible rounded-2xl border border-cyan-500/15 bg-[linear-gradient(145deg,rgba(6,10,20,0.92)_0%,rgba(8,14,28,0.88)_45%,rgba(10,8,22,0.9)_100%)] shadow-[0_0_1px_rgba(0,255,200,0.12),0_8px_40px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-[20px]"
       aria-label="账号池分布"
     >
       <div
@@ -330,8 +423,16 @@ function AccountPoolNeonDistributionPanel({
           <span className="font-log text-[9px] tabular-nums text-slate-500">LIVE · DB</span>
         </div>
 
-        <div className="flex min-h-0 flex-1 items-stretch gap-3">
-          <div className="relative w-[118px] shrink-0 sm:w-[128px]">
+        <div className="flex min-h-0 flex-1 items-stretch gap-3 overflow-visible">
+          <div
+            ref={donutWrapRef}
+            className="relative w-[118px] shrink-0 overflow-visible sm:w-[128px]"
+            onMouseLeave={(e) => {
+              const next = e.relatedTarget;
+              if (next instanceof Node && e.currentTarget.contains(next)) return;
+              if (hoverSourceRef.current === "donut") clearHover();
+            }}
+          >
             <svg
               viewBox="0 0 100 100"
               className="h-full w-full max-h-[132px] overflow-visible drop-shadow-[0_0_20px_rgba(34,211,238,0.15)]"
@@ -377,30 +478,21 @@ function AccountPoolNeonDistributionPanel({
                         opacity: dim ? 0.32 : 1,
                         filter: hoverKey === s.key ? `drop-shadow(0 0 10px ${s.glow})` : "none",
                       }}
-                      onMouseEnter={() => setHoverKey(s.key)}
-                      onMouseLeave={() => setHoverKey(null)}
+                      onMouseEnter={() => onDonutSegmentEnter(s.key)}
                     />
                   );
                 })
               )}
             </svg>
-            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center pt-0.5">
-              <span className="font-log text-[9px] font-bold uppercase tracking-[0.28em] text-cyan-500/80">TOTAL</span>
-              <span className="mt-0.5 bg-gradient-to-b from-white to-slate-300 bg-clip-text text-2xl font-bold tabular-nums text-transparent drop-shadow-[0_0_12px_rgba(255,255,255,0.15)]">
+            <div
+              className="pointer-events-none absolute left-1/2 top-1/2 flex w-full max-w-[5.5rem] -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-1 text-center"
+              aria-hidden
+            >
+              <span className="font-log text-[10px] font-medium uppercase tracking-[0.26em] text-slate-500/90">TOTAL</span>
+              <span className="bg-gradient-to-b from-white to-slate-300 bg-clip-text text-3xl font-extrabold tabular-nums leading-none text-transparent drop-shadow-[0_0_14px_rgba(255,255,255,0.12)]">
                 {total}
               </span>
             </div>
-            {hoverKey && total > 0 ? (
-              <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1.5 w-max -translate-x-1/2 rounded-lg border border-cyan-400/30 bg-[#050a14]/95 px-2.5 py-1.5 text-center shadow-[0_0_20px_rgba(34,211,238,0.25)] backdrop-blur-md">
-                <p className="text-[10px] font-semibold text-slate-200">
-                  {hoverKey === "active" ? "可用" : hoverKey === "limited" ? "受限" : "风控"}
-                </p>
-                <p className="mt-0.5 font-mono text-[11px] tabular-nums text-cyan-300/95">
-                  {hoverKey === "active" ? active : hoverKey === "limited" ? limited : risk} ·{" "}
-                  {pctStr(hoverKey === "active" ? active : hoverKey === "limited" ? limited : risk)}%
-                </p>
-              </div>
-            ) : null}
           </div>
 
           <div className="flex min-w-0 flex-1 flex-col justify-center gap-2.5 py-0.5">
@@ -411,12 +503,15 @@ function AccountPoolNeonDistributionPanel({
                   key={r.key}
                   className="group/row cursor-default transition-opacity duration-[600ms] ease-in-out"
                   style={{ opacity: dim ? 0.38 : 1 }}
-                  onMouseEnter={() => setHoverKey(r.key)}
-                  onMouseLeave={() => setHoverKey(null)}
-                  title={`${r.zh} 占比 ${r.pct.toFixed(1)}%`}
+                  onMouseEnter={onRowEnter(r)}
+                  onMouseLeave={(e) => {
+                    const next = e.relatedTarget;
+                    if (next instanceof Node && e.currentTarget.contains(next)) return;
+                    if (hoverSourceRef.current === "row") clearHover();
+                  }}
                 >
                   <div className="mb-1 flex items-baseline justify-between gap-2">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{r.en}</span>
+                    <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500/85">{r.en}</span>
                     <span className={`font-mono text-sm font-bold tabular-nums ${r.numClass}`}>{r.value}</span>
                   </div>
                   <div className="flex items-center gap-2">
@@ -428,9 +523,6 @@ function AccountPoolNeonDistributionPanel({
                       />
                     </div>
                   </div>
-                  <p className="invisible mt-0.5 text-[9px] text-slate-500 group-hover/row:visible">
-                    占比 {r.pct.toFixed(1)}%
-                  </p>
                 </div>
               );
             })}
@@ -438,6 +530,8 @@ function AccountPoolNeonDistributionPanel({
         </div>
       </div>
     </div>
+    {poolChartTooltip}
+    </>
   );
 }
 
@@ -474,7 +568,7 @@ function parseGrowthTaskProgressLines(lines) {
   return { queueIndex: qi, queueTotal: qn, progressPct, success, failed };
 }
 
-/** 用户增长 · 执行状态（纯展示，数据来自轮询快照与表单上下文） */
+/** 用户增长 · 执行状态主卡片（与 Pool Distribution 同高同宽，纯展示） */
 function GrowthExecutionStatusModule({ selectedGroup, snapshot, taskRunning, taskHighlight }) {
   const groupDisplay = formatGrowthGroupHandle(snapshot?.groupRaw ?? selectedGroup);
   const phoneDisplay =
@@ -490,90 +584,119 @@ function GrowthExecutionStatusModule({ selectedGroup, snapshot, taskRunning, tas
   const success = snapshot?.success ?? 0;
   const failed = snapshot?.failed ?? 0;
   const errorHint = snapshot?.errorHint;
+  const isStopped = uiStatus === "STOPPED";
 
-  const chipClass =
-    uiStatus === "ERROR"
-      ? "border-rose-400/50 bg-rose-500/[0.12] text-rose-100 shadow-[0_0_14px_rgba(251,113,133,0.35)]"
-      : uiStatus === "RUNNING"
-        ? "border-cyan-400/45 bg-cyan-500/[0.1] text-cyan-100 shadow-[0_0_16px_rgba(34,211,238,0.3)]"
-        : "border-violet-400/30 bg-violet-500/[0.08] text-slate-200 shadow-[0_0_12px_rgba(139,92,246,0.18)]";
+  const statusKind =
+    isStopped || uiStatus === "ERROR" ? "error" : uiStatus === "RUNNING" ? "running" : "waiting";
+  const statusBadge = isStopped
+    ? {
+        dot: "bg-rose-500 shadow-[0_0_10px_rgba(251,113,133,0.95)]",
+        label: "text-rose-50",
+        wrap: "border-rose-500/50 bg-rose-500/[0.22] shadow-[0_0_22px_rgba(251,113,133,0.4)]",
+      }
+    : statusKind === "error"
+      ? {
+          dot: "bg-rose-500 shadow-[0_0_12px_rgba(251,113,133,0.95)]",
+          label: "text-rose-100",
+          wrap: "border-rose-400/50 bg-rose-500/10 shadow-[0_0_24px_rgba(251,113,133,0.42)]",
+        }
+      : statusKind === "running"
+        ? {
+            dot: "bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.9)]",
+            label: "text-emerald-100",
+            wrap: "border-emerald-400/45 bg-emerald-500/10 shadow-[0_0_22px_rgba(52,211,153,0.38)]",
+          }
+        : {
+            dot: "bg-violet-400 shadow-[0_0_12px_rgba(167,139,250,0.9)]",
+            label: "text-violet-100",
+            wrap: "border-violet-400/45 bg-violet-500/12 shadow-[0_0_22px_rgba(139,92,246,0.45)]",
+          };
 
-  const frameGlow =
-    uiStatus === "ERROR"
-      ? "shadow-[0_0_28px_rgba(251,113,133,0.14),inset_0_0_0_1px_rgba(251,113,133,0.22)]"
-      : uiStatus === "RUNNING"
-        ? "shadow-[0_0_28px_rgba(34,211,238,0.12),inset_0_0_0_1px_rgba(34,211,238,0.2)]"
-        : "shadow-[inset_0_0_0_1px_rgba(139,92,246,0.14)]";
-
-  const pctLabel =
-    indeterminate || progressPct == null ? "—" : `${Math.min(100, Math.max(0, progressPct))}%`;
+  const pctNum = progressPct != null ? Math.min(100, Math.max(0, progressPct)) : null;
+  const pctLabel = indeterminate || pctNum == null ? "—" : `${pctNum}%`;
 
   return (
     <section
-      className={`relative flex h-[150px] min-h-[140px] max-h-[170px] min-w-0 shrink-0 grow-0 flex-col overflow-hidden rounded-xl border border-white/[0.09] bg-[linear-gradient(160deg,rgba(6,10,18,0.92)_0%,rgba(10,14,24,0.88)_100%)] px-2.5 py-2 backdrop-blur-[18px] transition-[box-shadow,border-color] duration-500 ease-out ${frameGlow}`}
+      className="execution-status relative flex h-[240px] max-h-[260px] min-h-[200px] w-full shrink-0 flex-col rounded-2xl border border-cyan-500/15 bg-[linear-gradient(145deg,rgba(6,10,20,0.92)_0%,rgba(8,14,28,0.88)_45%,rgba(10,8,22,0.9)_100%)] p-4 shadow-[0_0_1px_rgba(0,255,200,0.12),0_8px_40px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-[20px]"
       aria-label="执行状态"
     >
       <div
-        className="pointer-events-none absolute -right-8 top-0 h-24 w-24 rounded-full bg-cyan-500/10 blur-3xl"
+        className="pointer-events-none absolute -left-16 top-1/2 h-48 w-48 -translate-y-1/2 rounded-full bg-emerald-500/10 blur-[64px]"
         aria-hidden
       />
-      <div className="relative z-[1] flex h-full min-h-0 flex-col justify-between gap-1">
-        <div className="shrink-0 space-y-1">
-          <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] pb-1">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <Activity className="h-3.5 w-3.5 shrink-0 text-cyan-400/80" aria-hidden />
-              <span className="truncate font-log text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">
-                execution.status
-              </span>
-            </div>
+      <div
+        className="pointer-events-none absolute -right-12 -top-8 h-40 w-40 rounded-full bg-fuchsia-500/10 blur-[56px]"
+        aria-hidden
+      />
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/35 to-transparent"
+        aria-hidden
+      />
+
+      <div className="relative z-[1] flex h-full min-h-0 flex-col overflow-hidden">
+        <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] pb-2">
+          <h3 className="min-w-0 truncate text-[16px] font-bold uppercase tracking-[0.12em] text-slate-50">
+            EXECUTION STATUS
+          </h3>
+          <div
+            className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-0.5 transition-[box-shadow,border-color] duration-500 ${statusBadge.wrap}`}
+          >
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusBadge.dot}`} aria-hidden />
             <span
-              className={`shrink-0 rounded-md border px-2 py-0.5 font-log text-[9px] font-bold uppercase tracking-widest transition-all duration-500 ease-out ${chipClass}`}
+              className={`text-[12px] font-bold ${statusBadge.label} ${isStopped ? "normal-case tracking-wide" : "uppercase tracking-[0.1em]"}`}
             >
-              {uiStatus}
+              {isStopped ? "● 已停止" : uiStatus}
             </span>
           </div>
+        </header>
 
-          <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] leading-tight">
-            <div className="text-slate-500">账号</div>
-            <div className="truncate text-right font-mono text-slate-200 tabular-nums" title={phoneDisplay}>
-              {phoneDisplay}
-            </div>
-            <div className="text-slate-500">任务</div>
-            <div className="truncate text-right font-medium text-slate-300">{taskKind}</div>
-            <div className="text-slate-500">群组</div>
-            <div className="truncate text-right font-mono text-cyan-300/90" title={groupDisplay}>
-              {groupDisplay}
+        <div className="mt-2 flex min-h-0 flex-1 flex-col gap-[10px] overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col justify-center overflow-hidden">
+            <div className="grid min-w-0 grid-cols-[60px_minmax(0,1fr)] items-baseline gap-x-2 gap-y-2.5">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-200 opacity-50">账号</span>
+              <div
+                className="min-w-0 truncate font-mono text-[13px] leading-tight text-slate-50 tabular-nums"
+                title={String(phoneDisplay)}
+              >
+                {phoneDisplay}
+              </div>
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-200 opacity-50">群组</span>
+              <div
+                className="min-w-0 truncate font-mono text-[13px] leading-tight text-cyan-200"
+                title={groupDisplay}
+              >
+                {groupDisplay}
+              </div>
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-200 opacity-50">任务</span>
+              <div className="min-w-0 truncate text-[13px] font-semibold leading-tight text-slate-100">{taskKind}</div>
             </div>
           </div>
-        </div>
 
-        <div className="shrink-0 space-y-1">
-          <div>
-            <div className="mb-0.5 flex items-center justify-between gap-2">
-              <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">progress</span>
-              <span className="font-mono text-[10px] tabular-nums text-cyan-300/90">{pctLabel}</span>
-            </div>
-            <div className="relative h-2 overflow-hidden rounded-full bg-white/[0.07] ring-1 ring-white/[0.06]">
+          <div className="shrink-0 space-y-[10px] border-t border-white/[0.06] pt-2">
+            <div className="exec-status-progress-track relative h-1.5 w-full overflow-hidden rounded bg-white/[0.07] ring-1 ring-white/[0.08]">
               {indeterminate ? (
                 <div className="growth-exec-progress-indeterminate" />
               ) : (
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-cyan-500 via-sky-400 to-violet-500 shadow-[0_0_14px_rgba(34,211,238,0.45)] transition-[width] duration-700 ease-out"
-                  style={{ width: `${progressPct != null ? Math.min(100, Math.max(0, progressPct)) : 0}%` }}
-                />
+                <div className="exec-status-progress-fill h-full min-h-[6px]" style={{ width: `${pctNum ?? 0}%` }} />
               )}
             </div>
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-[11px] font-medium text-slate-500">进度百分比</span>
+              <span className="font-mono text-[14px] font-semibold tabular-nums text-cyan-200/95">{pctLabel}</span>
+            </div>
+            <div className="flex items-center justify-center gap-2 text-[13px] font-medium tabular-nums">
+              <span className="text-emerald-400/95">成功 {success}</span>
+              <span className="select-none text-slate-600" aria-hidden>
+                |
+              </span>
+              <span className="text-rose-400/95">失败 {failed}</span>
+            </div>
+            {uiStatus === "ERROR" && errorHint ? (
+              <p className="line-clamp-2 text-[11px] leading-snug text-rose-300/90" title={errorHint}>
+                {errorHint}
+              </p>
+            ) : null}
           </div>
-
-          <div className="flex items-center justify-between gap-2 border-t border-white/[0.05] pt-0.5 font-mono text-[10px] tabular-nums">
-            <span className="text-emerald-400/90">OK · {success}</span>
-            <span className="text-rose-400/90">FAIL · {failed}</span>
-          </div>
-          {uiStatus === "ERROR" && errorHint ? (
-            <p className="line-clamp-2 text-[9px] leading-snug text-rose-300/90" title={errorHint}>
-              {errorHint}
-            </p>
-          ) : null}
         </div>
       </div>
     </section>
@@ -627,7 +750,11 @@ function AccountMonitorColumn({ variant, title, titleEn, count, countClassName, 
         </div>
         <span className={`shrink-0 tabular-nums leading-none ${countClassName}`}>{count}</span>
       </div>
-      <div className="account-console-column-body growth-scroll max-h-[500px] space-y-2.5 overflow-y-auto pr-0.5">{children}</div>
+      <div
+        className={`account-console-column-body growth-scroll ${PANEL_SCROLL_MAX_H} space-y-2.5 overflow-y-auto pr-0.5`}
+      >
+        {children}
+      </div>
     </section>
   );
 }
@@ -787,7 +914,7 @@ function targetGroupAvatarInitial(title) {
 }
 
 /** 目标群组 · Web3 / 金融 Dashboard 风格卡片 */
-function TargetGroupDashboardCard({ group, onUpdateDailyLimit }) {
+function TargetGroupDashboardCard({ group, onUpdateDailyLimit, operationsLocked }) {
   const g = group;
   const title = g.title || g.username;
   const handleRaw = g.display_handle || g.username;
@@ -901,9 +1028,14 @@ function TargetGroupDashboardCard({ group, onUpdateDailyLimit }) {
           <input
             type="number"
             min={1}
-            className="tg-dash-group-input w-full"
+            readOnly={operationsLocked}
+            title={operationsLocked ? "请先登录" : undefined}
+            className={`tg-dash-group-input w-full ${operationsLocked ? "cursor-not-allowed opacity-60" : ""}`}
             defaultValue={g.daily_limit || 30}
-            onBlur={(e) => onUpdateDailyLimit(g.id, e.target.value)}
+            onBlur={(e) => {
+              if (operationsLocked) return;
+              onUpdateDailyLimit(g.id, e.target.value);
+            }}
           />
         </label>
         <div className="flex shrink-0 flex-col items-end gap-1">
@@ -960,13 +1092,39 @@ function normalizePhoneKey(phone) {
 function growthQueueRowKind(a, taskHighlight) {
   const pk = normalizePhoneKey(a.phone);
   if (a._queueKind === "echo") {
+    if (a.status === "banned") return "banned";
     if (a.status === "risk_suspected") return "risk";
     return "limited";
   }
   const activePk = taskHighlight?.active ? normalizePhoneKey(taskHighlight.active) : "";
   const connPk = taskHighlight?.connecting ? normalizePhoneKey(taskHighlight.connecting) : "";
   if (pk && (pk === activePk || pk === connPk)) return "executing";
+  if (a.status === "banned") return "banned";
+  if (a._wsActiveHighlight) return "active";
   return "active";
+}
+
+function pickAccountFromBuckets(prev, accountId) {
+  if (accountId == null) return null;
+  const id = Number(accountId);
+  for (const k of ["active", "limited", "banned"]) {
+    const arr = prev[k] || [];
+    const f = arr.find((x) => Number(x.id) === id);
+    if (f) return { ...f };
+  }
+  return null;
+}
+
+function echoLabelForWsStatus(status, statusNote) {
+  const s = String(status || "").toLowerCase();
+  if (s === "banned") return "已封号";
+  if (s === "risk_suspected") return "疑似风控";
+  if (s === "daily_limited") return "当日受限";
+  if (s === "cooldown") {
+    const n = String(statusNote || "");
+    return n.includes("long") ? "长期冷却" : "冷却中";
+  }
+  return "状态更新";
 }
 
 /** 根据全文推断 type：info | success | error | warn */
@@ -1018,7 +1176,8 @@ function LogLineRow({ time, message, type }) {
 
 export default function App() {
   const [tab, setTab] = useState("用户增长");
-  const [auth, setAuth] = useState({ username: "user", password: "user123" });
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
   const [profile, setProfile] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [accounts, setAccounts] = useState({
@@ -1055,31 +1214,52 @@ export default function App() {
     ];
   });
   const [msg, setMsg] = useState("");
+  /** 仅系统级（登录欢迎、同步状态等），禁止用于业务任务反馈 */
+  const [systemBanner, setSystemBanner] = useState("");
+  const toastIdRef = useRef(0);
+  const [toasts, setToasts] = useState([]);
+  const pushToast = useCallback((text) => {
+    const t = String(text ?? "").trim();
+    if (!t) return;
+    const id = ++toastIdRef.current;
+    setToasts((prev) => [...prev, { id, text: t }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((x) => x.id !== id));
+    }, 2000);
+  }, []);
+  /** 用户增长：任务被用户停止后，控制按钮保持「已停止」直至下次开始 */
+  const [growthTaskStoppedUi, setGrowthTaskStoppedUi] = useState(false);
   const logRef = useRef(null);
   const stickToBottomRef = useRef(true);
   const [uploadFile, setUploadFile] = useState(null);
   const [form, setForm] = useState({ users: "" });
   const [lastGroupMetadataSync, setLastGroupMetadataSync] = useState(null);
   const [taskRunning, setTaskRunning] = useState(false);
+  const growthJobIdRef = useRef(null);
+  const stopGrowthLoadingRef = useRef(false);
+  const [stopGrowthLoading, setStopGrowthLoading] = useState(false);
   /** 任务控制面板：就绪 / 执行中 / 已完成（成功后可短暂显示 Completed） */
   const [taskPanelPhase, setTaskPanelPhase] = useState("ready");
   const taskPanelPhaseTimerRef = useRef(null);
   /** 用户增长任务 · 执行状态条（与 start_task 轮询同步更新，仅展示） */
   const [growthExecSnapshot, setGrowthExecSnapshot] = useState(null);
 
+  /** WebSocket 驱动的账号 UI 快照（id → 状态），与左侧队列展示对齐 */
+  const accountsUiMapRef = useRef({});
+
   const refreshLoadingRef = useRef(false);
   const [refreshLoading, setRefreshLoading] = useState(false);
-  /** 区分顶栏「刷新数据」与「强制同步」文案 */
+  /** 强制同步群组时的加载态 */
   const [refreshPhase, setRefreshPhase] = useState(null);
 
   const authLoadingRef = useRef(false);
   const [authLoading, setAuthLoading] = useState(false);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalInitialTab, setAuthModalInitialTab] = useState("login");
+  const profileRef = useRef(null);
 
   const uploadLoadingRef = useRef(false);
   const [uploadLoading, setUploadLoading] = useState(false);
-
-  const loadUsersLoadingRef = useRef(false);
-  const [loadUsersLoading, setLoadUsersLoading] = useState(false);
 
   const pathSubmitRef = useRef(false);
   const [pathSubmitLoading, setPathSubmitLoading] = useState(false);
@@ -1134,6 +1314,149 @@ export default function App() {
   const availableAccounts = useMemo(() => accounts.active || [], [accounts]);
 
   useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
+
+  const guardLoggedIn = useCallback(() => {
+    if (profileRef.current) return true;
+    pushToast("请先登录");
+    setMsg("");
+    setAuthModalInitialTab("login");
+    setAuthModalOpen(true);
+    return false;
+  }, [pushToast]);
+
+  /** 账号状态 WebSocket：与后端状态变更同步，不依赖轮询 */
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (!token || !profile?.id) return undefined;
+    let cancelled = false;
+    let ws;
+    let attempt = 0;
+    let reconnectTimer;
+
+    const mergeWsAccount = (data) => {
+      const { type, account_id, owner_id, phone, status, timestamp, last_update, ui_status } = data || {};
+      if (!account_id || !type) return;
+      const uid = profileRef.current?.id;
+      const admin = profileRef.current?.role === "admin";
+      if (owner_id != null && uid != null && Number(owner_id) !== Number(uid) && !admin) return;
+
+      accountsUiMapRef.current[account_id] = {
+        status: ui_status || status,
+        lastUpdate: last_update || timestamp,
+        type,
+      };
+
+      setAccounts((prev) => {
+        const stripId = (arr) => (arr || []).filter((x) => Number(x.id) !== Number(account_id));
+        let active = stripId(prev.active);
+        let limited = stripId(prev.limited);
+        let banned = stripId(prev.banned);
+        let echo = stripId(prev.recent_sidebar_echo || []);
+
+        const base = {
+          ...(pickAccountFromBuckets(prev, account_id) || {}),
+          id: account_id,
+          owner_id,
+          phone: phone ?? pickAccountFromBuckets(prev, account_id)?.phone,
+          status,
+          status_changed_at: last_update || timestamp,
+          last_update: last_update || timestamp,
+          _wsSlideIn: true,
+        };
+
+        if (type === "ACCOUNT_ACTIVE") {
+          const row = { ...base, _wsActiveHighlight: true };
+          delete row.sidebar_echo;
+          active = [row, ...active];
+        } else if (type === "ACCOUNT_LIMITED") {
+          const row = { ...base };
+          limited = [row, ...limited];
+          echo = [
+            {
+              ...row,
+              sidebar_echo: true,
+              echo_label: echoLabelForWsStatus(status, row.status_note),
+            },
+            ...echo,
+          ];
+        } else if (type === "ACCOUNT_RISK") {
+          const row = { ...base };
+          banned = [row, ...banned];
+          echo = [
+            {
+              ...row,
+              sidebar_echo: true,
+              echo_label: echoLabelForWsStatus(status, row.status_note),
+              _wsNewUntil: Date.now() + 3000,
+            },
+            ...echo,
+          ];
+        } else if (type === "ACCOUNT_BANNED") {
+          const row = { ...base };
+          banned = [row, ...banned];
+          echo = [
+            {
+              ...row,
+              sidebar_echo: true,
+              echo_label: "已封号",
+              _wsFastEchoBan: true,
+              _wsNewUntil: Date.now() + 3000,
+            },
+            ...echo,
+          ];
+        }
+
+        return {
+          ...prev,
+          active,
+          limited,
+          banned,
+          recent_sidebar_echo: echo,
+        };
+      });
+    };
+
+    const connect = () => {
+      if (cancelled) return;
+      try {
+        ws = new WebSocket(getWebSocketUrl(token));
+      } catch {
+        attempt = Math.min(attempt + 1, 12);
+        reconnectTimer = window.setTimeout(connect, Math.min(30000, 500 * 2 ** attempt));
+        return;
+      }
+      ws.onopen = () => {
+        attempt = 0;
+      };
+      ws.onmessage = (ev) => {
+        try {
+          mergeWsAccount(JSON.parse(ev.data));
+        } catch {
+          /* ignore */
+        }
+      };
+      ws.onclose = () => {
+        if (cancelled) return;
+        attempt = Math.min(attempt + 1, 12);
+        reconnectTimer = window.setTimeout(connect, Math.min(30000, 500 * 2 ** attempt));
+      };
+    };
+
+    connect();
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      try {
+        ws?.close();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [profile?.id, profile?.role]);
+
+  useEffect(() => {
     const id = setInterval(() => setSidebarEchoTick((n) => n + 1), 2000);
     return () => clearInterval(id);
   }, []);
@@ -1150,7 +1473,9 @@ export default function App() {
       if (!raw) return false;
       const t = Date.parse(raw);
       if (Number.isNaN(t)) return false;
-      return now - t <= ECHO_TTL_MS;
+      const fastBan = Boolean(a._wsFastEchoBan) || a.status === "banned";
+      const ttl = fastBan ? 1_500 : ECHO_TTL_MS;
+      return now - t <= ttl;
     });
     return [
       ...act.map((a) => ({ ...a, _queueKind: "active" })),
@@ -1295,8 +1620,6 @@ export default function App() {
 
   const loadCopyData = useCallback(async () => {
     try {
-      const token = localStorage.getItem("token");
-      if (!token) return;
       const [cb, ct] = await Promise.all([api.listCopyBots(), api.listCopyTasks()]);
       setCopyBots(cb.bots || []);
       setCopyTasks(ct.tasks || []);
@@ -1306,23 +1629,29 @@ export default function App() {
   }, []);
 
   const refreshBase = async (opts = {}) => {
-    const { skipMetadataSync = false, forceMetadataSync = false } = opts;
+    const { skipMetadataSync = false, forceMetadataSync = false, silent = false } = opts;
+    const token = localStorage.getItem("token");
+    const isGuest = !token;
     let syncOk = null;
     try {
-      if (!skipMetadataSync) {
+      if (!skipMetadataSync && !isGuest) {
         try {
           const sr = await api.syncGroupMetadata({ force: forceMetadataSync });
           if (sr?.skipped && sr?.reason === "recently_synced") {
-            appendLog("群组元数据：24 小时内已同步，跳过");
+            if (!silent) appendLog("群组元数据：24 小时内已同步，跳过");
             syncOk = true;
           } else if (sr?.ok && !sr?.skipped) {
-            appendLog(`群组元数据已同步（更新 ${sr.updated ?? 0} 条）`);
-            (sr.logs || []).slice(-20).forEach((line) => appendLog(`tg-sync | ${line}`));
+            if (!silent) {
+              appendLog(`群组元数据已同步（更新 ${sr.updated ?? 0} 条）`);
+              (sr.logs || []).slice(-20).forEach((line) => appendLog(`tg-sync | ${line}`));
+            }
             syncOk = true;
           } else if (sr?.ok === false) {
-            appendLog(
-              `数据同步失败：${sr.message || "Telegram 账号不可用或未连接"}；任务列表、账号与群组等仍来自数据库`,
-            );
+            if (!silent) {
+              appendLog(
+                `数据同步失败：${sr.message || "Telegram 账号不可用或未连接"}；任务列表、账号与群组等仍来自数据库`,
+              );
+            }
             syncOk = false;
           }
         } catch (e) {
@@ -1331,11 +1660,13 @@ export default function App() {
             String(e?.message || "")
               .toLowerCase()
               .includes("aborted");
-          appendLog(
-            aborted
-              ? "数据同步失败：等待 Telegram 响应超时；任务列表、账号与群组等仍来自数据库"
-              : `数据同步失败：${e.message || "网络或服务异常"}；任务列表、账号与群组等仍来自数据库`,
-          );
+          if (!silent) {
+            appendLog(
+              aborted
+                ? "数据同步失败：等待 Telegram 响应超时；任务列表、账号与群组等仍来自数据库"
+                : `数据同步失败：${e.message || "网络或服务异常"}；任务列表、账号与群组等仍来自数据库`,
+            );
+          }
           syncOk = false;
         }
       }
@@ -1359,19 +1690,52 @@ export default function App() {
         items: p?.items || [],
       });
       await loadCopyData();
-      appendLog("sync ok");
+      if (!silent) appendLog(isGuest ? "数据已刷新（游客预览，仅展示）" : "sync ok");
       return { syncOk };
     } catch (e) {
-      setMsg(e.message);
-      appendLog(`sync failed | ${e.message}`);
+      if (!silent) {
+        setSystemBanner(e.message);
+        appendLog(`sync failed | ${e.message}`);
+      }
       return { syncOk };
     }
   };
 
-  const triggerRefresh = async (opts = {}, intent = "header") => {
+  const refreshBaseRef = useRef(refreshBase);
+  refreshBaseRef.current = refreshBase;
+
+  const completeAuthSession = async (res, { welcomeLabel = "登录成功" } = {}) => {
+    if (!res?.token) return;
+    localStorage.setItem("token", res.token);
+    const u = res.user || {};
+    setProfile({
+      id: u.id ?? res.id,
+      username: u.username,
+      role: u.role,
+      avatar_url: u.avatar_url ?? null,
+    });
+    const { syncOk } = await refreshBase();
+    if (u.role === "admin") {
+      try {
+        const list = await api.listUsers();
+        setUsers(list.users || []);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (syncOk === false) {
+      setSystemBanner(`${welcomeLabel}：${u.username}（数据同步失败，当前为数据库缓存）`);
+    } else {
+      setSystemBanner(`${welcomeLabel}：${u.username}`);
+    }
+    setMsg("");
+    setAuthModalOpen(false);
+  };
+
+  const triggerForceSyncRefresh = async (opts = {}) => {
     if (refreshLoadingRef.current) return undefined;
     refreshLoadingRef.current = true;
-    setRefreshPhase(intent);
+    setRefreshPhase("force");
     setRefreshLoading(true);
     try {
       return await refreshBase(opts);
@@ -1383,60 +1747,53 @@ export default function App() {
   };
 
   const onForceSyncGroups = async () => {
+    if (!guardLoggedIn()) return;
     try {
-      const r = await triggerRefresh({ skipMetadataSync: false, forceMetadataSync: true }, "force");
+      const r = await triggerForceSyncRefresh({ skipMetadataSync: false, forceMetadataSync: true });
       if (r === undefined) return;
       if (r.syncOk === false) {
-        setMsg("数据同步失败，界面仍显示数据库中的群组与统计");
+        setSystemBanner("数据同步失败，界面仍显示数据库中的群组与统计");
       } else {
-        setMsg("已从 Telegram 强制同步群组信息");
+        setSystemBanner("已从 Telegram 强制同步群组信息");
       }
     } catch (e) {
-      setMsg(e.message);
+      setSystemBanner(e.message);
     }
   };
 
   useEffect(() => {
     const token = localStorage.getItem("token");
-    if (!token) return;
+    if (!token) {
+      setProfile(null);
+      refreshBase({ skipMetadataSync: true }).catch(() => {});
+      return;
+    }
     api
       .me()
       .then((r) => {
         const u = r.user || { username: r.username, role: r.role };
-        setProfile({ username: u.username, role: u.role });
+        setProfile({
+          id: u.id ?? r.id,
+          username: u.username,
+          role: u.role,
+          avatar_url: u.avatar_url ?? r.avatar_url ?? null,
+        });
       })
       .then(() => refreshBase())
-      .catch(() => localStorage.removeItem("token"));
+      .catch(() => {
+        localStorage.removeItem("token");
+        setProfile(null);
+        refreshBase({ skipMetadataSync: true }).catch(() => {});
+      });
   }, []);
 
   useEffect(() => () => clearTimeout(taskPanelPhaseTimerRef.current), []);
 
   useEffect(() => {
-    if (taskRunning || taskPanelPhase !== "ready") return undefined;
+    if (taskRunning || taskPanelPhase !== "ready" || growthTaskStoppedUi) return undefined;
     const t = window.setTimeout(() => setGrowthExecSnapshot(null), 7000);
     return () => window.clearTimeout(t);
-  }, [taskRunning, taskPanelPhase]);
-
-  useEffect(() => {
-    if (tab !== "消息Copy" || !profile) return undefined;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const [lr, tr] = await Promise.all([api.copyLogs(300), api.listCopyTasks()]);
-        if (cancelled) return;
-        if (Array.isArray(lr.logs)) setCopyLogs(lr.logs);
-        if (Array.isArray(tr.tasks)) setCopyTasks(tr.tasks);
-      } catch {
-        /* ignore */
-      }
-    };
-    tick();
-    const id = setInterval(tick, 1500);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [tab, profile]);
+  }, [taskRunning, taskPanelPhase, growthTaskStoppedUi]);
 
   useEffect(() => {
     setCopyStartOptimistic((prev) => {
@@ -1464,18 +1821,58 @@ export default function App() {
     }
   }, []);
 
-  const loadScraperTasks = useCallback(async () => {
+  const loadScraperTasks = useCallback(async (opts = {}) => {
+    const { quiet = false } = opts;
     if (!profile) return;
-    setScraperHistoryLoading(true);
+    if (!quiet) setScraperHistoryLoading(true);
     try {
       const list = await api.listScraperTasks();
       setScraperTasks(Array.isArray(list) ? list : []);
     } catch {
       setScraperTasks([]);
     } finally {
-      setScraperHistoryLoading(false);
+      if (!quiet) setScraperHistoryLoading(false);
     }
   }, [profile]);
+
+  const autoRefreshTickFn = useCallback(async () => {
+    const t = tabRef.current;
+    const prof = profileRef.current;
+
+    if (t === "消息Copy") {
+      try {
+        const lr = await api.copyLogs(300);
+        if (Array.isArray(lr.logs)) setCopyLogs(lr.logs);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (t === "用户采集" && prof) {
+      await loadScraperAccount();
+      await loadScraperTasks({ quiet: true });
+    }
+
+    if (t === "用户管理" && prof?.role === "admin") {
+      try {
+        const list = await api.listUsers();
+        setUsers(list.users || []);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const baseTabs = new Set(["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "消息Copy"]);
+    if (baseTabs.has(t)) {
+      await refreshBaseRef.current({ skipMetadataSync: true, silent: true });
+    }
+  }, [loadScraperAccount, loadScraperTasks]);
+
+  const { lastUpdatedAt, isTicking } = useAutoRefresh({
+    tickFn: autoRefreshTickFn,
+    enabled: true,
+    intervalMs: 1500,
+  });
 
   useEffect(() => {
     if (tab !== "用户采集" || !profile) return;
@@ -1518,12 +1915,19 @@ export default function App() {
 
   const runEngagementTask = useCallback(
     async ({ validOnly }) => {
+      if (!profileRef.current) {
+        pushToast("请先登录");
+        setMsg("");
+        setAuthModalInitialTab("login");
+        setAuthModalOpen(true);
+        return;
+      }
       if (!engagementSelectedGroups.length) {
-        setMsg("请至少选择一个目标群组");
+        pushToast("请至少选择一个目标群组");
         return;
       }
       if (engagementAccountPoolCount < 1) {
-        setMsg("当前没有可用或当日受限的账号（长期冷却中账号不参与互动）");
+        pushToast("当前没有可用或当日受限的账号（长期冷却中账号不参与互动）");
         return;
       }
       setEngagementLiveLogs([]);
@@ -1548,11 +1952,11 @@ export default function App() {
         if (!r?.job_id) throw new Error("服务端未返回执行会话");
         setEngagementJobId(r.job_id);
       } catch (e) {
-        setMsg(e.message);
+        pushToast(e.message);
         setEngagementSubmitting(false);
       }
     },
-    [engagementAccountPoolCount, engagementScanLimit, engagementSelectedGroups],
+    [engagementAccountPoolCount, engagementScanLimit, engagementSelectedGroups, pushToast],
   );
 
   const onStartEngagement = () => {
@@ -1560,18 +1964,19 @@ export default function App() {
   };
 
   const onStopEngagement = async () => {
+    if (!guardLoggedIn()) return;
     try {
       await api.stopTask();
-      setMsg("已发送停止请求");
+      pushToast("已发送停止请求");
     } catch (e) {
-      setMsg(e.message);
+      pushToast(e.message);
     }
   };
 
   const onEngagementIgnoreUnknown = () => {
     const res = engagementGroupResolution;
     if (!res?.valid?.length) {
-      setMsg("没有已在目标群组库中的项，无法继续");
+      pushToast("没有已在目标群组库中的项，无法继续");
       setEngagementGroupResolution(null);
       return;
     }
@@ -1579,6 +1984,7 @@ export default function App() {
   };
 
   const onEngagementRegisterUnknown = async () => {
+    if (!guardLoggedIn()) return;
     const res = engagementGroupResolution;
     if (!res?.invalid?.length) return;
     setEngagementRegisterLoading(true);
@@ -1587,35 +1993,42 @@ export default function App() {
       await api.registerInteractionTargetGroups(res.invalid);
       await refreshBase();
       setEngagementGroupResolution(null);
-      setMsg("已写入目标群组库，正在启动任务…");
+      pushToast("已写入目标群组库，正在启动任务…");
       await runEngagementTask({ validOnly: false });
     } catch (e) {
-      setMsg(e.message);
+      pushToast(e.message);
       setEngagementSubmitting(false);
     } finally {
       setEngagementRegisterLoading(false);
     }
   };
 
-  const login = async () => {
+  const login = async (username, password) => {
     if (authLoadingRef.current) return;
     authLoadingRef.current = true;
     setAuthLoading(true);
+    setMsg("");
+    setSystemBanner("");
     try {
-      const res = await api.login(auth.username, auth.password);
-      localStorage.setItem("token", res.token);
-      const u = res.user || { username: res.username, role: res.role };
-      setProfile({ username: u.username, role: u.role });
-      const { syncOk } = await refreshBase();
-      if (u.role === "admin") {
-        const list = await api.listUsers();
-        setUsers(list.users || []);
-      }
-      if (syncOk === false) {
-        setMsg(`登录成功：${u.username}（数据同步失败，当前为数据库缓存）`);
-      } else {
-        setMsg(`登录成功：${u.username}`);
-      }
+      const res = await api.login(username, password);
+      await completeAuthSession(res, { welcomeLabel: "登录成功" });
+    } catch (e) {
+      setMsg(e.message);
+    } finally {
+      authLoadingRef.current = false;
+      setAuthLoading(false);
+    }
+  };
+
+  const register = async (username, password) => {
+    if (authLoadingRef.current) return;
+    authLoadingRef.current = true;
+    setAuthLoading(true);
+    setMsg("");
+    setSystemBanner("");
+    try {
+      const res = await api.register(username, password);
+      await completeAuthSession(res, { welcomeLabel: "注册并登录成功" });
     } catch (e) {
       setMsg(e.message);
     } finally {
@@ -1625,11 +2038,6 @@ export default function App() {
   };
 
   const logout = async () => {
-    try {
-      await api.logout();
-    } catch {
-      /* 令牌已失效时仍执行本地登出 */
-    }
     localStorage.removeItem("token");
     setProfile(null);
     setTab("用户增长");
@@ -1652,19 +2060,24 @@ export default function App() {
     setEngagementGroupResolution(null);
     setEngagementRegisterLoading(false);
     setGrowthExecSnapshot(null);
+    setGrowthTaskStoppedUi(false);
+    setSystemBanner("");
+    setMsg("");
+    refreshBase({ skipMetadataSync: true }).catch(() => {});
   };
 
   const onUpload = async () => {
-    if (!uploadFile) return setMsg("请选择 zip 文件");
+    if (!guardLoggedIn()) return;
+    if (!uploadFile) return pushToast("请选择 zip 文件");
     if (uploadLoadingRef.current) return;
     uploadLoadingRef.current = true;
     setUploadLoading(true);
     try {
       await api.uploadAccount(uploadFile);
-      setMsg("上传成功");
+      pushToast("上传成功");
       await refreshBase();
     } catch (e) {
-      setMsg(e.message);
+      pushToast(e.message);
     } finally {
       uploadLoadingRef.current = false;
       setUploadLoading(false);
@@ -1672,28 +2085,43 @@ export default function App() {
   };
 
   const onStopRunningTask = async () => {
+    if (!guardLoggedIn()) return;
+    if (stopGrowthLoadingRef.current) return;
+    const jid = growthJobIdRef.current;
+    stopGrowthLoadingRef.current = true;
+    setStopGrowthLoading(true);
     try {
-      await api.stopTask();
+      if (jid) {
+        await api.stopGrowthTask(jid);
+      } else {
+        await api.stopTask();
+      }
       appendLog("stop-task | 已发送停止请求");
+      pushToast("已发送停止请求");
     } catch (e) {
-      setMsg(e.message);
+      pushToast(e.message);
+    } finally {
+      stopGrowthLoadingRef.current = false;
+      setStopGrowthLoading(false);
     }
   };
 
   const onStartTask = async () => {
+    if (!guardLoggedIn()) return;
     const parsedUsers = form.users.split("\n").map((x) => x.trim()).filter(Boolean);
     if (!selectedGroup) {
       const message = "请先选择目标群组";
-      setMsg(message);
+      pushToast(message);
       appendLog(`task blocked | ${message}`);
       return;
     }
     if (!parsedUsers.length) {
       const message = "请先填写用户列表（每行一个）";
-      setMsg(message);
+      pushToast(message);
       appendLog(`task blocked | ${message}`);
       return;
     }
+    setGrowthTaskStoppedUi(false);
     setTaskRunning(true);
     setTaskPanelPhase("running");
     setGrowthExecSnapshot({
@@ -1720,10 +2148,12 @@ export default function App() {
       if (!jobId) {
         throw new Error("服务端未返回任务编号");
       }
+      growthJobIdRef.current = jobId;
       appendLog(
         `任务已排队 job=${jobId}，后台执行中；约每秒拉取进度，下方将实时显示 Telegram 步骤日志`,
       );
       let data = null;
+      let terminalStatus = null;
       let streamed = 0;
       for (;;) {
         const st = await api.taskJobStatus(jobId);
@@ -1760,11 +2190,14 @@ export default function App() {
           pushLogLine(pl[i]);
         }
         streamed = pl.length;
-        if ((st.status === "completed" || st.status === "stopped") && st.data) {
-          data = st.data;
-          const dl = st.data.logs || [];
-          for (let i = streamed; i < dl.length; i++) {
-            pushLogLine(dl[i]);
+        if (st.status === "completed" || st.status === "stopped") {
+          terminalStatus = st.status;
+          if (st.data) {
+            data = st.data;
+            const dl = st.data.logs || [];
+            for (let i = streamed; i < dl.length; i++) {
+              pushLogLine(dl[i]);
+            }
           }
           break;
         }
@@ -1773,37 +2206,38 @@ export default function App() {
         }
         await new Promise((r) => setTimeout(r, 1000));
       }
-      const summary = data.summary || { success: 0, skipped: 0, failed: 0 };
+      const wasStopped = terminalStatus === "stopped" || Boolean(data?.stopped);
+      const summary = (data && data.summary) || { success: 0, skipped: 0, failed: 0 };
       setGrowthExecSnapshot({
-        uiStatus: "WAITING",
+        uiStatus: wasStopped ? "STOPPED" : "WAITING",
         phoneDisplay: "—",
         taskKind: "拉人",
         groupRaw: selectedGroup,
         indeterminate: false,
-        progressPct: 100,
+        progressPct: wasStopped ? null : 100,
         success: summary.success ?? 0,
         failed: summary.failed ?? 0,
         errorHint: null,
       });
       appendLog(`task finished | group=${selectedGroup} accounts_auto=${availableAccounts.length}`);
       appendLog(`result summary | success=${summary.success} skipped=${summary.skipped} failed=${summary.failed}`);
-      const h = data.highlight || {};
+      const h = (data && data.highlight) || {};
       setTaskHighlight({
         active: h.active_phone ?? null,
         previous: h.previous_phone ?? null,
         connecting: null,
       });
-      if (data.stopped) {
+      if (wasStopped) {
         appendLog("任务已停止（用户中断）");
-        setMsg("任务已停止");
+        setGrowthTaskStoppedUi(true);
       } else if (summary.failed > 0) {
-        setMsg(`任务执行完成：成功${summary.success}，跳过${summary.skipped}，失败${summary.failed}`);
+        pushToast(`任务执行完成：成功${summary.success}，跳过${summary.skipped}，失败${summary.failed}`);
       } else {
-        setMsg(`任务执行完成：成功${summary.success}，跳过${summary.skipped}，失败0`);
+        pushToast(`任务执行完成：成功${summary.success}，跳过${summary.skipped}，失败0`);
       }
       if (taskPanelPhaseTimerRef.current) clearTimeout(taskPanelPhaseTimerRef.current);
-      setTaskPanelPhase(data.stopped ? "ready" : "completed");
-      if (!data.stopped) {
+      setTaskPanelPhase(wasStopped ? "ready" : "completed");
+      if (!wasStopped) {
         taskPanelPhaseTimerRef.current = window.setTimeout(() => setTaskPanelPhase("ready"), 6000);
       }
       await refreshBase();
@@ -1822,22 +2256,36 @@ export default function App() {
         errorHint: e.message || "任务失败",
       }));
       appendLog(`任务失败 | ${e.message}`);
-      setMsg(e.message);
+      pushToast(e.message);
     } finally {
+      growthJobIdRef.current = null;
       setTaskRunning(false);
     }
   };
 
   const onDeleteAccount = async (phone) => {
+    if (!guardLoggedIn()) return;
     try {
       await api.deleteAccount(phone);
       await refreshBase();
     } catch (e) {
-      setMsg(e.message);
+      pushToast(e.message);
+    }
+  };
+
+  const onDeleteAccountById = async (accountId) => {
+    if (!guardLoggedIn()) return;
+    if (accountId == null || Number.isNaN(Number(accountId))) return;
+    try {
+      await api.deleteAccountById(accountId);
+      await refreshBase();
+    } catch (e) {
+      pushToast(e.message);
     }
   };
 
   const onForceAddGroup = () => {
+    if (!guardLoggedIn()) return;
     if (!forceCandidate) return;
     setForcedGroups((prev) => Array.from(new Set([...prev, forceCandidate])));
     setSelectedGroup(forceCandidate);
@@ -1845,6 +2293,7 @@ export default function App() {
   };
 
   const onRemoveGroup = () => {
+    if (!guardLoggedIn()) return;
     if (!selectedGroup) return;
     setRemovedGroups((prev) => Array.from(new Set([...prev, selectedGroup])));
     setForcedGroups((prev) => prev.filter((x) => x !== selectedGroup));
@@ -1852,11 +2301,13 @@ export default function App() {
   };
 
   const onUpdateDailyLimit = async (groupId, value) => {
+    if (!guardLoggedIn()) return;
     await api.updateGroupLimit(groupId, value);
     await refreshBase();
   };
 
   const onAddOrUpdatePath = async () => {
+    if (!guardLoggedIn()) return;
     if (!newPath.trim()) return;
     if (pathSubmitRef.current) return;
     pathSubmitRef.current = true;
@@ -1873,6 +2324,7 @@ export default function App() {
   };
 
   const onDeletePath = async (id) => {
+    if (!guardLoggedIn()) return;
     await api.deleteAccountPath(id);
     if (editingPathId === id) {
       setEditingPathId(null);
@@ -1891,38 +2343,30 @@ export default function App() {
     setUsers(list.users || []);
   };
 
-  const onLoadUsers = async () => {
-    if (loadUsersLoadingRef.current) return;
-    loadUsersLoadingRef.current = true;
-    setLoadUsersLoading(true);
-    try {
-      await loadUsersData();
-    } finally {
-      loadUsersLoadingRef.current = false;
-      setLoadUsersLoading(false);
-    }
-  };
-
   const onMarkProxyDead = async (proxyId) => {
+    if (!guardLoggedIn()) return;
     await api.markProxyDead(proxyId);
     await refreshBase();
   };
 
   const onUnbindProxy = async (proxyId) => {
+    if (!guardLoggedIn()) return;
     await api.unbindProxy(proxyId);
     await refreshBase();
   };
 
   const onChangeRole = async (id, role) => {
+    if (!guardLoggedIn()) return;
     await api.updateUserRole(id, role);
     await loadUsersData();
   };
 
   const onCreateCopyBot = async () => {
+    if (!guardLoggedIn()) return;
     if (copyBotSubmitRef.current) return;
     const apiId = Number(copyBotForm.api_id);
     if (!apiId || !String(copyBotForm.api_hash || "").trim() || !String(copyBotForm.bot_token || "").trim()) {
-      setMsg("请填写 api_id、api_hash、bot_token");
+      pushToast("请填写 api_id、api_hash、bot_token");
       return;
     }
     copyBotSubmitRef.current = true;
@@ -1933,7 +2377,7 @@ export default function App() {
       setCopyBotForm({ api_id: "", api_hash: "", bot_token: "" });
       await loadCopyData();
     } catch (e) {
-      setMsg(e?.message || "添加机器人失败");
+      pushToast(e?.message || "添加机器人失败");
     } finally {
       copyBotSubmitRef.current = false;
       setCopyBotSaving(false);
@@ -1941,31 +2385,34 @@ export default function App() {
   };
 
   const onDeleteCopyBot = async (id) => {
+    if (!guardLoggedIn()) return;
     if (!window.confirm("删除机器人将同时删除其下所有转发任务，确定？")) return;
     setMsg("");
     try {
       await api.deleteCopyBot(id);
       await loadCopyData();
     } catch (e) {
-      setMsg(e?.message || "删除失败");
+      pushToast(e?.message || "删除失败");
     }
   };
 
   const onResetCopyBot = async (id) => {
+    if (!guardLoggedIn()) return;
     setMsg("");
     try {
       await api.resetCopyBot(id);
       await loadCopyData();
     } catch (e) {
-      setMsg(e?.message || "重置失败");
+      pushToast(e?.message || "重置失败");
     }
   };
 
   const onCreateCopyTask = async () => {
+    if (!guardLoggedIn()) return;
     if (copyTaskSubmitRef.current) return;
     const botId = Number(copyTaskForm.bot_id);
     if (!copyTaskForm.source_channel.trim() || !copyTaskForm.target_channel.trim() || !botId) {
-      setMsg("请从机器人库选择 Bot，并填写来源 / 目标频道");
+      pushToast("请从机器人库选择 Bot，并填写来源 / 目标频道");
       return;
     }
     copyTaskSubmitRef.current = true;
@@ -1980,7 +2427,7 @@ export default function App() {
       setCopyTaskForm((f) => ({ ...f, source_channel: "", target_channel: "" }));
       await loadCopyData();
     } catch (e) {
-      setMsg(e?.message || "创建任务失败");
+      pushToast(e?.message || "创建任务失败");
     } finally {
       copyTaskSubmitRef.current = false;
       setCopyTaskSaving(false);
@@ -1988,6 +2435,7 @@ export default function App() {
   };
 
   const onStartCopyTask = async (id) => {
+    if (!guardLoggedIn()) return;
     setCopyStartOptimistic((p) => ({ ...p, [id]: true }));
     setMsg("");
     try {
@@ -2004,12 +2452,13 @@ export default function App() {
         delete n[id];
         return n;
       });
-      setMsg(e?.message || "启动失败");
+      pushToast(e?.message || "启动失败");
       await loadCopyData();
     }
   };
 
   const onPauseCopyTask = async (id) => {
+    if (!guardLoggedIn()) return;
     setMsg("");
     try {
       const res = await api.pauseCopyTask(id);
@@ -2025,12 +2474,13 @@ export default function App() {
         await loadCopyData();
       }
     } catch (e) {
-      setMsg(e?.message || "暂停失败");
+      pushToast(e?.message || "暂停失败");
       await loadCopyData();
     }
   };
 
   const onDeleteCopyTask = async (id) => {
+    if (!guardLoggedIn()) return;
     if (!window.confirm("确定删除此转发任务？")) return;
     setMsg("");
     try {
@@ -2043,16 +2493,18 @@ export default function App() {
       });
       await loadCopyData();
     } catch (e) {
-      setMsg(e?.message || "删除失败");
+      pushToast(e?.message || "删除失败");
     }
   };
 
   const triggerCopySessionImport = (botId) => {
+    if (!guardLoggedIn()) return;
     setCopySessionImportBotId(botId);
     copySessionFileInputRef.current?.click();
   };
 
   const onCopySessionFileSelected = async (e) => {
+    if (!guardLoggedIn()) return;
     const file = e.target.files?.[0];
     const bid = copySessionImportBotId;
     e.target.value = "";
@@ -2063,15 +2515,16 @@ export default function App() {
     try {
       await api.uploadCopyBotSession(bid, file);
       await loadCopyData();
-      setMsg("session 已导入");
+      pushToast("session 已导入");
     } catch (err) {
-      setMsg(err?.message || "导入失败");
+      pushToast(err?.message || "导入失败");
     } finally {
       setUploadingSessionBotId(null);
     }
   };
 
   const onRunScraper = async () => {
+    if (!guardLoggedIn()) return;
     if (!scraperForm.group_id.trim() || scraperLoadingRef.current) return;
     scraperLoadingRef.current = true;
     setScraperLoading(true);
@@ -2082,7 +2535,7 @@ export default function App() {
       await loadScraperTasks();
     } catch (e) {
       setScraperResult(null);
-      setMsg(e?.message || "采集失败");
+      pushToast(e?.message || "采集失败");
     } finally {
       scraperLoadingRef.current = false;
       setScraperLoading(false);
@@ -2090,6 +2543,7 @@ export default function App() {
   };
 
   const onDownloadScrape = async () => {
+    if (!guardLoggedIn()) return;
     if (scraperResultDownloadLoading) return;
     setMsg("");
     setScraperResultDownloadLoading(true);
@@ -2105,13 +2559,14 @@ export default function App() {
       if (!fn) return;
       await downloadScraperFile(fn);
     } catch (e) {
-      setMsg(e?.message || "下载失败");
+      pushToast(e?.message || "下载失败");
     } finally {
       setScraperResultDownloadLoading(false);
     }
   };
 
   const onDownloadScraperHistoryTask = async (taskId) => {
+    if (!guardLoggedIn()) return;
     if (scraperDownloadTaskId != null) return;
     setScraperDownloadTaskId(taskId);
     setMsg("");
@@ -2119,7 +2574,7 @@ export default function App() {
       await downloadScraperTaskById(taskId);
       await loadScraperTasks();
     } catch (e) {
-      setMsg(e?.message || "下载失败");
+      pushToast(e?.message || "下载失败");
     } finally {
       setScraperDownloadTaskId(null);
     }
@@ -2133,6 +2588,7 @@ export default function App() {
   };
 
   const openScraperAccountModal = () => {
+    if (!guardLoggedIn()) return;
     setScraperBindCode("");
     setScraperPhoneCodeHash("");
     setScraperBindPassword("");
@@ -2143,6 +2599,7 @@ export default function App() {
   };
 
   const onScraperSendCode = async () => {
+    if (!guardLoggedIn()) return;
     if (!scraperBindPhone.trim() || scraperSendCodeRef.current) return;
     scraperSendCodeRef.current = true;
     setScraperSendCodeLoading(true);
@@ -2165,6 +2622,7 @@ export default function App() {
   };
 
   const onScraperBindLogin = async () => {
+    if (!guardLoggedIn()) return;
     const phone = scraperBindPhone.trim();
     if (!phone || scraperBindLoginRef.current) return;
     if (scraperNeedPassword) {
@@ -2254,72 +2712,12 @@ export default function App() {
     })[0];
   }, [groups]);
 
-  if (!profile) {
-    return (
-      <div className="relative flex min-h-[100dvh] flex-col items-center justify-center overflow-hidden bg-[#070b12] px-4 py-10 text-slate-200">
-        <div
-          className="pointer-events-none absolute left-[15%] top-0 h-64 w-64 -translate-y-1/2 rounded-full bg-cyan-500/12 blur-[100px]"
-          aria-hidden
-        />
-        <div
-          className="pointer-events-none absolute bottom-0 right-[10%] h-72 w-72 translate-y-1/3 rounded-full bg-emerald-500/10 blur-[110px]"
-          aria-hidden
-        />
-        <div className="relative z-[1] w-full max-w-[400px]">
-          <div className="mb-8 text-center">
-            <div className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-[#00ff87] to-[#60efff] text-lg font-bold text-slate-900 shadow-[0_0_32px_rgba(0,255,150,0.4)]">
-              TG
-            </div>
-            <h1 className="text-xl font-semibold tracking-tight text-white">TG Pro</h1>
-            <p className="mt-1 text-xs font-medium uppercase tracking-wider text-slate-500">请登录以继续</p>
-          </div>
-          <div className="rounded-2xl border border-white/[0.08] bg-[rgba(255,255,255,0.04)] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.5)] backdrop-blur-[22px]">
-            <div className="space-y-3">
-              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500">用户名</label>
-              <input
-                className={INPUT_FIELD}
-                autoComplete="username"
-                value={auth.username}
-                onChange={(e) => setAuth((v) => ({ ...v, username: e.target.value }))}
-              />
-              <label className="mt-4 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">密码</label>
-              <input
-                type="password"
-                className={INPUT_FIELD}
-                autoComplete="current-password"
-                value={auth.password}
-                onChange={(e) => setAuth((v) => ({ ...v, password: e.target.value }))}
-              />
-              <button
-                type="button"
-                disabled={authLoading}
-                className={`${BTN_PRIMARY} mt-5 w-full justify-center py-2.5 disabled:cursor-not-allowed disabled:opacity-60`}
-                onClick={login}
-              >
-                {authLoading ? (
-                  <>
-                    <UiSpinner tone="primary" />
-                    登录中…
-                  </>
-                ) : (
-                  "登录"
-                )}
-              </button>
-            </div>
-            {msg ? (
-              <p className="mt-4 text-center text-sm font-medium text-rose-400 drop-shadow-[0_0_8px_rgba(251,113,133,0.35)]">
-                {msg}
-              </p>
-            ) : null}
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const op = !!profile;
+  const guestTitle = "请先登录";
 
   return (
-    <div className="flex min-h-0 min-h-[100dvh] bg-transparent text-slate-200">
-      <aside className="sticky top-0 flex h-screen w-[220px] shrink-0 flex-col border-r border-white/[0.06] bg-[rgba(10,15,20,0.8)] shadow-[4px_0_48px_rgba(0,0,0,0.5)] backdrop-blur-[20px]">
+    <>
+      <aside className="sidebar z-[900] flex flex-col overflow-hidden border-r border-white/[0.06] bg-[rgba(10,15,20,0.85)] shadow-[4px_0_48px_rgba(0,0,0,0.5)]">
         <div className="border-b border-white/[0.06] px-4 py-5">
           <div className="flex items-center gap-3">
             <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-[#00ff87] to-[#60efff] text-sm font-bold text-slate-900 shadow-[0_0_24px_rgba(0,255,150,0.35)] transition duration-200 hover:scale-105 hover:shadow-[0_0_32px_rgba(96,239,255,0.45)]">
@@ -2331,7 +2729,7 @@ export default function App() {
             </div>
           </div>
         </div>
-        <nav className="growth-scroll flex flex-1 flex-col gap-1 overflow-y-auto p-3">
+        <nav className="growth-scroll flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3">
           {menus
             .filter((m) => {
               if (m === "用户管理" || m === "代理监控") return isAdmin;
@@ -2361,23 +2759,10 @@ export default function App() {
               </button>
             ))}
         </nav>
-        <div className="border-t border-white/[0.06] p-3">
-          <div className="rounded-xl border border-white/[0.08] bg-[rgba(255,255,255,0.03)] p-3 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-[20px]">
-            <div className="truncate text-xs font-semibold text-slate-100">{profile.username}</div>
-            <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-500">{profile.role}</div>
-            <button
-              type="button"
-              className="mt-3 w-full rounded-xl border border-white/[0.1] bg-[rgba(255,255,255,0.05)] py-2 text-xs font-medium text-slate-300 shadow-[0_4px_20px_rgba(0,0,0,0.25)] transition hover:border-cyan-400/25 hover:bg-white/[0.08] hover:text-white"
-              onClick={logout}
-            >
-              退出登录
-            </button>
-          </div>
-        </div>
       </aside>
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="shrink-0 border-b border-white/[0.06] bg-[rgba(10,15,20,0.55)] px-6 py-4 shadow-[0_8px_40px_rgba(0,0,0,0.35)] backdrop-blur-[20px]">
+      <div className="main-content flex min-h-0 min-w-0 flex-col overflow-x-visible text-slate-200">
+        <header className="sticky top-0 z-[1000] shrink-0 border-b border-white/[0.06] bg-[rgba(10,15,20,0.55)] px-6 py-4 shadow-[0_8px_40px_rgba(0,0,0,0.35)] backdrop-blur-[20px]">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="min-w-0">
               <div className="flex items-center gap-3">
@@ -2394,12 +2779,13 @@ export default function App() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {tab === "目标群组" ? (
-                <button
-                  type="button"
-                  disabled={refreshLoading}
-                  className={`${BTN_PRIMARY} inline-flex items-center justify-center gap-2 px-4 py-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0`}
-                  onClick={onForceSyncGroups}
-                >
+                <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
+                  <button
+                    type="button"
+                    disabled={refreshLoading || !op}
+                    className={`${BTN_PRIMARY} inline-flex items-center justify-center gap-2 px-4 py-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0`}
+                    onClick={onForceSyncGroups}
+                  >
                   {refreshLoading && refreshPhase === "force" ? (
                     <>
                       <UiSpinner tone="primary" />
@@ -2408,40 +2794,80 @@ export default function App() {
                   ) : (
                     "强制同步群组信息"
                   )}
-                </button>
+                  </button>
+                </span>
               ) : null}
-              <button
-                type="button"
-                disabled={refreshLoading}
-                className={`${BTN_SECONDARY} inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0`}
-                onClick={() => triggerRefresh({}, "header")}
+              <div
+                className={`inline-flex flex-col items-end gap-0.5 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.07] px-3 py-1.5 text-right backdrop-blur-md transition-opacity duration-300 ${isTicking ? "opacity-100" : "opacity-90"}`}
+                title={lastUpdatedAt ? `上次同步 ${lastUpdatedAt.toLocaleTimeString("zh-CN", { hour12: false })}` : "实时拉取中"}
               >
-                {refreshLoading && refreshPhase === "header" ? (
-                  <>
-                    <UiSpinner tone="muted" />
-                    刷新中...
-                  </>
-                ) : (
-                  "刷新数据"
-                )}
-              </button>
+                <span className="text-xs font-semibold tracking-wide text-emerald-300/95">🟢 LIVE · 实时同步</span>
+                {lastUpdatedAt ? (
+                  <span className="text-[10px] text-slate-500">
+                    更新 {lastUpdatedAt.toLocaleTimeString("zh-CN", { hour12: false })}
+                  </span>
+                ) : null}
+              </div>
+              {op ? (
+                <UserAccountDock
+                  variant="header"
+                  profile={profile}
+                  setProfile={setProfile}
+                  isAdmin={isAdmin}
+                  onLogout={logout}
+                  postAuthSync={async () => {
+                    try {
+                      const r = await api.me();
+                      const u = r.user || {};
+                      setProfile({
+                        id: u.id ?? r.id,
+                        username: u.username,
+                        role: u.role,
+                        avatar_url: u.avatar_url ?? r.avatar_url ?? null,
+                      });
+                      await loadCopyData();
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                />
+              ) : (
+                <div className="flex items-center gap-2 pl-1">
+                  <button
+                    type="button"
+                    className={`${BTN_SECONDARY} px-3 py-2 text-xs font-semibold`}
+                    onClick={() => {
+                      setAuthModalInitialTab("login");
+                      setAuthModalOpen(true);
+                    }}
+                  >
+                    登录
+                  </button>
+                  <button
+                    type="button"
+                    className={`${BTN_PRIMARY} px-3 py-2 text-xs font-semibold`}
+                    onClick={() => {
+                      setAuthModalInitialTab("register");
+                      setAuthModalOpen(true);
+                    }}
+                  >
+                    注册
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </header>
 
-        <main
-          className={`flex-1 px-6 pb-10 pt-6 lg:px-8 ${
-            tab === "用户增长" ? "flex min-h-0 flex-col overflow-hidden" : "growth-scroll overflow-y-auto"
-          }`}
-        >
-        {msg ? (
-          <p className="mb-4 shrink-0 text-sm font-medium text-rose-400 drop-shadow-[0_0_8px_rgba(251,113,133,0.35)]">
-            {msg}
+        <main className="min-w-0 overflow-visible px-6 pb-10 pt-6 lg:px-8">
+        {systemBanner ? (
+          <p className="mb-4 shrink-0 rounded-lg border border-cyan-500/20 bg-cyan-500/[0.06] px-3 py-2 text-sm font-medium text-cyan-100/95 shadow-[0_0_20px_rgba(34,211,238,0.08)]">
+            {systemBanner}
           </p>
         ) : null}
 
         {tab === "用户增长" && (
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#0b0f1a]/95 via-[#0c1220]/92 to-[#0f172a]/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_12px_48px_rgba(0,0,0,0.35)] backdrop-blur-[12px]">
+          <div className="relative flex flex-col overflow-visible rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#0b0f1a]/95 via-[#0c1220]/92 to-[#0f172a]/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_12px_48px_rgba(0,0,0,0.35)] backdrop-blur-[12px]">
             <div
               className="pointer-events-none absolute left-[12%] top-0 h-48 w-48 -translate-y-1/2 rounded-full bg-cyan-500/10 blur-[80px]"
               aria-hidden
@@ -2455,10 +2881,10 @@ export default function App() {
               aria-hidden
             />
 
-            <div className="relative z-[1] flex min-h-0 flex-1 flex-col gap-4 p-4 sm:p-5">
-              <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(300px,340px)_minmax(0,1fr)] lg:items-stretch lg:gap-5">
-                {/* 左侧：统计（shrink-0）→ 执行状态（固定高 ~150px，grow-0）→ 账号队列（flex-1 占余量，列表区仍可滚动） */}
-                <div className="order-1 flex h-full min-h-0 flex-col gap-3 lg:order-none">
+            <div className="relative z-[1] flex flex-col gap-4 overflow-visible p-4 sm:p-5">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(300px,340px)_minmax(0,1fr)] lg:items-start lg:gap-5">
+                {/* 左侧：统计 → 执行状态 → 账号队列（列表限高约一页，内部滚动） */}
+                <div className="order-1 flex min-h-0 flex-col gap-3 lg:order-none">
                   <div className="shrink-0">
                     <AccountPoolNeonDistributionPanel
                       total_accounts={growthAccountPoolStats.total_accounts}
@@ -2473,9 +2899,7 @@ export default function App() {
                     taskRunning={taskRunning}
                     taskHighlight={taskHighlight}
                   />
-                  <div
-                    className={`${GLASS_PANEL_GROWTH} flex min-h-[12.5rem] flex-1 flex-col overflow-hidden`}
-                  >
+                  <div className={`${GLASS_PANEL_GROWTH} flex shrink-0 flex-col overflow-visible max-lg:min-h-[12.5rem]`}>
                     <div className={GLASS_PANEL_CHROME_GROWTH}>
                       <span className="h-2 w-2 rounded-full bg-rose-400 shadow-sm" />
                       <span className="h-2 w-2 rounded-full bg-amber-400 shadow-sm" />
@@ -2486,9 +2910,12 @@ export default function App() {
                       <span className="ml-auto font-log text-[10px] text-slate-400">{sidebarQueueAccounts.length}</span>
                     </div>
                     <p className="shrink-0 border-b border-emerald-400/10 px-3 py-1.5 text-[10px] leading-snug text-slate-500">
-                      ACTIVE / LIMITED / RISK 标签 · 执行中账号高亮 · 非 ACTIVE 提示最多 60s
+                      ACTIVE / LIMITED / 风控账号（含已封号）· 执行中高亮 · 侧栏提示：封号约 1.5s，其它最多 60s
                     </p>
-                    <div className="growth-queue-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2.5">
+                    <div
+                      id="accounts-queue"
+                      className={`growth-queue-scroll ${GROWTH_ACCOUNTS_QUEUE_MAX_H} min-h-[12rem] overflow-y-auto overflow-x-hidden px-3 py-2.5`}
+                    >
                       <div className="flex flex-col gap-2.5 pr-0.5">
                         {sidebarQueueAccounts.map((a) => {
                           const pk = normalizePhoneKey(a.phone);
@@ -2522,8 +2949,23 @@ export default function App() {
                             avatarShell =
                               "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/[0.04] text-slate-500 ring-1 ring-white/[0.08]";
 
+                          if (rowKind === "banned" || (isEcho && a.status === "banned")) {
+                            avatarShell =
+                              "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-red-600/30 text-red-50 ring-2 ring-red-500/75 shadow-[0_0_30px_rgba(239,68,68,0.58)]";
+                          } else if (rowKind === "risk" || (isEcho && a.status === "risk_suspected")) {
+                            avatarShell =
+                              "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-rose-500/22 text-rose-100 ring-2 ring-rose-400/60 shadow-[0_0_22px_rgba(251,113,133,0.4)]";
+                          } else if (rowKind === "limited" && isEcho) {
+                            avatarShell =
+                              "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sky-500/18 text-sky-100 ring-2 ring-sky-400/55 shadow-[0_0_20px_rgba(56,189,248,0.3)]";
+                          }
+
                           const pill =
-                            rowKind === "risk" ? (
+                            rowKind === "banned" ? (
+                              <span className="inline-flex rounded-full border border-red-500/55 bg-red-600/28 px-2 py-0.5 text-[9px] font-bold tracking-wide text-red-50 shadow-[0_0_22px_rgba(239,68,68,0.5)]">
+                                已封号
+                              </span>
+                            ) : rowKind === "risk" ? (
                               <span className="badge-glow-risk inline-flex rounded-full border border-rose-400/35 bg-rose-500/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-rose-200">
                                 RISK
                               </span>
@@ -2541,14 +2983,40 @@ export default function App() {
                             ? "ring-2 ring-cyan-400/75 shadow-[0_0_32px_rgba(34,211,238,0.45),0_0_48px_rgba(52,211,153,0.2)]"
                             : "ring-1 ring-transparent";
 
+                          const tsEcho = a.status_changed_at || a.last_update;
+                          let echoFade = false;
+                          if (isEcho && tsEcho) {
+                            const ageMs = Date.now() - Date.parse(tsEcho);
+                            if (a._wsFastEchoBan || a.status === "banned") {
+                              echoFade = ageMs >= 1000 && ageMs < 2800;
+                            } else {
+                              echoFade = ageMs >= 59500 && ageMs < 70000;
+                            }
+                          }
+                          const showWsNew =
+                            isEcho &&
+                            typeof a._wsNewUntil === "number" &&
+                            Date.now() < a._wsNewUntil;
+                          const wsSlide = Boolean(a._wsSlideIn);
+                          const wsActivePulse = Boolean(a._wsActiveHighlight);
+                          const bannedGlow = rowKind === "banned" || (isEcho && a.status === "banned");
+                          const riskGlow =
+                            !bannedGlow && (rowKind === "risk" || (isEcho && a.status === "risk_suspected"));
+                          const limitedGlow = rowKind === "limited" && isEcho;
+                          const canClearFromQueue =
+                            a.id != null &&
+                            (rowKind === "banned" ||
+                              rowKind === "risk" ||
+                              (isEcho && (a.status === "banned" || a.status === "risk_suspected")));
+
                           return (
                             <div
-                              key={`${a.id}-${a._queueKind || "x"}`}
+                              key={`${a.id}-${a._queueKind || "x"}-${tsEcho || ""}`}
                               className={`group flex gap-2.5 rounded-xl border px-3 py-2.5 text-sm shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-[16px] transition-all duration-300 ease-out will-change-transform hover:-translate-y-0.5 hover:border-emerald-400/25 hover:shadow-[0_12px_40px_rgba(0,255,180,0.12),0_0_28px_rgba(96,239,255,0.1)] ${cardRing} ${
                                 isEcho
                                   ? "border-white/[0.06] bg-[rgba(255,255,255,0.03)]"
                                   : "border-white/[0.08] bg-[rgba(255,255,255,0.04)]"
-                              }`}
+                              } ${echoFade ? "growth-queue-fade-out" : ""} ${wsSlide ? "growth-queue-slide-in" : ""} ${bannedGlow ? "growth-queue-card--banned" : ""} ${riskGlow ? "growth-queue-card--risk" : ""} ${limitedGlow ? "growth-queue-card--limited" : ""} ${wsActivePulse ? "growth-queue-card--active-ws" : ""}`}
                             >
                               <div className={avatarShell}>
                                 <UserCircle size={18} strokeWidth={1.75} aria-hidden />
@@ -2556,6 +3024,11 @@ export default function App() {
                               <div className="min-w-0 flex-1">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <div className={phoneCls}>{displayPhone(a)}</div>
+                                  {showWsNew ? (
+                                    <span className="growth-queue-new-badge rounded px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-rose-100">
+                                      NEW
+                                    </span>
+                                  ) : null}
                                   {pill}
                                 </div>
                                 <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
@@ -2578,6 +3051,15 @@ export default function App() {
                                     {a.proxy_type || "direct"}
                                   </span>
                                 </div>
+                                {canClearFromQueue ? (
+                                  <button
+                                    type="button"
+                                    className="mt-2 rounded-md border border-rose-400/35 bg-rose-500/12 px-2.5 py-1 text-[10px] font-semibold text-rose-100 transition-colors hover:bg-rose-500/22"
+                                    onClick={() => onDeleteAccountById(a.id)}
+                                  >
+                                    清除账号
+                                  </button>
+                                ) : null}
                               </div>
                             </div>
                           );
@@ -2587,7 +3069,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 右侧：任务控制 + 实时日志（日志紧贴任务下沿，flex 铺满剩余高度） */}
+                {/* 右侧：任务控制 + 实时日志（日志区限高约一页，内部滚动） */}
                 <div className="order-2 flex min-h-0 min-w-0 flex-col gap-3 lg:order-none lg:min-h-0">
                   <div className="flex shrink-0 flex-col gap-4">
                     <div className="grid shrink-0 grid-cols-3 gap-2 sm:gap-3">
@@ -2637,20 +3119,26 @@ export default function App() {
                             />
                           </div>
                           <div className="flex gap-1.5">
-                            <button
-                              type="button"
-                              className="rounded-xl border border-[#00AFFF]/35 bg-[rgba(0,175,255,0.1)] px-3 py-2 text-sm font-bold text-sky-200 shadow-[0_0_16px_rgba(0,175,255,0.2)] transition hover:scale-105 hover:border-[#7A5CFF]/40 hover:shadow-[0_0_28px_rgba(122,92,255,0.3)] active:scale-95"
-                              onClick={onForceAddGroup}
-                            >
-                              +
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-300 shadow-[0_0_12px_rgba(251,113,133,0.15)] transition hover:scale-105 hover:shadow-[0_0_24px_rgba(251,113,133,0.28)] active:scale-95"
-                              onClick={onRemoveGroup}
-                            >
-                              −
-                            </button>
+                            <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
+                              <button
+                                type="button"
+                                disabled={!op}
+                                className="rounded-xl border border-[#00AFFF]/35 bg-[rgba(0,175,255,0.1)] px-3 py-2 text-sm font-bold text-sky-200 shadow-[0_0_16px_rgba(0,175,255,0.2)] transition hover:scale-105 hover:border-[#7A5CFF]/40 hover:shadow-[0_0_28px_rgba(122,92,255,0.3)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100"
+                                onClick={onForceAddGroup}
+                              >
+                                +
+                              </button>
+                            </span>
+                            <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
+                              <button
+                                type="button"
+                                disabled={!op}
+                                className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-300 shadow-[0_0_12px_rgba(251,113,133,0.15)] transition hover:scale-105 hover:shadow-[0_0_24px_rgba(251,113,133,0.28)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100"
+                                onClick={onRemoveGroup}
+                              >
+                                −
+                              </button>
+                            </span>
                           </div>
                         </div>
                         <label className="flex flex-col gap-1.5">
@@ -2666,18 +3154,40 @@ export default function App() {
                           />
                         </label>
                         <div className="flex flex-wrap items-center gap-3">
-                          <button
-                            type="button"
-                            disabled={false}
-                            onClick={taskRunning ? onStopRunningTask : onStartTask}
-                            className={
-                              taskRunning
-                                ? "inline-flex items-center justify-center gap-2 rounded-xl border border-rose-400/40 bg-rose-500/20 px-6 py-2.5 text-sm font-bold text-rose-100 shadow-[0_0_20px_rgba(251,113,133,0.25)] transition-all duration-200 hover:bg-rose-500/30"
-                                : "task-control-start-btn inline-flex items-center justify-center gap-2"
-                            }
-                          >
-                            {taskRunning ? "停止" : "开始增长"}
-                          </button>
+                          <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
+                            {(() => {
+                              const growthIdleStopped = growthTaskStoppedUi && !taskRunning;
+                              return (
+                            <button
+                              type="button"
+                              disabled={!op || growthIdleStopped || (taskRunning && stopGrowthLoading)}
+                              onClick={taskRunning ? onStopRunningTask : onStartTask}
+                              className={
+                                growthIdleStopped
+                                  ? "inline-flex min-w-[7.5rem] items-center justify-center rounded-xl border border-rose-400/35 bg-rose-500/[0.14] px-6 py-2.5 text-sm font-bold text-rose-200/75 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+                                  : taskRunning
+                                  ? "inline-flex items-center justify-center gap-2 rounded-xl border border-rose-400/40 bg-rose-500/20 px-6 py-2.5 text-sm font-bold text-rose-100 shadow-[0_0_20px_rgba(251,113,133,0.25)] transition-all duration-200 hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-rose-500/20"
+                                  : "task-control-start-btn inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-45"
+                              }
+                            >
+                              {growthIdleStopped ? (
+                                "已停止"
+                              ) : taskRunning ? (
+                                stopGrowthLoading ? (
+                                  <>
+                                    <UiSpinner tone="primary" />
+                                    停止中…
+                                  </>
+                                ) : (
+                                  "停止"
+                                )
+                              ) : (
+                                "开始增长"
+                              )}
+                            </button>
+                              );
+                            })()}
+                          </span>
                           {taskRunning ? (
                             <span className="inline-flex items-center gap-2 text-xs font-medium text-cyan-300/90">
                               <UiSpinner tone="primary" />
@@ -2689,8 +3199,8 @@ export default function App() {
                     </div>
                   </section>
                   </div>
-                  <div className="flex min-h-[200px] min-w-0 flex-1 flex-col lg:min-h-0">
-                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-blue-400/18 bg-[rgba(6,10,18,0.65)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_42px_rgba(59,130,246,0.12)] backdrop-blur-[18px]">
+                  <div className="flex min-w-0 shrink-0 flex-col">
+                  <div className="flex shrink-0 flex-col overflow-visible rounded-2xl border border-blue-400/18 bg-[rgba(6,10,18,0.65)] shadow-[0_8px_40px_rgba(0,0,0,0.42),0_0_42px_rgba(59,130,246,0.12)] backdrop-blur-[18px] max-lg:min-h-[12rem]">
                     <div className={GLASS_PANEL_CHROME_LOG}>
                       <span className="h-2 w-2 rounded-full bg-rose-400 shadow-sm" />
                       <span className="h-2 w-2 rounded-full bg-amber-400 shadow-sm" />
@@ -2704,12 +3214,13 @@ export default function App() {
                       终端视图 · 最多 {MAX_LOG_ENTRIES} 条 · 上滑暂停跟随，回到底部恢复 · INFO / SUCCESS / WARN / ERROR 分色
                     </p>
                     <div
+                      id="session-log"
                       ref={logRef}
                       role="log"
                       aria-live="polite"
                       aria-relevant="additions"
                       onScroll={handleLogScroll}
-                      className="growth-terminal-scroll terminal-log-body log-container min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2 font-log"
+                      className={`growth-terminal-scroll terminal-log-body log-container ${GROWTH_QUEUE_LOG_MAX_H} min-h-[12rem] overflow-y-auto overflow-x-hidden px-3 py-2 font-log`}
                     >
                       {logs.map(({ id, time, message, type }) => (
                         <LogLineRow key={id} time={time} message={message} type={type} />
@@ -2728,7 +3239,12 @@ export default function App() {
             {featuredTargetGroup ? <GroupsHeroCard group={featuredTargetGroup} /> : null}
             <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
               {groups.map((g) => (
-                <TargetGroupDashboardCard key={g.id} group={g} onUpdateDailyLimit={onUpdateDailyLimit} />
+                <TargetGroupDashboardCard
+                  key={g.id}
+                  group={g}
+                  onUpdateDailyLimit={onUpdateDailyLimit}
+                  operationsLocked={!op}
+                />
               ))}
             </div>
           </div>
@@ -2737,7 +3253,7 @@ export default function App() {
         {tab === "群组互动" && (
           <div className="grid min-h-0 gap-5 lg:grid-cols-[minmax(0,1fr)_min(420px,42vw)] lg:items-stretch">
             <div
-              className={`${cardShellClass("risk")} relative flex min-h-0 flex-col overflow-hidden !p-0`}
+              className={`${cardShellClass("risk")} relative flex min-h-0 flex-col overflow-visible !p-0`}
               style={{
                 boxShadow:
                   "0 8px 40px rgba(0,0,0,0.42), 0 0 48px rgba(192,38,211,0.1), 0 0 72px rgba(59,130,246,0.06)",
@@ -2805,8 +3321,9 @@ export default function App() {
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         type="button"
-                        disabled={engagementRegisterLoading || !(engagementGroupResolution.invalid || []).length}
+                        disabled={!op || engagementRegisterLoading || !(engagementGroupResolution.invalid || []).length}
                         onClick={onEngagementRegisterUnknown}
+                        title={!op ? guestTitle : undefined}
                         className="rounded-xl border border-emerald-400/35 bg-emerald-500/15 px-3 py-2 text-xs font-semibold text-emerald-200 shadow-[0_0_16px_rgba(52,211,153,0.15)] transition hover:border-emerald-400/50 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-45"
                       >
                         {engagementRegisterLoading ? (
@@ -2820,8 +3337,9 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        disabled={!(engagementGroupResolution.valid || []).length || engagementRegisterLoading}
+                        disabled={!op || !(engagementGroupResolution.valid || []).length || engagementRegisterLoading}
                         onClick={onEngagementIgnoreUnknown}
+                        title={!op ? guestTitle : undefined}
                         className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition hover:border-cyan-400/45 hover:bg-cyan-500/18 disabled:cursor-not-allowed disabled:opacity-45"
                       >
                         忽略并继续
@@ -2845,6 +3363,8 @@ export default function App() {
                       type="number"
                       min={10}
                       max={5000}
+                      readOnly={!op}
+                      title={!op ? guestTitle : undefined}
                       className={INPUT_FIELD}
                       value={engagementScanLimit}
                       onChange={(e) => setEngagementScanLimit(Number(e.target.value) || 300)}
@@ -2858,7 +3378,8 @@ export default function App() {
 
                 <button
                   type="button"
-                  disabled={!profile}
+                  disabled={!op}
+                  title={!op ? guestTitle : undefined}
                   onClick={engagementSubmitting ? onStopEngagement : onStartEngagement}
                   className={
                     engagementSubmitting
@@ -2877,7 +3398,7 @@ export default function App() {
               </div>
             </div>
 
-            <aside className="engagement-live-terminal flex min-h-[min(520px,72vh)] flex-col overflow-hidden rounded-2xl border border-cyan-400/15 bg-[rgba(6,10,18,0.72)] shadow-[0_8px_40px_rgba(0,0,0,0.5),0_0_48px_rgba(34,211,238,0.08)] backdrop-blur-[20px]">
+            <aside className="engagement-live-terminal flex min-h-[min(520px,72vh)] flex-col overflow-visible rounded-2xl border border-cyan-400/15 bg-[rgba(6,10,18,0.72)] shadow-[0_8px_40px_rgba(0,0,0,0.5),0_0_48px_rgba(34,211,238,0.08)] backdrop-blur-[20px]">
               <div className="flex shrink-0 items-center justify-between gap-2 border-b border-cyan-400/12 bg-[rgba(0,255,200,0.04)] px-4 py-3 backdrop-blur-md">
                 <div className="flex items-center gap-2">
                   <span
@@ -2895,7 +3416,7 @@ export default function App() {
                 ref={engagementLogRef}
                 role="log"
                 aria-live="polite"
-                className="engagement-live-terminal-body growth-scroll min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono"
+                className={`engagement-live-terminal-body growth-scroll ${PANEL_SCROLL_MAX_H} min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono`}
               >
                 {engagementLiveLogs.length === 0 ? (
                   <p className="py-12 text-center text-[11px] leading-relaxed text-slate-600">
@@ -2933,23 +3454,30 @@ export default function App() {
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-                <button
-                  type="button"
-                  className={`${BTN_SECONDARY} hover:scale-[1.02] active:scale-[0.98]`}
-                  onClick={() => setShowPathModal(true)}
+                <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
+                  <button
+                    type="button"
+                    disabled={!op}
+                    className={`${BTN_SECONDARY} hover:scale-[1.02] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100`}
+                    onClick={() => setShowPathModal(true)}
+                  >
+                    账号路径
+                  </button>
+                </span>
+                <label
+                  title={!op ? guestTitle : undefined}
+                  className={`inline-flex items-center rounded-xl border border-dashed border-cyan-400/25 bg-[rgba(255,255,255,0.04)] px-3 py-2 text-xs text-slate-400 shadow-[0_4px_20px_rgba(0,0,0,0.28)] backdrop-blur-[14px] transition hover:scale-[1.02] hover:border-cyan-400/40 hover:bg-white/[0.06] hover:text-slate-200 active:scale-[0.98] ${!op ? "pointer-events-none cursor-not-allowed opacity-45" : "cursor-pointer"}`}
                 >
-                  账号路径
-                </button>
-                <label className="inline-flex cursor-pointer items-center rounded-xl border border-dashed border-cyan-400/25 bg-[rgba(255,255,255,0.04)] px-3 py-2 text-xs text-slate-400 shadow-[0_4px_20px_rgba(0,0,0,0.28)] backdrop-blur-[14px] transition hover:scale-[1.02] hover:border-cyan-400/40 hover:bg-white/[0.06] hover:text-slate-200 active:scale-[0.98]">
-                  <input className="sr-only" type="file" accept=".zip" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} />
+                  <input className="sr-only" type="file" accept=".zip" disabled={!op} onChange={(e) => setUploadFile(e.target.files?.[0] || null)} />
                   {uploadFile ? uploadFile.name : "选择 .zip"}
                 </label>
-                <button
-                  type="button"
-                  disabled={uploadLoading}
-                  className="account-console-btn-primary inline-flex items-center justify-center gap-2 disabled:hover:scale-100"
-                  onClick={onUpload}
-                >
+                <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
+                  <button
+                    type="button"
+                    disabled={uploadLoading || !op}
+                    className="account-console-btn-primary inline-flex items-center justify-center gap-2 disabled:hover:scale-100"
+                    onClick={onUpload}
+                  >
                   {uploadLoading ? (
                     <>
                       <UiSpinner tone="primary" />
@@ -2961,22 +3489,8 @@ export default function App() {
                       上传
                     </>
                   )}
-                </button>
-                <button
-                  type="button"
-                  disabled={refreshLoading}
-                  className={`${BTN_SECONDARY} inline-flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-[0.98] disabled:hover:scale-100`}
-                  onClick={() => triggerRefresh({}, "header")}
-                >
-                  {refreshLoading && refreshPhase === "header" ? (
-                    <>
-                      <UiSpinner tone="muted" />
-                      刷新中...
-                    </>
-                  ) : (
-                    "刷新"
-                  )}
-                </button>
+                  </button>
+                </span>
               </div>
             </header>
             <div className="grid gap-5 xl:grid-cols-3">
@@ -3034,13 +3548,16 @@ export default function App() {
                       />
                     }
                     right={
-                      <button
-                        type="button"
-                        className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-300 shadow-[0_0_12px_rgba(251,113,133,0.15)] transition hover:scale-105 hover:border-rose-400/50 hover:shadow-[0_0_20px_rgba(251,113,133,0.25)] active:scale-95"
-                        onClick={() => onDeleteAccount(a.phone)}
-                      >
-                        删除
-                      </button>
+                      <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
+                        <button
+                          type="button"
+                          disabled={!op}
+                          className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-300 shadow-[0_0_12px_rgba(251,113,133,0.15)] transition hover:scale-105 hover:border-rose-400/50 hover:shadow-[0_0_20px_rgba(251,113,133,0.25)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100"
+                          onClick={() => onDeleteAccount(a.phone)}
+                        >
+                          删除
+                        </button>
+                      </span>
                     }
                   />
                 ))}
@@ -3133,9 +3650,11 @@ export default function App() {
                 <div className={SCRAPER_GLASS_CARD}>
                   <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
                     <h3 className="text-base font-bold tracking-tight text-slate-100">采集账号</h3>
-                    <button type="button" className={SCRAPER_BTN_GLOW_SM} onClick={openScraperAccountModal}>
-                      更新账号
-                    </button>
+                    <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
+                      <button type="button" disabled={!op} className={`${SCRAPER_BTN_GLOW_SM} disabled:cursor-not-allowed disabled:opacity-45`} onClick={openScraperAccountModal}>
+                        更新账号
+                      </button>
+                    </span>
                   </div>
                   <p className="mb-4 text-xs leading-relaxed text-slate-500">
                     Telethon 独立 session，与账号池 / 代理池无关。
@@ -3214,7 +3733,8 @@ export default function App() {
                     </div>
                     <button
                       type="button"
-                      disabled={scraperLoading || !scraperForm.group_id.trim()}
+                      disabled={!op || scraperLoading || !scraperForm.group_id.trim()}
+                      title={!op ? guestTitle : undefined}
                       className={SCRAPER_BTN_GLOW_BLOCK}
                       onClick={onRunScraper}
                     >
@@ -3245,7 +3765,8 @@ export default function App() {
                       </div>
                       <button
                         type="button"
-                        disabled={scraperResultDownloadLoading}
+                        disabled={!op || scraperResultDownloadLoading}
+                        title={!op ? guestTitle : undefined}
                         className={`${SCRAPER_BTN_GLOW_BLOCK} mt-2`}
                         onClick={onDownloadScrape}
                       >
@@ -3281,7 +3802,7 @@ export default function App() {
                     暂无记录，完成一次采集后将显示在此
                   </div>
                 ) : (
-                  <ul className="growth-scroll flex max-h-[min(72vh,600px)] flex-col gap-4 overflow-y-auto pr-1">
+                  <ul className={`growth-scroll flex ${PANEL_SCROLL_MAX_H} flex-col gap-4 overflow-y-auto pr-1`}>
                     {scraperTasksVisible.map((t) => {
                       const done = t.status === "done";
                       const dt = t.created_at
@@ -3318,7 +3839,8 @@ export default function App() {
                           ) : null}
                           <button
                             type="button"
-                            disabled={!done || scraperDownloadTaskId != null}
+                            disabled={!op || !done || scraperDownloadTaskId != null}
+                            title={!op ? guestTitle : undefined}
                             className={`${SCRAPER_BTN_GLOW_SM} mt-4 w-full`}
                             onClick={() => onDownloadScraperHistoryTask(t.id)}
                           >
@@ -3357,14 +3879,18 @@ export default function App() {
             <div className="pointer-events-none absolute bottom-[20%] left-[5%] h-36 w-36 rounded-full bg-cyan-500/8 blur-[64px]" aria-hidden />
             <div className="relative z-[1] flex flex-col gap-6">
               <div
-                className={`grid grid-cols-1 gap-6 ${isAdmin ? "xl:grid-cols-[minmax(300px,380px)_minmax(0,1fr)]" : ""}`}
+                className={`grid grid-cols-1 gap-6 ${
+                  isAdmin ? "xl:grid-cols-[minmax(300px,380px)_minmax(0,1fr)]" : "xl:grid-cols-[minmax(260px,320px)_minmax(0,1fr)]"
+                }`}
               >
                 {isAdmin ? (
                   <div className="flex min-w-0 flex-col gap-4">
                   <div className={COPY_GLASS_CARD}>
-                    <h3 className="text-base font-bold tracking-tight text-slate-100">机器人库</h3>
+                    <h3 className="text-base font-bold tracking-tight text-slate-100">机器人录入</h3>
                     <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                      Telethon 监听源频道；发送走 Bot API <span className="font-log">copyMessage</span>。凭证仅存服务端。
+                      填写后点击按钮：用 <span className="font-log">bot_token</span> 登录 Telegram，在{" "}
+                      <span className="font-log">backend/sessions/</span> 下生成{" "}
+                      <span className="font-log">bot_（数据库 id）.session</span>，转发任务仅使用该 session（不再走 HTTP Bot API）。凭证仅存服务端。
                     </p>
                     <div className="mt-4 space-y-3">
                       <label className="flex flex-col gap-1">
@@ -3386,13 +3912,20 @@ export default function App() {
                         <input
                           type="password"
                           className={COPY_FIELD}
-                          placeholder="BotFather 下发"
+                          placeholder="BotFather 下发（仅首次写入 session 时使用）"
                           value={copyBotForm.bot_token}
                           onChange={(e) => setCopyBotForm((f) => ({ ...f, bot_token: e.target.value }))}
                         />
                       </label>
-                      <button type="button" disabled={copyBotSaving} className={`${COPY_BTN_GLOW_SM} w-full justify-center`} onClick={onCreateCopyBot}>
-                        {copyBotSaving ? "提交中…" : "添加到库"}
+                      <button type="button" disabled={!op || copyBotSaving} title={!op ? guestTitle : undefined} className={`${COPY_BTN_GLOW_SM} w-full justify-center`} onClick={onCreateCopyBot}>
+                        {copyBotSaving ? (
+                          <span className="inline-flex items-center justify-center gap-2">
+                            <UiSpinner tone="muted" />
+                            登录并写入 session…
+                          </span>
+                        ) : (
+                          "登录 Telegram 并写入 session"
+                        )}
                       </button>
                     </div>
                   </div>
@@ -3400,7 +3933,10 @@ export default function App() {
                     {copyBots.length === 0 ? (
                       <p className="text-sm text-slate-500">暂无机器人，请先添加。</p>
                     ) : (
-                      copyBots.map((b) => (
+                      copyBots.map((b) => {
+                        const sessionLoginOk =
+                          b.session_ok == null ? Boolean(b.session_ready && b.status === "active") : Boolean(b.session_ok);
+                        return (
                         <div key={b.id} className={COPY_GLASS_CARD}>
                           <div className="flex flex-wrap items-start justify-between gap-2">
                             <div>
@@ -3427,11 +3963,24 @@ export default function App() {
                               }`}
                               title={b.session_name || ""}
                             >
-                              {b.session_ready ? "SESSION OK" : "无 SESSION"}
+                              {b.session_ready ? "SESSION 文件" : "无 SESSION"}
+                            </span>
+                            <span
+                              className={`shrink-0 rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                                sessionLoginOk
+                                  ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-200"
+                                  : "border-amber-400/40 bg-amber-500/12 text-amber-200"
+                              }`}
+                              title="文件存在且状态为 ACTIVE 时可启动转发任务"
+                            >
+                              登录状态：{sessionLoginOk ? "OK" : "FAIL"}
                             </span>
                           </div>
                           {!b.session_ready ? (
                             <p className="mt-2 text-xs text-rose-400/90">未生成 session：请使用「导入 session」或删除后重新添加 Bot。</p>
+                          ) : null}
+                          {b.session_ready && b.status !== "active" ? (
+                            <p className="mt-1 text-xs text-amber-400/90">session 文件在库中，但机器人状态为 ERROR，请查看下方原因或「清除错误」后重试。</p>
                           ) : null}
                           {b.last_error ? (
                             <p className="mt-2 line-clamp-3 text-xs text-rose-400/90" title={b.last_error}>
@@ -3441,38 +3990,64 @@ export default function App() {
                           <div className="mt-3 flex flex-wrap gap-2">
                             <button
                               type="button"
-                              disabled={uploadingSessionBotId != null}
+                              disabled={!op || uploadingSessionBotId != null}
+                              title={!op ? guestTitle : undefined}
                               className="rounded-xl border border-violet-400/35 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50"
                               onClick={() => triggerCopySessionImport(b.id)}
                             >
                               {uploadingSessionBotId === b.id ? "导入中…" : "导入 session"}
                             </button>
                             {b.status === "error" ? (
-                              <button type="button" className={COPY_BTN_GLOW_SM} onClick={() => onResetCopyBot(b.id)}>
+                              <button type="button" disabled={!op} title={!op ? guestTitle : undefined} className={COPY_BTN_GLOW_SM} onClick={() => onResetCopyBot(b.id)}>
                                 清除错误
                               </button>
                             ) : null}
                             <button
                               type="button"
-                              className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 transition hover:-translate-y-0.5"
+                              disabled={!op}
+                              title={!op ? guestTitle : undefined}
+                              className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-45"
                               onClick={() => onDeleteCopyBot(b.id)}
                             >
                               删除
                             </button>
                           </div>
                         </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </div>
-                ) : null}
+                ) : (
+                  <div className={`${COPY_GLASS_CARD} min-w-0`}>
+                    <h3 className="text-base font-bold tracking-tight text-slate-100">机器人库（只读）</h3>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                      添加 / 删除 / 导入 session 仅<strong className="text-slate-400">管理员</strong>可用。你可查看库中 Bot，并在右侧新建任务时选择；任务仅创建者可操作（管理员可操作全部）。
+                    </p>
+                    {copyBots.length > 0 ? (
+                      <div className="mt-3 rounded-lg border border-white/[0.06] bg-black/20 px-2 py-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">当前库中 Bot</p>
+                        <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto font-log text-[11px] text-slate-400">
+                          {copyBots.map((b) => (
+                            <li key={b.id}>
+                              #{b.id} · {b.bot_token_masked}
+                              {b.session_ready ? " · 有 session" : " · 无 session"} · {b.status}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-slate-600">当前库中暂无 Bot。</p>
+                    )}
+                  </div>
+                )}
 
                 <div className="flex min-w-0 flex-col gap-4">
                   <div className={COPY_GLASS_CARD}>
                     <h3 className="text-base font-bold tracking-tight text-slate-100">新建转发任务</h3>
                     {!isAdmin ? (
                       <p className="mt-1 text-xs text-slate-500">
-                        Bot 由管理员在「机器人库」维护；你可从下拉框选择可用 Bot，仅可查看与管理自己的转发任务。
+                        Bot 由管理员维护；你选择可用 Bot 后创建任务，仅可管理自己的转发任务。任务运行中依赖该 Bot 的 Telethon session，与 bot_token 无关。
                       </p>
                     ) : null}
                     <p className="mt-1 text-xs text-slate-500">
@@ -3489,12 +4064,16 @@ export default function App() {
                           onChange={(e) => setCopyTaskForm((f) => ({ ...f, bot_id: e.target.value }))}
                         >
                           <option value="">选择库中 Bot…</option>
-                          {copyBots.map((b) => (
+                          {copyBots.map((b) => {
+                            const optLoginOk =
+                              b.session_ok == null ? Boolean(b.session_ready && b.status === "active") : Boolean(b.session_ok);
+                            const sessHint = !b.session_ready ? "无 session" : optLoginOk ? "session 可用" : "session/状态异常";
+                            return (
                             <option key={b.id} value={String(b.id)} disabled={!b.session_ready}>
-                              #{b.id} · {b.bot_token_masked}
-                              {b.session_ready ? "" : " · 无session"} ({b.status})
+                              #{b.id} · {b.bot_token_masked} · {sessHint} ({b.status})
                             </option>
-                          ))}
+                            );
+                          })}
                         </select>
                       </label>
                       <label className="flex flex-col gap-1 sm:col-span-2">
@@ -3506,7 +4085,7 @@ export default function App() {
                         <input className={COPY_FIELD} placeholder="@username 或 -100…" value={copyTaskForm.target_channel} onChange={(e) => setCopyTaskForm((f) => ({ ...f, target_channel: e.target.value }))} />
                       </label>
                     </div>
-                    <button type="button" disabled={copyTaskSaving} className={`${COPY_BTN_GLOW_SM} mt-4 w-full justify-center`} onClick={onCreateCopyTask}>
+                    <button type="button" disabled={!op || copyTaskSaving} title={!op ? guestTitle : undefined} className={`${COPY_BTN_GLOW_SM} mt-4 w-full justify-center`} onClick={onCreateCopyTask}>
                       {copyTaskSaving ? "创建中…" : "创建任务（idle）"}
                     </button>
                   </div>
@@ -3515,16 +4094,17 @@ export default function App() {
                     <div className="border-b border-violet-400/10 px-3 py-2">
                       <h4 className="text-sm font-semibold text-slate-200">Copy 任务</h4>
                       <p className="text-[11px] text-slate-500">
-                        状态：<span className="font-log">idle / starting / running / paused / error</span> · 约 1.5s 轮询同步 · 今日/累计（UTC 日切）
+                        状态：<span className="font-log">idle / starting / running / paused / error</span> · 约 1.5s 轮询任务、Bot 与日志 · 今日/累计（UTC 日切）
                       </p>
                     </div>
-                    <div className="max-h-[min(52vh,520px)] overflow-auto">
+                    <div className={`${PANEL_SCROLL_MAX_H} min-h-[12rem] overflow-auto`}>
                       <table className="w-full min-w-[640px] border-collapse text-left text-sm">
                         <thead className="sticky top-0 z-[1] bg-[rgba(12,16,28,0.92)] backdrop-blur-md">
                           <tr className="border-b border-white/[0.06] text-[11px] uppercase tracking-wider text-slate-500">
                             <th className="px-3 py-2 font-semibold">来源</th>
                             <th className="px-3 py-2 font-semibold">目标</th>
                             <th className="px-3 py-2 font-semibold">Bot</th>
+                            <th className="px-3 py-2 font-semibold">创建者</th>
                             <th className="px-3 py-2 font-semibold">状态</th>
                             <th className="px-3 py-2 font-semibold">今日/总计</th>
                             <th className="px-3 py-2 font-semibold">操作</th>
@@ -3533,14 +4113,26 @@ export default function App() {
                         <tbody>
                           {copyTasks.length === 0 ? (
                             <tr>
-                              <td colSpan={6} className="px-3 py-8 text-center text-slate-500">
+                              <td colSpan={7} className="px-3 py-8 text-center text-slate-500">
                                 暂无任务
                               </td>
                             </tr>
                           ) : (
                             copyTasks.map((t) => {
+                              const copyTaskNoPermTitle = "无权限操作该任务";
+                              const canModCopyTask =
+                                isAdmin ||
+                                (profile?.id != null &&
+                                  t.owner_id != null &&
+                                  Number(profile.id) === Number(t.owner_id));
                               const taskBot = copyBots.find((b) => b.id === t.bot_id);
                               const sessionOk = Boolean(taskBot?.session_ready);
+                              const sessionLineOk =
+                                taskBot == null
+                                  ? false
+                                  : taskBot.session_ok == null
+                                    ? Boolean(taskBot.session_ready && taskBot.status === "active")
+                                    : Boolean(taskBot.session_ok);
                               const displaySt = resolveCopyDisplayStatus(t, copyStartOptimistic);
                               let stWrap =
                                 "inline-flex items-center gap-1.5 rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide";
@@ -3566,7 +4158,6 @@ export default function App() {
                               const canPause = displaySt === "running" || displaySt === "starting";
                               const showMainSpinner = displaySt === "starting";
                               const primaryIsRetry = displaySt === "error";
-                              const primaryHidden = displaySt === "running";
                               return (
                                 <tr key={t.id} className="border-t border-white/[0.06] hover:bg-white/[0.03]">
                                   <td className="max-w-[140px] truncate px-3 py-2.5 font-log text-xs text-slate-200" title={t.source_channel}>
@@ -3576,6 +4167,28 @@ export default function App() {
                                     {t.target_channel}
                                   </td>
                                   <td className="px-3 py-2.5 font-log text-xs text-violet-200/90">#{t.bot_id}</td>
+                                  <td
+                                    className="max-w-[120px] truncate px-3 py-2.5 font-log text-xs text-slate-300"
+                                    title={
+                                      t.owner_username
+                                        ? `user #${t.owner_id} · ${t.owner_username}`
+                                        : t.owner_id != null
+                                          ? `user #${t.owner_id}`
+                                          : ""
+                                    }
+                                  >
+                                    {t.owner_username ? (
+                                      <>
+                                        <span className="text-slate-500">#</span>
+                                        {t.owner_id}{" "}
+                                        <span className="text-violet-200/80">@{t.owner_username}</span>
+                                      </>
+                                    ) : t.owner_id != null ? (
+                                      <>user #{t.owner_id}</>
+                                    ) : (
+                                      "—"
+                                    )}
+                                  </td>
                                   <td className="px-3 py-2.5">
                                     <span className={stWrap}>
                                       {displaySt === "starting" ? (
@@ -3583,6 +4196,13 @@ export default function App() {
                                       ) : null}
                                       {stLabel}
                                     </span>
+                                    {displaySt === "running" ? (
+                                      <p
+                                        className={`mt-1 text-[10px] font-semibold tracking-wide ${sessionLineOk ? "text-emerald-400/90" : "text-rose-400/90"}`}
+                                      >
+                                        session: {sessionLineOk ? "OK" : "FAIL"}
+                                      </p>
+                                    ) : null}
                                     {displaySt === "error" && t.last_error ? (
                                       <p className="mt-1 line-clamp-2 text-[10px] text-rose-400/90" title={t.last_error}>
                                         {t.last_error}
@@ -3599,53 +4219,84 @@ export default function App() {
                                   </td>
                                   <td className="px-3 py-2.5">
                                     <div className="flex flex-wrap gap-1.5">
-                                      {primaryHidden ? null : showMainSpinner ? (
-                                        <button
-                                          type="button"
-                                          disabled
-                                          className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-amber-400/35 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-200 opacity-80"
-                                        >
-                                          <UiSpinner tone="muted" />
-                                          启动中…
-                                        </button>
+                                      {displaySt === "running" ? (
+                                        <span title={!canModCopyTask ? copyTaskNoPermTitle : undefined} className="inline-flex">
+                                          <button
+                                            type="button"
+                                            disabled
+                                            className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-200 opacity-90"
+                                          >
+                                            <UiSpinner tone="muted" />
+                                            运行中…
+                                          </button>
+                                        </span>
+                                      ) : showMainSpinner ? (
+                                        <span title={!canModCopyTask ? copyTaskNoPermTitle : undefined} className="inline-flex">
+                                          <button
+                                            type="button"
+                                            disabled
+                                            className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-amber-400/35 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-200 opacity-80"
+                                          >
+                                            <UiSpinner tone="muted" />
+                                            启动中…
+                                          </button>
+                                        </span>
                                       ) : (
-                                        <button
-                                          type="button"
-                                          disabled={!sessionOk || displaySt === "starting"}
+                                        <span
                                           title={
-                                            !sessionOk ? "未生成 session，请导入或由管理员处理" : undefined
+                                            !op
+                                              ? guestTitle
+                                              : !canModCopyTask
+                                                ? copyTaskNoPermTitle
+                                                : !sessionOk
+                                                  ? "未生成 session，请导入或由管理员处理"
+                                                  : undefined
                                           }
-                                          className="rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-200 transition hover:-translate-y-0.5 hover:shadow-[0_0_12px_rgba(52,211,153,0.2)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
-                                          onClick={() => onStartCopyTask(t.id)}
+                                          className="inline-flex"
                                         >
-                                          {primaryIsRetry ? "重试" : "启动"}
-                                        </button>
+                                          <button
+                                            type="button"
+                                            disabled={!op || !sessionOk || displaySt === "starting" || !canModCopyTask}
+                                            className="rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-200 transition hover:-translate-y-0.5 hover:shadow-[0_0_12px_rgba(52,211,153,0.2)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
+                                            onClick={() => onStartCopyTask(t.id)}
+                                          >
+                                            {primaryIsRetry ? "重试" : "启动"}
+                                          </button>
+                                        </span>
                                       )}
                                       {displaySt === "running" ? (
-                                        <button
-                                          type="button"
-                                          className="rounded-lg border border-amber-400/35 bg-amber-500/12 px-2 py-1 text-[11px] font-medium text-amber-200 transition hover:-translate-y-0.5 hover:shadow-[0_0_12px_rgba(251,191,36,0.18)]"
-                                          onClick={() => onPauseCopyTask(t.id)}
-                                        >
-                                          暂停
-                                        </button>
+                                        <span title={!op ? guestTitle : !canModCopyTask ? copyTaskNoPermTitle : undefined} className="inline-flex">
+                                          <button
+                                            type="button"
+                                            disabled={!op || !canModCopyTask}
+                                            className="rounded-lg border border-amber-400/35 bg-amber-500/12 px-2 py-1 text-[11px] font-medium text-amber-200 transition hover:-translate-y-0.5 hover:shadow-[0_0_12px_rgba(251,191,36,0.18)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
+                                            onClick={() => onPauseCopyTask(t.id)}
+                                          >
+                                            暂停
+                                          </button>
+                                        </span>
                                       ) : (
+                                        <span title={!op ? guestTitle : !canModCopyTask ? copyTaskNoPermTitle : undefined} className="inline-flex">
+                                          <button
+                                            type="button"
+                                            disabled={!op || !canPause || !canModCopyTask}
+                                            className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-[11px] font-medium text-slate-500 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
+                                            onClick={() => onPauseCopyTask(t.id)}
+                                          >
+                                            {displaySt === "starting" ? "取消" : "暂停"}
+                                          </button>
+                                        </span>
+                                      )}
+                                      <span title={!op ? guestTitle : !canModCopyTask ? copyTaskNoPermTitle : undefined} className="inline-flex">
                                         <button
                                           type="button"
-                                          disabled={!canPause}
-                                          className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-[11px] font-medium text-slate-500 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
-                                          onClick={() => onPauseCopyTask(t.id)}
+                                          disabled={!op || !canModCopyTask}
+                                          className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2 py-1 text-[11px] font-medium text-rose-200 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
+                                          onClick={() => onDeleteCopyTask(t.id)}
                                         >
-                                          {displaySt === "starting" ? "取消" : "暂停"}
+                                          删除
                                         </button>
-                                      )}
-                                      <button
-                                        type="button"
-                                        className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2 py-1 text-[11px] font-medium text-rose-200 transition hover:-translate-y-0.5"
-                                        onClick={() => onDeleteCopyTask(t.id)}
-                                      >
-                                        删除
-                                      </button>
+                                      </span>
                                     </div>
                                   </td>
                                 </tr>
@@ -3659,12 +4310,14 @@ export default function App() {
                 </div>
               </div>
 
-              <div className={`${COPY_GLASS_CARD} flex min-h-[200px] flex-col overflow-hidden`}>
+              <div className={`${COPY_GLASS_CARD} flex min-h-[200px] flex-col overflow-visible`}>
                 <div className="mb-2 flex items-center justify-between gap-2 border-b border-violet-400/10 pb-2">
                   <h3 className="text-sm font-bold text-slate-100">实时日志</h3>
-                  <span className="text-[10px] text-slate-500">约每 1.5s 拉取任务与日志</span>
+                  <span className="text-[10px] text-slate-500">与顶栏 LIVE 同步，约每 1.5s 更新</span>
                 </div>
-                <div className="growth-scroll max-h-56 min-h-[160px] flex-1 overflow-y-auto rounded-lg border border-white/[0.06] bg-black/25 px-2 py-2 font-log text-[11px] leading-relaxed">
+                <div
+                  className={`growth-scroll ${PANEL_SCROLL_MAX_H} min-h-[160px] flex-1 overflow-y-auto rounded-lg border border-white/[0.06] bg-black/25 px-2 py-2 font-log text-[11px] leading-relaxed`}
+                >
                   {copyLogs.length === 0 ? (
                     <p className="px-2 py-4 text-slate-500">暂无日志</p>
                   ) : (
@@ -3695,28 +4348,7 @@ export default function App() {
         )}
 
         {tab === "用户管理" && (
-          <Card
-            title="用户权限管理"
-            right={
-              isAdmin ? (
-                <button
-                  type="button"
-                  disabled={loadUsersLoading}
-                  className={`${BTN_PRIMARY} inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0`}
-                  onClick={onLoadUsers}
-                >
-                  {loadUsersLoading ? (
-                    <>
-                      <UiSpinner tone="primary" />
-                      刷新中...
-                    </>
-                  ) : (
-                    "刷新用户"
-                  )}
-                </button>
-              ) : null
-            }
-          >
+          <Card title="用户权限管理">
             {!isAdmin ? (
               <p className="text-sm text-slate-500">仅管理员可查看和修改用户权限</p>
             ) : (
@@ -3744,6 +4376,7 @@ export default function App() {
                       placeholder="角色"
                       className="min-w-[132px] max-w-[200px]"
                       triggerClassName="px-2.5 py-1.5 text-xs"
+                      disabled={!op}
                     />
                   </div>
                 ))}
@@ -3756,12 +4389,12 @@ export default function App() {
 
       {showPathModal && (
         <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(11,15,20,0.55)] p-4 backdrop-blur-md"
+          className="fixed inset-0 z-[3000] flex items-center justify-center bg-[rgba(11,15,20,0.55)] p-4 backdrop-blur-md"
           role="presentation"
           onClick={() => setShowPathModal(false)}
         >
           <div
-            className={`${MODAL_SHELL} max-h-[80vh] w-full max-w-[760px] overflow-hidden`}
+            className={`${MODAL_SHELL} max-h-[min(90vh,920px)] w-full max-w-[760px] overflow-y-auto`}
             role="dialog"
             aria-modal="true"
             onClick={(e) => e.stopPropagation()}
@@ -3833,12 +4466,12 @@ export default function App() {
 
       {showScraperAccountModal && (
         <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(11,15,20,0.55)] p-4 backdrop-blur-md"
+          className="fixed inset-0 z-[3000] flex items-center justify-center bg-[rgba(11,15,20,0.55)] p-4 backdrop-blur-md"
           role="presentation"
           onClick={closeScraperAccountModal}
         >
           <div
-            className={`${MODAL_SHELL} w-full max-w-md overflow-hidden`}
+            className={`${MODAL_SHELL} max-h-[min(90vh,920px)] w-full max-w-md overflow-y-auto`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="scraper-account-modal-title"
@@ -3957,6 +4590,34 @@ export default function App() {
           </div>
         </div>
       )}
-    </div>
+
+      {createPortal(
+        <div
+          className="pointer-events-none fixed right-4 top-20 z-[10050] flex w-[min(22rem,calc(100vw-2rem))] flex-col items-end gap-2 sm:right-6 sm:top-24"
+          aria-live="polite"
+        >
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              className="app-toast-item pointer-events-auto max-w-full rounded-xl border border-white/[0.12] bg-[linear-gradient(145deg,rgba(10,14,24,0.94)_0%,rgba(8,12,22,0.92)_100%)] px-4 py-2.5 text-sm font-medium leading-snug text-slate-100 shadow-[0_12px_40px_rgba(0,0,0,0.55),0_0_1px_rgba(34,211,238,0.2)] backdrop-blur-xl"
+              role="status"
+            >
+              {t.text}
+            </div>
+          ))}
+        </div>,
+        document.body,
+      )}
+
+      <AuthModal
+        open={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        initialTab={authModalInitialTab}
+        message={authModalOpen ? msg : ""}
+        authLoading={authLoading}
+        onLogin={(u, p) => login(u, p)}
+        onRegister={(u, p) => register(u, p)}
+      />
+    </>
   );
 }

@@ -58,6 +58,8 @@ def _ensure_account_file_columns() -> None:
             )
         if "status_note" not in col_names:
             conn.execute(text("ALTER TABLE account_files ADD COLUMN status_note VARCHAR(32)"))
+        if "last_update" not in col_names:
+            conn.execute(text("ALTER TABLE account_files ADD COLUMN last_update DATETIME"))
         conn.execute(
             text("UPDATE account_files SET status = 'normal' WHERE status IN ('active', '') OR status IS NULL")
         )
@@ -65,7 +67,7 @@ def _ensure_account_file_columns() -> None:
         conn.execute(
             text(
                 "UPDATE account_files SET status = 'risk_suspected' "
-                "WHERE status IN ('limited_long', 'banned')"
+                "WHERE status IN ('limited_long')"
             )
         )
 
@@ -80,8 +82,32 @@ def _ensure_copy_bots_session_name() -> None:
             conn.execute(text("ALTER TABLE copy_bots ADD COLUMN session_name VARCHAR(128)"))
 
 
+def _ensure_users_avatar_url() -> None:
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(users)")).fetchall()
+        if not rows:
+            return
+        col_names = {r[1] for r in rows}
+        if "avatar_url" not in col_names:
+            conn.execute(text("ALTER TABLE users ADD COLUMN avatar_url VARCHAR(512)"))
+
+
+def _ensure_copy_tasks_owner_id() -> None:
+    """旧库 copy_tasks 可能无 owner_id，补列并默认归到用户 id=1（通常为 admin）。"""
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(copy_tasks)")).fetchall()
+        if not rows:
+            return
+        col_names = {r[1] for r in rows}
+        if "owner_id" not in col_names:
+            conn.execute(text("ALTER TABLE copy_tasks ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 1"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_copy_tasks_owner_id ON copy_tasks (owner_id)"))
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_group_columns()
     _ensure_account_file_columns()
     _ensure_copy_bots_session_name()
+    _ensure_users_avatar_url()
+    _ensure_copy_tasks_owner_id()

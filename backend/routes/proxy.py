@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from auth import require_admin, require_user_or_admin
+from auth import get_current_user_optional, require_admin, require_user_or_admin
 from database import get_db
 from models import AccountFile, Proxy, User
 from services.proxy_service import import_proxies_from_file
@@ -30,7 +32,7 @@ async def upload_proxy_file(
 
 @router.get("/proxy")
 def list_proxies(
-    _user: User = Depends(require_user_or_admin),
+    _user: User | None = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ) -> dict:
     account_rows = db.query(AccountFile).order_by(AccountFile.id.asc()).all()

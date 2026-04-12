@@ -2,17 +2,40 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 应用根节点叠在 body 环境光之上 */
+@keyframes app-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.app-toast-item {
+  animation: app-toast-in 0.35s ease-out both;
+}
+
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 应用根：占满视口，滚动交给 .main-content，避免与 body 双滚动条 */
 #root {
   position: relative;
   z-index: 1;
-  isolation: isolate;
-  min-height: 100dvh;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 body {
-  @apply min-h-screen min-h-[100dvh] antialiased text-slate-200;
-  position: relative;
+  @apply antialiased text-slate-200;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
   background-color: #0b0f1a;
   background-image:
     radial-gradient(circle at 20% 20%, rgba(0, 150, 255, 0.15), transparent 55%),
@@ -53,6 +76,29 @@ body::after {
   filter: blur(96px);
   opacity: 0.72;
   animation: ambient-float-b 24s ease-in-out infinite alternate;
+}
+
+/* 左侧主导航：fixed，不参与主内容滚动 */
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 240px;
+  height: 100vh;
+  height: 100dvh;
+  box-sizing: border-box;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* 主内容区：唯一纵向滚动容器（与侧边栏宽度对齐） */
+.main-content {
+  margin-left: 240px;
+  height: 100vh;
+  height: 100dvh;
+  overflow-x: visible;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 @keyframes ambient-float-a {
@@ -300,7 +346,7 @@ body::after {
   position: relative;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 1.125rem;
   padding: 1.15rem 1.2rem 1.2rem;
   border: 1px solid rgba(255, 255, 255, 0.07);
@@ -655,7 +701,7 @@ body::after {
 /* ========== 账号检测 · 控制台 ========== */
 .account-console-hero {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 1rem;
   border: 1px solid rgba(255, 255, 255, 0.1);
   padding: 1.25rem 1.5rem;
@@ -741,7 +787,7 @@ body::after {
 
 .account-console-column {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 1rem;
   border: 1px solid rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(20px);
@@ -939,7 +985,7 @@ body::after {
 /* ========== 用户增长 · 任务控制面板 ========== */
 .task-control-panel {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 1rem;
   border: 1px solid rgba(255, 255, 255, 0.09);
   padding: 1.25rem 1.35rem 1.35rem;
@@ -1123,12 +1169,10 @@ body::after {
   opacity: 0.5;
 }
 
+/* 下拉面板由 GlassDropdown 以 fixed + portal 渲染；此类仅作遗留/文档 */
 .glass-dd-task-panel {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 100;
+  position: fixed;
+  z-index: 2000;
   transform-origin: top center;
   overflow: hidden;
   border-radius: 0.75rem;
@@ -1347,6 +1391,27 @@ body::after {
   }
 }
 
+/* 执行状态主卡片 · 紧凑型（外层 .execution-status 禁止滚动） */
+.execution-status {
+  overflow: hidden;
+}
+
+/* 6px 高进度条 · 圆角 + 渐变 glow */
+.exec-status-progress-fill {
+  min-height: 6px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #22d3ee, #4ade80, #a78bfa);
+  box-shadow:
+    0 0 12px rgba(34, 211, 238, 0.5),
+    0 0 18px rgba(52, 211, 153, 0.22);
+  transition: width 0.7s ease-out;
+}
+
+.exec-status-progress-track .growth-exec-progress-indeterminate,
+.exec-status-progress-track .growth-exec-progress-indeterminate::after {
+  border-radius: 4px;
+}
+
 .growth-exec-progress-indeterminate {
   position: absolute;
   inset: 0;
@@ -1385,4 +1450,78 @@ body::after {
 
 .account-activity-item--enter {
   animation: account-activity-enter 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* WebSocket 账号状态队列（用户增长左侧）：与后端事件同步 */
+@keyframes growth-queue-slide-in-kf {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes growth-queue-new-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(251, 113, 133, 0.45);
+  }
+  50% {
+    opacity: 0.92;
+    box-shadow: 0 0 12px 2px rgba(251, 113, 133, 0.35);
+  }
+}
+
+.growth-queue-slide-in {
+  animation: growth-queue-slide-in-kf 0.4s ease;
+}
+
+.growth-queue-fade-out {
+  opacity: 0;
+  transform: translateX(-10px);
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease;
+}
+
+.growth-queue-card--risk {
+  border-color: rgba(251, 113, 133, 0.45) !important;
+  box-shadow:
+    0 0 0 1px rgba(251, 113, 133, 0.25),
+    0 0 28px rgba(251, 113, 133, 0.22),
+    0 4px 24px rgba(0, 0, 0, 0.35);
+}
+
+.growth-queue-card--banned {
+  border-color: rgba(239, 68, 68, 0.55) !important;
+  box-shadow:
+    0 0 0 1px rgba(239, 68, 68, 0.35),
+    0 0 36px rgba(239, 68, 68, 0.42),
+    0 4px 24px rgba(0, 0, 0, 0.35);
+}
+
+.growth-queue-card--limited {
+  border-color: rgba(56, 189, 248, 0.4) !important;
+  box-shadow:
+    0 0 0 1px rgba(56, 189, 248, 0.2),
+    0 0 24px rgba(56, 189, 248, 0.18),
+    0 4px 24px rgba(0, 0, 0, 0.35);
+}
+
+.growth-queue-card--active-ws {
+  border-color: rgba(52, 211, 153, 0.5) !important;
+  box-shadow:
+    0 0 0 1px rgba(52, 211, 153, 0.35),
+    0 0 26px rgba(52, 211, 153, 0.28),
+    0 4px 24px rgba(0, 0, 0, 0.35);
+}
+
+.growth-queue-new-badge {
+  background: rgba(251, 113, 133, 0.25);
+  border: 1px solid rgba(251, 113, 133, 0.45);
+  animation: growth-queue-new-pulse 1s ease 3;
 }

@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from auth import require_admin, require_user_or_admin
+from auth import get_current_user_optional, require_admin, require_user_or_admin
 from database import get_db
 from models import AccountPath, Setting, User
 
@@ -46,7 +48,7 @@ def list_settings(_admin: User = Depends(require_admin), db: Session = Depends(g
 
 
 @router.get("/account-paths")
-def list_account_paths(_user: User = Depends(require_user_or_admin), db: Session = Depends(get_db)) -> dict:
+def list_account_paths(_user: User | None = Depends(get_current_user_optional), db: Session = Depends(get_db)) -> dict:
     rows = db.query(AccountPath).order_by(AccountPath.id.desc()).all()
     return {
         "ok": True,

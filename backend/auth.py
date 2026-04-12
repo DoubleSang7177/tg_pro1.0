@@ -82,6 +82,35 @@ def require_user_or_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def get_current_user_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session = Depends(get_db),
+) -> User | None:
+    """无 Token 或 Token 无效时返回 None，供游客只读浏览。"""
+    if credentials is None or not credentials.credentials:
+        return None
+    token = credentials.credentials.strip()
+    try:
+        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if data.get("typ") != "access":
+            return None
+        uid = int(data.get("sub", 0))
+        user = db.query(User).filter(User.id == uid).first()
+        return user
+    except Exception:
+        user = db.query(User).filter(User.token == token).first()
+        return user
+
+
+def user_public_dict(user: User) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "avatar_url": getattr(user, "avatar_url", None) or None,
+    }
+
+
 def complete_login(db: Session, username: str, password: str) -> dict:
     name = (username or "").strip()
     user = db.query(User).filter(User.username == name).first()
@@ -92,8 +121,5 @@ def complete_login(db: Session, username: str, password: str) -> dict:
     return {
         "ok": True,
         "token": token,
-        "user": {
-            "username": user.username,
-            "role": user.role,
-        },
+        "user": user_public_dict(user),
     }

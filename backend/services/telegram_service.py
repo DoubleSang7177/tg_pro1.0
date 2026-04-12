@@ -5,18 +5,21 @@ import os
 import random
 import re
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from pyrogram import Client
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, PhoneNumberBanned, UserDeactivated, UserDeactivatedBan
+from sqlalchemy.orm import Session
 
 from cn_time import cn_hms
 from database import SessionLocal
 from logger import get_logger
 from models import AccountFile, Group, Proxy, Setting
 from services.account_status import (
+    ST_BANNED,
     ST_COOLDOWN,
     ST_DAILY_LIMITED,
     ST_NORMAL,
@@ -25,13 +28,19 @@ from services.account_status import (
     mark_daily_limited,
     mark_risk_login_failed,
     mark_risk_session_or_auth,
+    mark_telegram_banned,
     recover_and_normalize,
 )
 from services.account_activity_log import record_account_activity as _record_account_activity
 from services.task_progress import progress_append, progress_highlight_publish
+from services.account_realtime import schedule_account_broadcast
 from services.task_run_control import task_run_should_continue
 
 log = get_logger("telegram_service")
+
+
+def _run_task_dbg(msg: str) -> None:
+    print(f"[run_task] {msg}", flush=True)
 
 
 def _log_account_act(owner_id: int | None, phone: str | None, *, action: str, status: str, level: str) -> None:
@@ -80,12 +89,53 @@ GROUP_METADATA_SYNC_KEY = "group_metadata_last_sync"
 GROUP_METADATA_STALE_SECONDS = int(os.getenv("GROUP_METADATA_STALE_SECONDS", str(24 * 3600)))
 
 
+def _is_pyrogram_banned_error(exc: BaseException) -> bool:
+    if isinstance(exc, (UserDeactivatedBan, PhoneNumberBanned, UserDeactivated)):
+        return True
+    msg = str(exc).lower()
+    if "banned" in msg:
+        return True
+    if "phone number is banned" in msg:
+        return True
+    return False
+
+
+async def _pyrogram_connect_noninteractive(client: Client) -> None:
+    """
+    使用 connect() + 与 Client.start() 相同的后半段，禁止 authorize()，避免封号/无效 session 时阻塞等待输入。
+    """
+    from pyrogram import raw
+
+    try:
+        authorized = await client.connect()
+        if not authorized:
+            raise ValueError("SESSION_INVALID")
+        await client.invoke(raw.functions.updates.GetState())
+        client.me = await client.get_me()
+        await client.initialize()
+    except BaseException:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        raise
+
+
+async def _pyrogram_stop_after_failed_connect(client: Client) -> None:
+    try:
+        await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
+    except Exception:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
 async def _client_start_with_hard_timeout(client: Client, timeout: float) -> None:
     """
-    不用单独的 wait_for(start)：Pyrogram 在代理卡住时，取消 start 可能迟迟不完，
-    表现为超过「上限 N 秒」仍不切号。超时后 cancel + stop() 尽量释放连接，再抛出 TimeoutError。
+    不用 client.start()（会触发交互）；connect 硬超时后 stop。
     """
-    task = asyncio.create_task(client.start())
+    task = asyncio.create_task(_pyrogram_connect_noninteractive(client))
     try:
         done, _ = await asyncio.wait({task}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
         if task.done():
@@ -96,13 +146,12 @@ async def _client_start_with_hard_timeout(client: Client, timeout: float) -> Non
                 raise exc
             return
         task.cancel()
-        try:
-            await asyncio.wait_for(client.stop(), timeout=TELEGRAM_START_ABORT_STOP_SEC)
-        except Exception:
-            log.debug("client.stop after login deadline failed", exc_info=True)
+        await _pyrogram_stop_after_failed_connect(client)
         try:
             await asyncio.wait_for(task, timeout=TELEGRAM_START_TASK_DRAIN_SEC)
         except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        except Exception:
             pass
         raise asyncio.TimeoutError
     finally:
@@ -123,12 +172,17 @@ async def _pyrogram_start_with_task_timeout(
     max_attempts: int,
 ) -> bool:
     """
-    代理下 client.start() 可能长时间不 yield；用 asyncio.wait_for(create_task(start)) 卡硬超时，
-    超时后 cancel task 并 stop，避免单账号拖死队列。
+    非交互 connect + 初始化；wait_for 硬超时后 cancel 并 stop，避免单账号拖死队列。
     """
-    task = asyncio.create_task(client.start())
+    task = asyncio.create_task(_pyrogram_connect_noninteractive(client))
     try:
+        print(
+            f"[_pyrogram_start] await asyncio.wait_for(connect) 前 phone={phone_label!r} "
+            f"attempt={attempt_no}/{max_attempts} timeout={timeout}",
+            flush=True,
+        )
         await asyncio.wait_for(task, timeout=timeout)
+        print(f"[_pyrogram_start] await asyncio.wait_for(connect) 后 成功 phone={phone_label!r}", flush=True)
         return True
     except asyncio.TimeoutError:
         log.error(
@@ -144,8 +198,11 @@ async def _pyrogram_start_with_task_timeout(
         )
         if not task.done():
             task.cancel()
+        await _pyrogram_stop_after_failed_connect(client)
         try:
+            print(f"[_pyrogram_start] drain cancelled connect task 前 phone={phone_label!r}", flush=True)
             await asyncio.wait_for(task, timeout=TELEGRAM_START_TASK_DRAIN_SEC)
+            print(f"[_pyrogram_start] drain cancelled connect task 后 phone={phone_label!r}", flush=True)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
         except Exception:
@@ -162,12 +219,17 @@ async def _single_login_attempt(
     attempt_no: int,
     max_attempts: int,
     tl,
+    db: Session | None = None,
 ) -> tuple[bool, Client | None, str | None]:
     """单次登录：成功返回 (True, client, None)，失败返回 (False, None, err)。"""
     login_cap = max(1, int(round(attempt_timeout)))
     phone = account.phone or "—"
     tl(
         f"[INFO] 登录中（第{attempt_no}/{max_attempts}次），超时 {login_cap}s，经由 {proxy_label} · {phone}",
+    )
+    print(
+        f"[_single_login] 初始化 Pyrogram Client 前 session_name={session_name!r} phone={phone!r}",
+        flush=True,
     )
     client = Client(
         name=session_name,
@@ -177,6 +239,7 @@ async def _single_login_attempt(
         proxy=proxy_dict,
         no_updates=True,
     )
+    print(f"[_single_login] Client 已构造，await _pyrogram_start_with_task_timeout（connect）前", flush=True)
     try:
         success = await _pyrogram_start_with_task_timeout(
             client,
@@ -186,21 +249,50 @@ async def _single_login_attempt(
             attempt_no,
             max_attempts,
         )
+        print(
+            f"[_single_login] await _pyrogram_start_with_task_timeout 后 success={success} phone={phone!r}",
+            flush=True,
+        )
         if success:
             tl(f"[INFO] 登录成功（第{attempt_no}/{max_attempts}次）· {phone}")
             return True, client, None
         try:
+            print(f"[_single_login] await client.stop() 前（超时失败分支）phone={phone!r}", flush=True)
             await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
+            print(f"[_single_login] await client.stop() 后（超时失败分支）phone={phone!r}", flush=True)
         except Exception:
             pass
         tl(f"[WARN] 登录失败（第{attempt_no}/{max_attempts}次）· 原因：超时 · {phone}")
         return False, None, "timeout"
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
+        print(f"[_single_login] 登录异常 phone={phone!r} exc={exc!r}", flush=True)
+        traceback.print_exc()
+        if db is not None and _is_pyrogram_banned_error(exc):
+            try:
+                mark_telegram_banned(
+                    account,
+                    datetime.now(timezone.utc),
+                    logger=log,
+                    task_notify=tl,
+                )
+                db.add(account)
+                db.commit()
+            except Exception:
+                log.exception("mark_telegram_banned failed phone=%s", phone)
+            try:
+                await _pyrogram_stop_after_failed_connect(client)
+            except Exception:
+                pass
+            return False, None, "telegram_banned"
         tl(
             f"[ERROR] 登录失败（第{attempt_no}/{max_attempts}次）· {phone} · {str(exc)[:280]}",
         )
         try:
+            print(f"[_single_login] await client.stop() 前（异常分支）phone={phone!r}", flush=True)
             await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
+            print(f"[_single_login] await client.stop() 后（异常分支）phone={phone!r}", flush=True)
         except Exception:
             pass
         return False, None, str(exc)
@@ -276,19 +368,30 @@ def _build_proxy(proxy_row: Proxy | None, proxy_type: str | None) -> dict[str, A
 
 
 async def _ensure_in_group(client: Client, group_username: str) -> tuple[bool, Any]:
+    print(f"[_ensure_in_group] await get_chat 前 {group_username!r}", flush=True)
     group = await client.get_chat(group_username)
+    print(f"[_ensure_in_group] await get_chat 后 id={getattr(group, 'id', None)}", flush=True)
+    print("[_ensure_in_group] await get_me 前", flush=True)
     me = await client.get_me()
+    print(f"[_ensure_in_group] await get_me 后 id={getattr(me, 'id', None)}", flush=True)
     try:
+        print("[_ensure_in_group] await get_chat_member(已在群?) 前", flush=True)
         await client.get_chat_member(group.id, me.id)
+        print("[_ensure_in_group] await get_chat_member 后 已在群", flush=True)
         return True, group
     except Exception:
         pass
     try:
+        print("[_ensure_in_group] await join_chat 前", flush=True)
         await client.join_chat(group_username)
+        print("[_ensure_in_group] await join_chat 后，sleep(2) 前", flush=True)
         await asyncio.sleep(2)
+        print("[_ensure_in_group] sleep(2) 后，get_chat_member 前", flush=True)
         await client.get_chat_member(group.id, me.id)
+        print("[_ensure_in_group] join 后校验成员 成功", flush=True)
         return True, group
     except Exception:
+        print("[_ensure_in_group] join/校验 失败分支", flush=True)
         return False, group
 
 
@@ -333,7 +436,7 @@ async def sync_groups_metadata(owner_id: int | None, force: bool, db) -> dict[st
     runnable: list[AccountFile] = []
     for row in account_rows:
         recover_and_normalize(row, now_utc)
-        if row.status == ST_RISK_SUSPECTED:
+        if row.status in (ST_RISK_SUSPECTED, ST_BANNED):
             continue
         if row.status == ST_COOLDOWN:
             continue
@@ -384,7 +487,12 @@ async def sync_groups_metadata(owner_id: int | None, force: bool, db) -> dict[st
                 attempt,
                 max_att,
                 _mlog,
+                db,
             )
+            if err == "telegram_banned":
+                logs.append(f"[INFO] 账号 {account.phone} 已封号（Telegram banned），跳过元数据同步")
+                client = None
+                continue
             if ok:
                 account.login_fail_count = 0
                 account.status = ST_NORMAL
@@ -474,16 +582,32 @@ async def sync_groups_metadata(owner_id: int | None, force: bool, db) -> dict[st
     return {"ok": True, "skipped": False, "updated": updated, "logs": logs, "account": used_phone}
 
 
-async def _sleep_while_running(total_sec: float, *, step: float = 1.0) -> bool:
-    """分片 sleep；若 RUNNING 为 False 则返回 False。"""
+async def _sleep_while_running(
+    total_sec: float,
+    *,
+    step: float = 1.0,
+    should_continue=None,
+) -> bool:
+    """分片 sleep；若 should_continue 返回 False 则返回 False。"""
+    sc = should_continue or task_run_should_continue
     deadline = time.monotonic() + max(0.0, float(total_sec))
+    first = True
     while time.monotonic() < deadline:
-        if not task_run_should_continue():
+        if not sc():
+            print("[_sleep_while_running] should_continue=False，提前结束", flush=True)
             return False
         remain = deadline - time.monotonic()
         if remain <= 0:
             break
+        if first:
+            print(
+                f"[_sleep_while_running] await asyncio.sleep 前 total_sec={total_sec} step={step}",
+                flush=True,
+            )
+            first = False
         await asyncio.sleep(min(float(step), remain))
+    if not first:
+        print("[_sleep_while_running] 分段 sleep 循环结束（正常耗尽或 continue）", flush=True)
     return True
 
 
@@ -516,13 +640,19 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(users, list) or not users:
         raise ValueError("users 必须是非空列表")
 
+    _run_task_dbg(
+        f"1 接收参数 groups={groups!r} users_count={len(users)} owner_id={owner_id} "
+        f"progress_job_id={config.get('progress_job_id')!r}",
+    )
     log.info(
         "run_task executing groups=%s users_count=%s owner_id=%s",
         groups,
         len(users),
         owner_id,
     )
+    _run_task_dbg("2 SessionLocal() 前")
     db = SessionLocal()
+    _run_task_dbg("3 SessionLocal() 后")
     updated = {"active": 0, "limited": 0, "banned": 0}
     now_utc = datetime.now(timezone.utc)
     process_logs: list[str] = []
@@ -532,6 +662,13 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
     highlight_connecting: str | None = None
     progress_job_id: str | None = config.get("progress_job_id")
     user_stopped = False
+
+    _should_cb = config.get("should_continue")
+    if _should_cb is not None:
+        def check_continue() -> bool:
+            return bool(_should_cb()) and task_run_should_continue()
+    else:
+        check_continue = task_run_should_continue
 
     def tl(msg: str) -> None:
         _task_log(process_logs, msg, progress_job_id)
@@ -551,7 +688,9 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
         hi = max(LOGIN_FAIL_DELAY_MIN_SEC, LOGIN_FAIL_DELAY_MAX_SEC)
         sec = random.randint(lo, hi)
         tl(wait_msg.format(sec=sec))
+        print(f"[run_task] _fail_wait_then_detail await asyncio.sleep({sec}) 前", flush=True)
         await asyncio.sleep(sec)
+        print("[run_task] _fail_wait_then_detail await asyncio.sleep 后", flush=True)
         tl(detail)
 
     try:
@@ -581,10 +720,11 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
         if not available_groups:
             raise ValueError("当前无可用目标群组（可能达到单日上限或处于禁用期）")
 
+        _run_task_dbg(f"4 可用群组 available_groups={available_groups!r}")
         runnable_accounts: list[AccountFile] = []
         for row in account_rows:
             recover_and_normalize(row, now_utc)
-            if row.status == ST_RISK_SUSPECTED:
+            if row.status in (ST_RISK_SUSPECTED, ST_BANNED):
                 updated["banned"] += 1
                 continue
             if row.status == ST_COOLDOWN:
@@ -601,13 +741,14 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
         if not runnable_accounts:
             raise ValueError("当前没有可执行的账号（账号受限或已封禁）")
 
+        _run_task_dbg(f"5 可执行账号数 runnable_accounts={len(runnable_accounts)}")
         default_group = available_groups[0]
         already_in_group_users = set(config.get("already_in_group_users", []))
         account_idx = 0
         user_idx = 0
 
         while user_idx < len(users):
-            if not task_run_should_continue():
+            if not check_continue():
                 user_stopped = True
                 tl("任务已中断")
                 tl("已停止")
@@ -628,7 +769,7 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
             if account.status == ST_COOLDOWN:
                 account_idx += 1
                 continue
-            if account.status == ST_RISK_SUSPECTED:
+            if account.status in (ST_RISK_SUSPECTED, ST_BANNED):
                 account_idx += 1
                 continue
             if account.status != ST_NORMAL:
@@ -652,6 +793,10 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
             proxy_obj = db.query(Proxy).filter(Proxy.id == account.proxy_id).first() if account.proxy_id else None
             proxy_dict = _build_proxy(proxy_obj, account.proxy_type)
             session_name = _resolve_session_name(account)
+            _run_task_dbg(
+                f"6 加载账号 session phone={account.phone!r} session_name={session_name!r} "
+                f"proxy={'yes' if proxy_dict else 'no'}",
+            )
             client: Client | None = None
             group = None
             try:
@@ -670,11 +815,15 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                 login_ok = False
                 last_login_err: str | None = None
                 for attempt in range(1, max_login_attempts + 1):
-                    if not task_run_should_continue():
+                    if not check_continue():
                         user_stopped = True
                         tl("任务已中断")
                         tl("已停止")
                         break
+                    _run_task_dbg(
+                        f"7 登录 connect：await _single_login_attempt 前 attempt={attempt}/{max_login_attempts} "
+                        f"phone={account.phone!r}",
+                    )
                     ok, client, err = await _single_login_attempt(
                         account,
                         session_name,
@@ -684,12 +833,22 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                         attempt,
                         max_login_attempts,
                         tl,
+                        db,
                     )
+                    _run_task_dbg(
+                        f"8 await _single_login_attempt 后 ok={ok} err={err!r} phone={account.phone!r}",
+                    )
+                    if err == "telegram_banned":
+                        last_login_err = err
+                        login_ok = False
+                        client = None
+                        break
                     if ok:
                         account.login_fail_count = 0
                         account.status = ST_NORMAL
                         account.limited_until = None
                         db.add(account)
+                        schedule_account_broadcast(account)
                         login_ok = True
                         _log_account_act(act_owner, account.phone, action="登录", status="成功", level="success")
                         break
@@ -704,57 +863,71 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                     th_pub()
                     if client:
                         try:
+                            _run_task_dbg("await client.stop() 前（user_stopped 登录循环内）")
                             await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
+                            _run_task_dbg("await client.stop() 后（user_stopped 登录循环内）")
                         except Exception:
                             pass
                     break
 
                 if not login_ok:
                     highlight_connecting = None
-                    mark_risk_login_failed(
-                        account,
-                        datetime.now(timezone.utc),
-                        logger=log,
-                        task_notify=tl,
-                        status_reason_cn=login_fail_reason_cn(last_login_err),
-                    )
-                    _log_account_act(
-                        act_owner,
-                        account.phone,
-                        action="登录",
-                        status=login_fail_reason_cn(last_login_err),
-                        level="error",
-                    )
-                    tag = "疑似风控"
-                    tl(
-                        f"[WARN] 账号 {account.phone} 登录失败（已达 {max_login_attempts} 次），标记为{tag}",
-                    )
-                    tl(f"[INFO] 跳过账号 {account.phone}，继续队列下一账号")
-                    tl("[INFO] 切换账号")
-                    tl("[INFO] 切换下一个账号")
-                    account.last_used_time = datetime.now(timezone.utc)
-                    highlight_previous = account.phone
-                    highlight_active = None
-                    db.add(account)
-                    th_pub()
-                    db.commit()
-                    client = None
+                    if last_login_err == "telegram_banned":
+                        highlight_previous = account.phone
+                        highlight_active = None
+                        th_pub()
+                        client = None
+                    else:
+                        mark_risk_login_failed(
+                            account,
+                            datetime.now(timezone.utc),
+                            logger=log,
+                            task_notify=tl,
+                            status_reason_cn=login_fail_reason_cn(last_login_err),
+                        )
+                        _log_account_act(
+                            act_owner,
+                            account.phone,
+                            action="登录",
+                            status=login_fail_reason_cn(last_login_err),
+                            level="error",
+                        )
+                        tag = "疑似风控"
+                        tl(
+                            f"[WARN] 账号 {account.phone} 登录失败（已达 {max_login_attempts} 次），标记为{tag}",
+                        )
+                        tl(f"[INFO] 跳过账号 {account.phone}，继续队列下一账号")
+                        tl("[INFO] 切换账号")
+                        tl("[INFO] 切换下一个账号")
+                        account.last_used_time = datetime.now(timezone.utc)
+                        highlight_previous = account.phone
+                        highlight_active = None
+                        db.add(account)
+                        th_pub()
+                        db.commit()
+                        client = None
 
                 if login_ok:
                     highlight_connecting = None
                     th_pub()
                     tl(f"账号 {account.phone} Telegram 会话已建立，正在校验目标群组并尝试入群…")
-                    if not task_run_should_continue():
+                    if not check_continue():
                         user_stopped = True
                         tl("任务已中断")
                         tl("已停止")
                     else:
                         try:
+                            _run_task_dbg(
+                                f"9 执行入群校验 await _ensure_in_group 前 group={default_group!r} "
+                                f"phone={account.phone!r}",
+                            )
                             ok_in_group, group = await asyncio.wait_for(
                                 _ensure_in_group(client, default_group),
                                 timeout=TELEGRAM_ENSURE_GROUP_TIMEOUT,
                             )
+                            _run_task_dbg(f"10 await _ensure_in_group 后 ok_in_group={ok_in_group}")
                         except asyncio.TimeoutError:
+                            _run_task_dbg("9b _ensure_in_group asyncio.TimeoutError（入群校验超时）")
                             highlight_connecting = None
                             account.error_count = (account.error_count or 0) + 1
                             account.last_used_time = datetime.now(timezone.utc)
@@ -790,7 +963,7 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                         switch_account = False
 
                         while user_idx < len(users):
-                            if not task_run_should_continue():
+                            if not check_continue():
                                 user_stopped = True
                                 tl("任务已中断")
                                 tl("已停止")
@@ -806,26 +979,33 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
 
                             tl(f"[{i}/{len(users)}] 使用账号 {account.phone} 处理用户 {target_user}")
                             try:
-                                if not task_run_should_continue():
+                                if not check_continue():
                                     user_stopped = True
                                     tl("任务已中断")
                                     tl("已停止")
                                     break
+                                _run_task_dbg(f"11 拉人 await client.get_users 前 target={target_user!r}")
                                 user_obj = await client.get_users(target_user)
+                                _run_task_dbg("12 await client.get_users 后，_is_user_in_group 前")
                                 if await _is_user_in_group(client, group.id, target_user, getattr(user_obj, "id", None)):
                                     summary["skipped"] += 1
                                     tl(f"用户 {target_user} 已在群组 {default_group}，跳过")
                                     user_idx += 1
                                     continue
 
-                                if not task_run_should_continue():
+                                if not check_continue():
                                     user_stopped = True
                                     tl("任务已中断")
                                     tl("已停止")
                                     break
                                 account.invite_try_today = (account.invite_try_today or 0) + 1
                                 db.add(account)
+                                _run_task_dbg(
+                                    f"13 拉人 await client.add_chat_members 前 "
+                                    f"group_id={group.id} user_id={getattr(user_obj, 'id', None)}",
+                                )
                                 await client.add_chat_members(group.id, [user_obj.id])
+                                _run_task_dbg("14 await client.add_chat_members 后")
                                 summary["success"] += 1
                                 account.status = ST_NORMAL
                                 account.today_count = (account.today_count or 0) + 1
@@ -856,11 +1036,13 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                 )
                                 tl(f"用户 {target_user} 拉入群组 {default_group} 成功，开始执行 60 秒间隔（结束后再处理下一名）")
                                 t_wait = time.monotonic()
-                                if not await _sleep_while_running(60.0):
+                                _run_task_dbg("15 await _sleep_while_running(60s) 前")
+                                if not await _sleep_while_running(60.0, should_continue=check_continue):
                                     user_stopped = True
                                     tl("任务已中断")
                                     tl("已停止")
                                     break
+                                _run_task_dbg("16 await _sleep_while_running(60s) 后（未中断）")
                                 waited = int(time.monotonic() - t_wait)
                                 tl(f"60 秒间隔结束（实际等待 {waited}s），继续处理队列")
                                 skip_short_sleep = True
@@ -961,10 +1143,16 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                     user_idx += 1
                             finally:
                                 if not skip_short_sleep:
-                                    if not await _sleep_while_running(float(random.randint(1, 2))):
+                                    _run_task_dbg("17 await _sleep_while_running(短间隔) 前")
+                                    if not await _sleep_while_running(
+                                        float(random.randint(1, 2)),
+                                        should_continue=check_continue,
+                                    ):
                                         user_stopped = True
                                         tl("任务已中断")
                                         tl("已停止")
+                                    else:
+                                        _run_task_dbg("18 await _sleep_while_running(短间隔) 后")
 
                         if not switch_account and user_idx >= len(users):
                             tl(f"账号 {account.phone} 用户队列处理完成")
@@ -1011,7 +1199,9 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
             finally:
                 if client:
                     try:
+                        _run_task_dbg(f"await client.stop() 前（单账号轮次 finally） phone={account.phone!r}")
                         await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
+                        _run_task_dbg("await client.stop() 后（单账号轮次 finally）")
                     except (asyncio.TimeoutError, Exception):
                         pass
                 try:
@@ -1021,8 +1211,15 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
             account_idx += 1
 
         db.commit()
+        _run_task_dbg("主循环结束，db.commit(最终) 完成")
+    except Exception:
+        _run_task_dbg("run_task 主 try 捕获异常，打印 traceback 后上抛")
+        traceback.print_exc()
+        raise
     finally:
+        _run_task_dbg("run_task finally: db.close() 前")
         db.close()
+        _run_task_dbg("run_task finally: db.close() 后")
 
     log.info("run_task finished groups=%s updated=%s stopped=%s", groups, updated, user_stopped)
     for line in process_logs:

@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from auth import require_user_or_admin
+from auth import get_current_user_optional, require_user_or_admin
 from database import get_db
 from models import Group, Setting, User
 from services.daily_reset import perform_daily_reset_if_needed
@@ -48,7 +50,7 @@ async def sync_group_metadata(
 
 
 @router.get("/groups")
-def list_groups(_user: User = Depends(require_user_or_admin), db: Session = Depends(get_db)) -> dict:
+def list_groups(_user: User | None = Depends(get_current_user_optional), db: Session = Depends(get_db)) -> dict:
     perform_daily_reset_if_needed(db)
     now_utc = datetime.now(timezone.utc)
     sync_row = db.query(Setting).filter(Setting.key == GROUP_METADATA_SYNC_KEY).first()

@@ -1,16 +1,13 @@
 """
-Copy 转发：Telethon（Bot）监听源频道/群，HTTP Bot API copyMessage 发到目标。
+Copy 转发：Telethon（Bot）session 监听源频道/群，同 session 以 MTProto 转发到目标（drop_author）。
 支持多任务并行、同 Bot 复用、暂停/恢复、启动时自动恢复 running 任务。
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import threading
-import urllib.error
-import urllib.request
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,15 +27,26 @@ log = logging.getLogger("copy_forward")
 SESSIONS_DIR = Path(__file__).resolve().parent.parent / "sessions"
 
 
+def normalize_session_name(session_name: str | None) -> str | None:
+    """库中可能误存为 xxx.session，统一为不含后缀的逻辑名。"""
+    if not session_name:
+        return None
+    s = str(session_name).strip()
+    if s.lower().endswith(".session"):
+        s = s[: -len(".session")].strip()
+    return s or None
+
+
 def session_file_path(session_name: str) -> Path:
-    sn = (session_name or "").strip()
+    sn = normalize_session_name(session_name) or ""
     return SESSIONS_DIR / f"{sn}.session"
 
 
 def session_file_exists(session_name: str | None) -> bool:
-    if not session_name or not str(session_name).strip():
+    sn = normalize_session_name(session_name)
+    if not sn:
         return False
-    return session_file_path(str(session_name).strip()).is_file()
+    return session_file_path(sn).is_file()
 
 
 def bot_session_ready(bot: CopyBot) -> bool:
@@ -46,7 +54,12 @@ def bot_session_ready(bot: CopyBot) -> bool:
 
 
 def reconcile_copy_bot_session_name(bot: CopyBot, db: Session) -> None:
-    """若磁盘上已有 bot_{id}.session 但库中未记录，自动补全 session_name（兼容旧数据）。"""
+    """补全 session_name：支持 bot_{id}.session、{api_id}.session（手动放入目录）。"""
+    fixed = normalize_session_name(getattr(bot, "session_name", None))
+    if fixed and fixed != (bot.session_name or "").strip():
+        bot.session_name = fixed
+        db.add(bot)
+        db.commit()
     if bot_session_ready(bot):
         return
     cand = f"bot_{bot.id}"
@@ -54,13 +67,20 @@ def reconcile_copy_bot_session_name(bot: CopyBot, db: Session) -> None:
         bot.session_name = cand
         db.add(bot)
         db.commit()
+        return
+    api_cand = str(int(bot.api_id))
+    if session_file_exists(api_cand):
+        bot.session_name = api_cand
+        db.add(bot)
+        db.commit()
 
 
 def bootstrap_new_bot_session(bot_id: int, api_id: int, api_hash: str, bot_token: str) -> str:
-    """首次用 BOT_TOKEN 登录并写入本地 session 文件，返回 session_name（如 bot_12）。"""
+    """用 BOT_TOKEN 首次登录 Telegram，写入 backend/sessions/bot_{id}.session，返回 session_name。"""
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     name = f"bot_{bot_id}"
     base = SESSIONS_DIR / name
+    _append_log("info", f"录入 Bot | 清理旧文件并准备登录 Telegram，目标 session：{name}", bot_id=bot_id)
     for p in SESSIONS_DIR.glob(f"{name}.session*"):
         try:
             p.unlink()
@@ -68,34 +88,70 @@ def bootstrap_new_bot_session(bot_id: int, api_id: int, api_hash: str, bot_token
             pass
 
     async def _go() -> None:
+        _append_log("info", f"录入 Bot | 正在连接 Telegram（bot_token 登录）…", bot_id=bot_id)
         c = TelegramClient(str(base), int(api_id), api_hash.strip())
-        await c.start(bot_token=bot_token.strip())
-        await c.disconnect()
+        try:
+            await c.start(bot_token=bot_token.strip())
+            if not await c.is_user_authorized():
+                raise RuntimeError("登录后仍未授权，请检查 bot_token 与 api_id/api_hash 是否匹配")
+            me = await c.get_me()
+            who = f"id={me.id}" + (f" @{me.username}" if getattr(me, "username", None) else "")
+            _append_log("info", f"录入 Bot | 登录成功，账号 {who} bot={bool(getattr(me, 'bot', False))}", bot_id=bot_id)
+        finally:
+            try:
+                await c.disconnect()
+            except Exception:
+                log.debug("bootstrap disconnect", exc_info=True)
 
     asyncio.run(_go())
     if not session_file_exists(name):
         raise RuntimeError("session 文件未生成")
+    _append_log("info", f"录入 Bot | 已写入 {name}.session", bot_id=bot_id)
     return name
 
 
-def verify_session_connect(api_id: int, api_hash: str, session_name: str) -> None:
+def verify_session_connect(
+    api_id: int,
+    api_hash: str,
+    session_name: str,
+    *,
+    bot_id: int | None = None,
+) -> dict[str, Any]:
+    """connect → is_user_authorized → get_me；失败抛错，成功返回账号摘要。"""
+    sn = normalize_session_name(session_name) or ""
+    path = session_file_path(sn)
+    bid = bot_id
+    _append_log("info", f"校验 session | 逻辑名={sn!r} 路径存在={path.is_file()}", bot_id=bid)
+
     if not session_file_exists(session_name):
         raise RuntimeError("session 文件不存在")
-    base = str(SESSIONS_DIR / session_name.strip())
 
-    async def _go() -> None:
+    base = str(SESSIONS_DIR / sn)
+
+    async def _go() -> dict[str, Any]:
+        _append_log("info", "校验 session | Telethon.connect() …", bot_id=bid)
         c = TelegramClient(base, int(api_id), api_hash.strip())
         try:
             await c.connect()
-            if not await c.is_user_authorized():
+            ok = await c.is_user_authorized()
+            _append_log("info", f"校验 session | 连接结果 authorized={ok}", bot_id=bid)
+            if not ok:
                 raise RuntimeError("session 无效或未授权")
+            me = await c.get_me()
+            who = f"id={me.id}" + (f" @{me.username}" if getattr(me, "username", None) else "")
+            _append_log("info", f"校验 session | get_me() → {who} bot={bool(getattr(me, 'bot', False))}", bot_id=bid)
+            return {
+                "id": me.id,
+                "username": getattr(me, "username", None),
+                "is_bot": bool(getattr(me, "bot", False)),
+            }
         finally:
             try:
                 await c.disconnect()
             except Exception:
                 log.debug("verify_session disconnect", exc_info=True)
 
-    asyncio.run(_go())
+    return asyncio.run(_go())
 
 LOG_CAP = 500
 _log_deque: deque[dict[str, Any]] = deque(maxlen=LOG_CAP)
@@ -147,48 +203,6 @@ def _utc_day() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _bot_api_copy_message(
-    token: str,
-    chat_id: int,
-    from_chat_id: int,
-    message_id: int,
-    *,
-    retries: int = 3,
-) -> dict[str, Any]:
-    url = f"https://api.telegram.org/bot{token}/copyMessage"
-    payload = json.dumps(
-        {
-            "chat_id": chat_id,
-            "from_chat_id": from_chat_id,
-            "message_id": message_id,
-        }
-    ).encode("utf-8")
-    last_err: Exception | None = None
-    delay = 1.0
-    for attempt in range(retries):
-        try:
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-            if not body.get("ok"):
-                desc = body.get("description") or str(body)
-                raise RuntimeError(desc)
-            return body
-        except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
-            last_err = e
-            if attempt < retries - 1:
-                import time
-
-                time.sleep(delay)
-                delay = min(delay * 2, 8.0)
-    raise last_err or RuntimeError("copyMessage failed")
-
-
 def _mark_bot_error(db: Session, bot: CopyBot, msg: str) -> None:
     bot.status = "error"
     bot.last_error = msg[:2000]
@@ -232,7 +246,11 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
     chat_id = int(event.chat_id)
     async with _registry_lock:
         tids = list(_source_index.get(bot_id, {}).get(chat_id, []))
+        client = _bot_clients.get(bot_id)
     if not tids:
+        return
+    if not client:
+        _append_log("warn", f"收到新消息但 Telethon 客户端未就绪（bot_id={bot_id}），跳过", bot_id=bot_id)
         return
 
     db = SessionLocal()
@@ -240,7 +258,6 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
         bot = db.query(CopyBot).filter(CopyBot.id == bot_id).first()
         if not bot or bot.status != "active":
             return
-        token = bot.bot_token.strip()
 
         for task_id in tids:
             rt = _runtime.get(task_id)
@@ -265,22 +282,31 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
 
             tgt = int(rt["target_id"])
             try:
-                await asyncio.to_thread(
-                    _bot_api_copy_message,
-                    token,
+                if not client.is_connected():
+                    _append_log("warn", f"转发前重连 Telethon | task={task_id}", task_id=task_id, bot_id=bot_id)
+                    await client.connect()
+                await client.forward_messages(
                     tgt,
-                    chat_id,
                     msg_id,
+                    from_peer=chat_id,
+                    drop_author=True,
+                    silent=True,
                 )
             except Exception as exc:
                 err = str(exc)
-                _append_log("error", f"copyMessage 失败: {err}", task_id=task_id, bot_id=bot_id)
-                if "Unauthorized" in err or "401" in err or "not valid" in err.lower():
-                    _mark_bot_error(db, bot, "Bot Token 无效或已失效")
-                    _mark_task_error(db, task, "Bot Token 失效")
-                    await pause_task(task_id, reason="bot_token_invalid")
+                _append_log("error", f"session 转发失败: {err}", task_id=task_id, bot_id=bot_id)
+                if (
+                    "AUTH_KEY" in err
+                    or "SESSION" in err.upper()
+                    or "401" in err
+                    or "not authorized" in err.lower()
+                    or "USER_DEACTIVATED" in err
+                ):
+                    _mark_bot_error(db, bot, f"Session 失效或账号异常: {err[:200]}")
+                    _mark_task_error(db, task, "Session 失效，请重新登录或导入 session")
+                    await pause_task(task_id, reason="session_invalid")
                     return
-                if "chat not found" in err.lower() or "PEER_ID_INVALID" in err:
+                if "chat not found" in err.lower() or "PEER_ID_INVALID" in err or "CHANNEL_PRIVATE" in err:
                     _mark_task_error(db, task, "目标或来源频道不可用/无权限")
                 task.last_error = err[:500]
                 db.add(task)
@@ -300,7 +326,7 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
             db.commit()
             _append_log(
                 "info",
-                f"已转发 msg_id={msg_id} → target {tgt}",
+                f"已通过 session 转发 msg_id={msg_id} → target {tgt}",
                 task_id=task_id,
                 bot_id=bot_id,
             )
@@ -330,13 +356,13 @@ async def _ensure_client(bot_id: int) -> TelegramClient | None:
         reconcile_copy_bot_session_name(row, db)
         api_id = int(row.api_id)
         api_hash = row.api_hash.strip()
-        sn = (row.session_name or "").strip()
+        sn = normalize_session_name(row.session_name) or ""
     finally:
         db.close()
 
     if not sn or not session_file_exists(sn):
         msg = "未生成 session 或 session 文件缺失，请重新创建 Bot 或导入 session"
-        _append_log("error", msg, bot_id=bot_id)
+        _append_log("error", f"加载 session | {msg} session_name={sn!r}", bot_id=bot_id)
         db2 = SessionLocal()
         try:
             row2 = db2.query(CopyBot).filter(CopyBot.id == bot_id).first()
@@ -347,17 +373,23 @@ async def _ensure_client(bot_id: int) -> TelegramClient | None:
         return None
 
     base = str(SESSIONS_DIR / sn)
+    _append_log("info", f"加载 session | 使用文件 {sn}.session，正在 connect() …", bot_id=bot_id)
     try:
         client = TelegramClient(base, api_id, api_hash)
         await client.connect()
-        if not await client.is_user_authorized():
+        auth = await client.is_user_authorized()
+        _append_log("info", f"加载 session | connect 完成 authorized={auth}", bot_id=bot_id)
+        if not auth:
             await client.disconnect()
             raise RuntimeError("session 未授权或已失效")
+        me = await client.get_me()
+        who = f"id={me.id}" + (f" @{me.username}" if getattr(me, "username", None) else "")
+        _append_log("info", f"加载 session | get_me() → {who} bot={bool(getattr(me, 'bot', False))}", bot_id=bot_id)
         _bot_clients[bot_id] = client
 
         h = _make_handler(bot_id)
         client.add_event_handler(h, events.NewMessage(incoming=True))
-        _append_log("info", f"Telethon 已连接（session）bot_id={bot_id}", bot_id=bot_id)
+        _append_log("info", f"Telethon 已连接并注册 NewMessage 监听 bot_id={bot_id}", bot_id=bot_id)
         return client
     except Exception as exc:
         _append_log("error", f"连接 Bot(session) 失败: {exc}", bot_id=bot_id)
@@ -495,7 +527,12 @@ async def start_task(task_id: int) -> dict[str, Any]:
             _bot_task_ids.setdefault(bot.id, set()).add(task_id)
             _active_task_ids.add(task_id)
 
-        _append_log("info", f"任务启动成功 source={src_id} target={tgt_id}", task_id=task_id, bot_id=bot.id)
+        _append_log(
+            "info",
+            f"任务启动成功 source={src_id} target={tgt_id}（监听与转发均使用 Telethon session，不使用 bot_token）",
+            task_id=task_id,
+            bot_id=bot.id,
+        )
         return {"ok": True, "message": "已启动"}
     finally:
         db.close()

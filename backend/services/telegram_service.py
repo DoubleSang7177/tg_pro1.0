@@ -32,7 +32,7 @@ from services.account_status import (
     recover_and_normalize,
 )
 from services.account_activity_log import record_account_activity as _record_account_activity
-from services.task_progress import progress_append, progress_highlight_publish
+from services.task_progress import progress_append, progress_event_append, progress_highlight_publish
 from services.account_realtime import schedule_account_broadcast
 from services.task_run_control import task_run_should_continue
 
@@ -976,10 +976,14 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                             if target_user in already_in_group_users:
                                 summary["skipped"] += 1
                                 tl(f"[{i}/{len(users)}] 用户 {target_user} 已在群里，跳过")
+                                if progress_job_id:
+                                    progress_event_append(progress_job_id, str(target_user), "done")
                                 user_idx += 1
                                 continue
 
                             tl(f"[{i}/{len(users)}] 使用账号 {account.phone} 处理用户 {target_user}")
+                            if progress_job_id:
+                                progress_event_append(progress_job_id, str(target_user), "processing")
                             try:
                                 if not check_continue():
                                     user_stopped = True
@@ -992,6 +996,8 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                 if await _is_user_in_group(client, group.id, target_user, getattr(user_obj, "id", None)):
                                     summary["skipped"] += 1
                                     tl(f"用户 {target_user} 已在群组 {default_group}，跳过")
+                                    if progress_job_id:
+                                        progress_event_append(progress_job_id, str(target_user), "done")
                                     user_idx += 1
                                     continue
 
@@ -1037,6 +1043,8 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                     level="success",
                                 )
                                 tl(f"用户 {target_user} 拉入群组 {default_group} 成功，开始执行 60 秒间隔（结束后再处理下一名）")
+                                if progress_job_id:
+                                    progress_event_append(progress_job_id, str(target_user), "done")
                                 t_wait = time.monotonic()
                                 _run_task_dbg("15 await _sleep_while_running(60s) 前")
                                 if not await _sleep_while_running(60.0, should_continue=check_continue):
@@ -1116,10 +1124,14 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                         db.add(group_row)
                                     summary["failed"] += 1
                                     tl(f"用户 {target_user} 失败: 目标群组受限")
+                                    if progress_job_id:
+                                        progress_event_append(progress_job_id, str(target_user), "done")
                                     user_idx += 1
                                 elif isinstance(exc, FloodWait):
                                     summary["failed"] += 1
                                     tl(f"用户 {target_user} 失败: FloodWait {exc.value}s")
+                                    if progress_job_id:
+                                        progress_event_append(progress_job_id, str(target_user), "done")
                                     user_idx += 1
                                 elif reason == "user_issue":
                                     summary["failed"] += 1
@@ -1131,6 +1143,8 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                         level="info",
                                     )
                                     tl(f"用户 {target_user} 失败: 用户本身问题")
+                                    if progress_job_id:
+                                        progress_event_append(progress_job_id, str(target_user), "done")
                                     user_idx += 1
                                 else:
                                     summary["failed"] += 1
@@ -1142,6 +1156,8 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                         level="warn",
                                     )
                                     tl(f"用户 {target_user} 失败: {reason} {exc}")
+                                    if progress_job_id:
+                                        progress_event_append(progress_job_id, str(target_user), "done")
                                     user_idx += 1
                             finally:
                                 if not skip_short_sleep:

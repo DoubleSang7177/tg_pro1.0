@@ -1096,6 +1096,20 @@ body::after {
   opacity: 0.65;
 }
 
+@keyframes growth-processing-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.22);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(56, 189, 248, 0.55), 0 0 24px rgba(96, 165, 250, 0.3);
+  }
+}
+
+.growth-processing-user-pill {
+  animation: growth-processing-breathe 1.7s ease-in-out infinite;
+}
+
 .task-status-chip {
   display: inline-flex;
   flex-direction: column;

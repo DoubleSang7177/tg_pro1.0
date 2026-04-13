@@ -17,6 +17,7 @@ from models import TaskRecord, User
 from services.task_progress import (
     progress_append,
     progress_discard,
+    progress_events_snapshot,
     progress_highlight_snapshot,
     progress_init,
     progress_snapshot,
@@ -206,6 +207,7 @@ def task_job_status(
         "users_count": job.get("users_count"),
         "error": job.get("error"),
         "progress_logs": progress_snapshot(job_id),
+        "progress_events": progress_events_snapshot(job_id),
         "highlight_active_phone": hl["active_phone"],
         "highlight_previous_phone": hl["previous_phone"],
         "highlight_connecting_phone": hl["connecting_phone"],

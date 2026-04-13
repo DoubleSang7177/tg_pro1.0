@@ -1692,6 +1692,12 @@ export default function App() {
   const [lastGroupMetadataSync, setLastGroupMetadataSync] = useState(null);
   const [taskRunning, setTaskRunning] = useState(false);
   const growthJobIdRef = useRef(null);
+  const growthProgressEventCursorRef = useRef(0);
+  const [pendingUsers, setPendingUsers] = useState([]);
+  const [processingUser, setProcessingUser] = useState("");
+  const [doneUsers, setDoneUsers] = useState([]);
+  const [growthTotalUsers, setGrowthTotalUsers] = useState(0);
+  const [completedGroups, setCompletedGroups] = useState([]);
   /** 用户增长 [i/n] 进度，供侧栏监控在任务收尾帧读取 */
   const growthQueueRef = useRef({ qi: 0, qn: 0 });
   const stopGrowthLoadingRef = useRef(false);
@@ -2036,13 +2042,15 @@ export default function App() {
       { value: "", label: "选择群组…" },
       ...availableGroups.map((username) => {
         const gi = groups.find((x) => x.username === username);
-        const label = gi
+        const baseLabel = gi
           ? `${gi.title || gi.username} (${gi.display_handle || gi.username})`
           : username;
+        const doneTag = completedGroups.includes(username) ? " ✔ 已完成" : "";
+        const label = `${baseLabel}${doneTag}`;
         return { value: username, label };
       }),
     ],
-    [availableGroups, groups],
+    [availableGroups, completedGroups, groups],
   );
 
   const forceCandidateDropdownOptions = useMemo(
@@ -2634,6 +2642,11 @@ export default function App() {
     setEngagementRegisterLoading(false);
     setGrowthExecSnapshot(null);
     setGrowthTaskStoppedUi(false);
+    setPendingUsers([]);
+    setProcessingUser("");
+    setDoneUsers([]);
+    setGrowthTotalUsers(0);
+    setCompletedGroups([]);
     setSystemBanner("");
     setMsg("");
     refreshBase({ skipMetadataSync: true }).catch(() => {});
@@ -2657,6 +2670,24 @@ export default function App() {
     }
   };
 
+  const applyGrowthProgressEvents = useCallback((events) => {
+    if (!Array.isArray(events) || events.length === 0) return;
+    for (const ev of events) {
+      if (!ev || ev.type !== "progress") continue;
+      const user = String(ev.user || "").trim();
+      const status = String(ev.status || "").trim().toLowerCase();
+      if (!user) continue;
+      if (status === "processing") {
+        setProcessingUser(user);
+        setPendingUsers((prev) => prev.filter((x) => x !== user));
+      } else if (status === "done") {
+        setDoneUsers((prev) => (prev.includes(user) ? prev : [...prev, user]));
+        setPendingUsers((prev) => prev.filter((x) => x !== user));
+        setProcessingUser((prev) => (prev === user ? "" : prev));
+      }
+    }
+  }, []);
+
   const onStopRunningTask = async () => {
     if (!guardLoggedIn()) return;
     if (stopGrowthLoadingRef.current) return;
@@ -2672,10 +2703,9 @@ export default function App() {
       appendLog("stop-task | 已发送停止请求");
       pushToast("已发送停止请求");
     } catch (e) {
-      pushToast(e.message);
-    } finally {
       stopGrowthLoadingRef.current = false;
       setStopGrowthLoading(false);
+      pushToast(e.message);
     }
   };
 
@@ -2697,6 +2727,11 @@ export default function App() {
     setGrowthTaskStoppedUi(false);
     setTaskRunning(true);
     setTaskPanelPhase("running");
+    setPendingUsers(parsedUsers);
+    setProcessingUser("");
+    setDoneUsers([]);
+    setGrowthTotalUsers(parsedUsers.length);
+    growthProgressEventCursorRef.current = 0;
     growthQueueRef.current = { qi: 0, qn: 0 };
     setGrowthExecSnapshot({
       uiStatus: "WAITING",
@@ -2739,6 +2774,11 @@ export default function App() {
           connecting: st.highlight_connecting_phone ?? null,
         });
         const pl = st.progress_logs || [];
+        const evs = Array.isArray(st.progress_events) ? st.progress_events : [];
+        if (evs.length > growthProgressEventCursorRef.current) {
+          applyGrowthProgressEvents(evs.slice(growthProgressEventCursorRef.current));
+          growthProgressEventCursorRef.current = evs.length;
+        }
         const parsedProg = parseGrowthTaskProgressLines(pl);
         const conn = st.highlight_connecting_phone ?? null;
         const act = st.highlight_active_phone ?? null;
@@ -2820,6 +2860,7 @@ export default function App() {
       if (taskPanelPhaseTimerRef.current) clearTimeout(taskPanelPhaseTimerRef.current);
       setTaskPanelPhase(wasStopped ? "ready" : "completed");
       if (!wasStopped) {
+        setCompletedGroups((prev) => (selectedGroup && !prev.includes(selectedGroup) ? [...prev, selectedGroup] : prev));
         taskPanelPhaseTimerRef.current = window.setTimeout(() => setTaskPanelPhase("ready"), 6000);
       }
       await refreshBase();
@@ -2842,7 +2883,10 @@ export default function App() {
       appendLog(`任务失败 | ${e.message}`);
       pushToast(e.message);
     } finally {
+      stopGrowthLoadingRef.current = false;
+      setStopGrowthLoading(false);
       growthJobIdRef.current = null;
+      setProcessingUser("");
       setTaskRunning(false);
     }
   };
@@ -3482,6 +3526,10 @@ export default function App() {
 
   const op = !!profile;
   const guestTitle = "请先登录";
+  const isRunning = taskRunning;
+  const doneCount = doneUsers.length;
+  const totalCount = growthTotalUsers;
+  const donePercent = totalCount > 0 ? Math.min(100, Math.round((doneCount / totalCount) * 100)) : 0;
 
   return (
     <>
@@ -3871,7 +3919,7 @@ export default function App() {
                         </div>
                         <TaskControlStatusBar phase={taskPanelPhase} />
                       </div>
-                      <div className="flex flex-col gap-5">
+                      <div className={`flex flex-col gap-5 transition-opacity ${isRunning ? "opacity-50" : ""}`}>
                         <div className="flex flex-wrap items-end gap-2 gap-y-3">
                           <div className="flex min-w-[200px] flex-1 flex-col gap-1.5">
                             <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -3884,6 +3932,7 @@ export default function App() {
                               options={selectedGroupDropdownOptions}
                               placeholder="选择群组…"
                               searchable
+                              disabled={isRunning}
                               className="w-full"
                             />
                           </div>
@@ -3898,6 +3947,7 @@ export default function App() {
                               options={forceCandidateDropdownOptions}
                               placeholder="隐藏群组…"
                               searchable
+                              disabled={isRunning}
                               className="w-full"
                             />
                           </div>
@@ -3905,7 +3955,7 @@ export default function App() {
                             <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
                               <button
                                 type="button"
-                                disabled={!op}
+                                disabled={!op || isRunning}
                                 className="rounded-xl border border-[#00AFFF]/35 bg-[rgba(0,175,255,0.1)] px-3 py-2 text-sm font-bold text-sky-200 shadow-[0_0_16px_rgba(0,175,255,0.2)] transition hover:scale-105 hover:border-[#7A5CFF]/40 hover:shadow-[0_0_28px_rgba(122,92,255,0.3)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100"
                                 onClick={onForceAddGroup}
                               >
@@ -3915,7 +3965,7 @@ export default function App() {
                             <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
                               <button
                                 type="button"
-                                disabled={!op}
+                                disabled={!op || isRunning}
                                 className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-300 shadow-[0_0_12px_rgba(251,113,133,0.15)] transition hover:scale-105 hover:shadow-[0_0_24px_rgba(251,113,133,0.28)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100"
                                 onClick={onRemoveGroup}
                               >
@@ -3933,9 +3983,52 @@ export default function App() {
                             rows={4}
                             placeholder="每行一个 @username 或用户标识…"
                             value={form.users}
+                            disabled={isRunning}
                             onChange={(e) => setForm((v) => ({ ...v, users: e.target.value }))}
                           />
                         </label>
+                        <div className="rounded-xl border border-cyan-400/15 bg-[rgba(5,16,28,0.5)] px-3 py-2.5">
+                          <div className="mb-2 flex items-center justify-between gap-3 text-xs">
+                            <span className="text-slate-400">已完成 / 总数</span>
+                            <span className="font-mono tabular-nums text-cyan-200">{doneCount} / {totalCount}</span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
+                            <div
+                              className="h-full transition-all duration-500"
+                              style={{
+                                width: `${donePercent}%`,
+                                background: "linear-gradient(90deg, #00f0ff, #8a2eff)",
+                              }}
+                            />
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                            <span className="text-slate-500">当前执行：</span>
+                            <span
+                              className={`rounded-md border px-2 py-0.5 font-mono tabular-nums ${
+                                processingUser
+                                  ? "border-sky-400/45 bg-sky-500/12 text-sky-200 growth-processing-user-pill"
+                                  : "border-white/10 bg-white/[0.04] text-slate-500"
+                              }`}
+                            >
+                              {processingUser || "—"}
+                            </span>
+                            {isRunning ? (
+                              <span className="ml-auto rounded-full border border-amber-300/30 bg-amber-400/10 px-2 py-0.5 text-[11px] font-medium text-amber-200">
+                                🔒 执行中（配置已锁定）
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="mt-2 flex max-h-[90px] flex-wrap gap-1.5 overflow-y-auto growth-scroll">
+                            {pendingUsers.map((u) => (
+                              <span key={u} className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-0.5 font-mono text-[11px] text-slate-300">
+                                {u}
+                              </span>
+                            ))}
+                            {!pendingUsers.length ? (
+                              <span className="text-[11px] text-slate-500">待处理队列为空</span>
+                            ) : null}
+                          </div>
+                        </div>
                         <div className="flex flex-wrap items-center gap-3">
                           <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
                             {(() => {
@@ -3959,7 +4052,7 @@ export default function App() {
                                 stopGrowthLoading ? (
                                   <>
                                     <UiSpinner tone="primary" />
-                                    停止中…
+                                    正在停止...
                                   </>
                                 ) : (
                                   "停止"

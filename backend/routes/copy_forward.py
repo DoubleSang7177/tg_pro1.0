@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session, joinedload
 
 from auth import get_current_user_optional, require_admin, require_user_or_admin
 from database import get_db
-from models import CopyBot, CopyTask, ForwardRecord, User
+from models import CopyBot, CopyListenerAccount, CopyTask, ForwardRecord, User
 from services import copy_forward_service as cfs
+from services import copy_listener_service as cls
 
 router = APIRouter(prefix="/copy", tags=["copy_forward"])
 
@@ -37,8 +38,6 @@ def _copy_task_with_owner(db: Session, task_id: int) -> CopyTask | None:
 
 
 class CopyBotCreate(BaseModel):
-    api_id: int = Field(..., ge=1)
-    api_hash: str = Field(..., min_length=8, max_length=64)
     bot_token: str = Field(..., min_length=20, max_length=256)
 
 
@@ -46,6 +45,18 @@ class CopyTaskCreate(BaseModel):
     source_channel: str = Field(..., min_length=1, max_length=255)
     target_channel: str = Field(..., min_length=1, max_length=255)
     bot_id: int = Field(..., ge=1)
+    listener_id: int | None = Field(None, ge=1)
+
+
+class ListenerSendCodeBody(BaseModel):
+    phone: str = Field(..., min_length=5)
+
+
+class ListenerLoginBody(BaseModel):
+    phone: str = Field(..., min_length=5)
+    code: str = Field("", max_length=32)
+    phone_code_hash: str = Field("")
+    password: str | None = Field(None, max_length=256)
 
 
 def _mask(s: str, keep: int = 4) -> str:
@@ -65,6 +76,7 @@ def _task_to_dict(r: CopyTask, day: str) -> dict:
         "source_channel": r.source_channel,
         "target_channel": r.target_channel,
         "bot_id": r.bot_id,
+        "listener_id": r.listener_id,
         "status": r.status,
         "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
         "last_error": r.last_error,
@@ -83,7 +95,6 @@ def list_bots(user: User | None = Depends(get_current_user_optional), db: Sessio
     items = [
         {
             "id": r.id,
-            "api_id": r.api_id,
             "api_hash_masked": _mask(r.api_hash, 3),
             "bot_token_masked": _mask(r.bot_token, 6),
             "session_name": r.session_name,
@@ -99,6 +110,117 @@ def list_bots(user: User | None = Depends(get_current_user_optional), db: Sessio
     return {"ok": True, "bots": items}
 
 
+@router.get("/listeners", response_model=dict)
+def list_listeners(user: User | None = Depends(get_current_user_optional), db: Session = Depends(get_db)):
+    _ = user
+    rows = db.query(CopyListenerAccount).order_by(CopyListenerAccount.id.desc()).all()
+    items = []
+    for r in rows:
+        run_count = db.query(CopyTask).filter(CopyTask.listener_id == r.id, CopyTask.status == "running").count()
+        session_ready = cls.session_ready(r.session_name)
+        session_status = "ACTIVE"
+        if run_count > 0:
+            session_status = "IN_USE"
+        elif not session_ready or (r.status or "").lower() == "error":
+            session_status = "EXPIRED"
+        items.append(
+            {
+                "id": r.id,
+                "phone": r.phone,
+                "session_name": r.session_name,
+                "session_ready": session_ready,
+                "session_status": session_status,
+                "status": r.status,
+                "enabled": bool(r.enabled),
+                "last_error": r.last_error,
+                "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+                "running_tasks": run_count,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+        )
+    return {"ok": True, "listeners": items}
+
+
+@router.post("/listeners/send_code", response_model=dict)
+async def listener_send_code(
+    payload: ListenerSendCodeBody,
+    user: User = Depends(require_admin),
+):
+    _ = user
+    res = await cls.send_code_request(payload.phone)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error", "发送验证码失败"))
+    cfs.append_log(
+        "info",
+        f"[LISTENER] 验证码已发送 phone={res.get('phone')} type={res.get('sent_type') or '-'} next={res.get('next_type') or '-'}",
+    )
+    return res
+
+
+@router.post("/listeners/login", response_model=dict)
+async def listener_login(
+    payload: ListenerLoginBody,
+    user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    _ = user
+    res = await cls.complete_login(
+        db,
+        user.id,
+        payload.phone,
+        payload.code,
+        (payload.phone_code_hash or "").strip(),
+        payload.password,
+    )
+    if res.get("need_password"):
+        return {"need_password": True}
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error", "监听账号登录失败"))
+    cfs.append_log("info", f"[LISTENER] 登录成功 phone={res.get('phone')}")
+    return res
+
+
+@router.post("/listeners/{listener_id}/enable", response_model=dict)
+def enable_listener(listener_id: int, user: User = Depends(require_admin), db: Session = Depends(get_db)):
+    _ = user
+    row = db.query(CopyListenerAccount).filter(CopyListenerAccount.id == listener_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="监听账号不存在")
+    row.enabled = 1
+    row.status = "active"
+    row.last_error = None
+    db.add(row)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/listeners/{listener_id}/disable", response_model=dict)
+def disable_listener(listener_id: int, user: User = Depends(require_admin), db: Session = Depends(get_db)):
+    _ = user
+    row = db.query(CopyListenerAccount).filter(CopyListenerAccount.id == listener_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="监听账号不存在")
+    row.enabled = 0
+    row.status = "disconnected"
+    db.add(row)
+    db.commit()
+    cfs.schedule_stop_listener(listener_id)
+    return {"ok": True}
+
+
+@router.delete("/listeners/{listener_id}", response_model=dict)
+def delete_listener(listener_id: int, user: User = Depends(require_admin), db: Session = Depends(get_db)):
+    _ = user
+    row = db.query(CopyListenerAccount).filter(CopyListenerAccount.id == listener_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="监听账号不存在")
+    cfs.schedule_stop_listener(listener_id)
+    db.query(CopyTask).filter(CopyTask.listener_id == listener_id).update({"listener_id": None})
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/bots", response_model=dict)
 def create_bot(
     payload: CopyBotCreate,
@@ -107,8 +229,8 @@ def create_bot(
 ):
     row = CopyBot(
         owner_id=user.id,
-        api_id=payload.api_id,
-        api_hash=payload.api_hash.strip(),
+        api_id=0,
+        api_hash="GLOBAL",
         bot_token=payload.bot_token.strip(),
         session_name=None,
         status="active",
@@ -120,8 +242,6 @@ def create_bot(
     try:
         name = cfs.bootstrap_new_bot_session(
             row.id,
-            int(payload.api_id),
-            payload.api_hash.strip(),
             payload.bot_token.strip(),
         )
     except Exception as exc:
@@ -193,13 +313,13 @@ async def upload_bot_session(
             pass
     dest.write_bytes(content)
     try:
-        cfs.verify_session_connect(int(row.api_id), row.api_hash, name, bot_id=bot_id)
+        cfs.verify_session_connect(name, bot_id=bot_id)
     except Exception as exc:
         try:
             dest.unlink(missing_ok=True)
         except OSError:
             pass
-        raise HTTPException(status_code=400, detail=f"session 无效或与 api_id/api_hash 不匹配: {exc}") from exc
+        raise HTTPException(status_code=400, detail=f"session 无效或与系统全局 Telegram 配置不匹配: {exc}") from exc
     row.session_name = name
     row.status = "active"
     row.last_error = None
@@ -255,12 +375,32 @@ def create_task(
     tgt = payload.target_channel.strip()
     if src.lower() == tgt.lower():
         raise HTTPException(status_code=400, detail="来源与目标不能相同")
+    listener_id = payload.listener_id
+    if listener_id:
+        listener = db.query(CopyListenerAccount).filter(CopyListenerAccount.id == listener_id).first()
+        if not listener:
+            raise HTTPException(status_code=400, detail="选择的监听账号不存在")
+        if not bool(listener.enabled) or (listener.status or "").lower() != "active":
+            raise HTTPException(status_code=400, detail="监听账号不可用，请更换")
+        if not cls.session_ready(listener.session_name):
+            raise HTTPException(status_code=400, detail="监听账号 session 缺失，请重新登录")
+    else:
+        auto_listener = (
+            db.query(CopyListenerAccount)
+            .filter(CopyListenerAccount.enabled == 1, CopyListenerAccount.status == "active")
+            .order_by(CopyListenerAccount.last_seen_at.asc().nullsfirst(), CopyListenerAccount.id.asc())
+            .first()
+        )
+        if not auto_listener:
+            raise HTTPException(status_code=400, detail="请先配置可用监听账号（Listener）")
+        listener_id = auto_listener.id
 
     row = CopyTask(
         owner_id=user.id,
         source_channel=src,
         target_channel=tgt,
         bot_id=bot.id,
+        listener_id=listener_id,
         status="idle",
         total_forwarded=0,
         today_forwarded=0,

@@ -101,6 +101,63 @@ body::after {
   box-sizing: border-box;
 }
 
+/* 高级暗色滚动条（右侧主滚动 + 各内层滚动区域统一） */
+.main-content,
+.growth-scroll,
+.growth-queue-scroll,
+.growth-terminal-scroll,
+.session-log-panel,
+.user-detail-glass-body,
+.user-detail-glass-log-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(90, 180, 150, 0.34) rgba(255, 255, 255, 0.025);
+}
+
+.main-content::-webkit-scrollbar,
+.growth-scroll::-webkit-scrollbar,
+.growth-queue-scroll::-webkit-scrollbar,
+.growth-terminal-scroll::-webkit-scrollbar,
+.session-log-panel::-webkit-scrollbar,
+.user-detail-glass-body::-webkit-scrollbar,
+.user-detail-glass-log-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.main-content::-webkit-scrollbar-track,
+.growth-scroll::-webkit-scrollbar-track,
+.growth-queue-scroll::-webkit-scrollbar-track,
+.growth-terminal-scroll::-webkit-scrollbar-track,
+.session-log-panel::-webkit-scrollbar-track,
+.user-detail-glass-body::-webkit-scrollbar-track,
+.user-detail-glass-log-scroll::-webkit-scrollbar-track {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.015));
+  border-radius: 999px;
+}
+
+.main-content::-webkit-scrollbar-thumb,
+.growth-scroll::-webkit-scrollbar-thumb,
+.growth-queue-scroll::-webkit-scrollbar-thumb,
+.growth-terminal-scroll::-webkit-scrollbar-thumb,
+.session-log-panel::-webkit-scrollbar-thumb,
+.user-detail-glass-body::-webkit-scrollbar-thumb,
+.user-detail-glass-log-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-image: linear-gradient(180deg, rgba(110, 195, 165, 0.44), rgba(70, 150, 130, 0.34));
+}
+
+.main-content::-webkit-scrollbar-thumb:hover,
+.growth-scroll::-webkit-scrollbar-thumb:hover,
+.growth-queue-scroll::-webkit-scrollbar-thumb:hover,
+.growth-terminal-scroll::-webkit-scrollbar-thumb:hover,
+.session-log-panel::-webkit-scrollbar-thumb:hover,
+.user-detail-glass-body::-webkit-scrollbar-thumb:hover,
+.user-detail-glass-log-scroll::-webkit-scrollbar-thumb:hover {
+  background-image: linear-gradient(180deg, rgba(120, 205, 172, 0.56), rgba(78, 165, 140, 0.44));
+}
+
 @keyframes ambient-float-a {
   0% {
     transform: translate(0, 0) scale(1);

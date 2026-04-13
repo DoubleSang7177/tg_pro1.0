@@ -122,6 +122,9 @@ def _ensure_copy_tasks_owner_id() -> None:
         if "owner_id" not in col_names:
             conn.execute(text("ALTER TABLE copy_tasks ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 1"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_copy_tasks_owner_id ON copy_tasks (owner_id)"))
+        if "listener_id" not in col_names:
+            conn.execute(text("ALTER TABLE copy_tasks ADD COLUMN listener_id INTEGER"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_copy_tasks_listener_id ON copy_tasks (listener_id)"))
 
 
 def init_db() -> None:

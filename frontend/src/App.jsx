@@ -1768,10 +1768,16 @@ export default function App() {
   const [scraperBindPassword, setScraperBindPassword] = useState("");
 
   const [copyBots, setCopyBots] = useState([]);
+  const [copyListeners, setCopyListeners] = useState([]);
   const [copyTasks, setCopyTasks] = useState([]);
   const [copyLogs, setCopyLogs] = useState([]);
-  const [copyBotForm, setCopyBotForm] = useState({ api_id: "", api_hash: "", bot_token: "" });
-  const [copyTaskForm, setCopyTaskForm] = useState({ source_channel: "", target_channel: "", bot_id: "" });
+  const [copyBotForm, setCopyBotForm] = useState({ bot_token: "" });
+  const [copyTaskForm, setCopyTaskForm] = useState({ source_channel: "", target_channel: "", bot_id: "", listener_id: "" });
+  const [copyListenerForm, setCopyListenerForm] = useState({ phone: "", code: "" });
+  const [copyListenerSaving, setCopyListenerSaving] = useState(false);
+  const [copyListenerCodeHash, setCopyListenerCodeHash] = useState("");
+  const [copyListenerNeedPassword, setCopyListenerNeedPassword] = useState(false);
+  const [copyListenerPassword, setCopyListenerPassword] = useState("");
   const copyBotSubmitRef = useRef(false);
   const copyTaskSubmitRef = useRef(false);
   const [copyBotSaving, setCopyBotSaving] = useState(false);
@@ -2141,16 +2147,38 @@ export default function App() {
       ...copyBots.map((b) => {
         const optLoginOk =
           b.session_ok == null ? Boolean(b.session_ready && b.status === "active") : Boolean(b.session_ok);
-        const sessHint = !b.session_ready ? "无 session" : optLoginOk ? "session 可用" : "session/状态异常";
+        const botCode = `BOT-${String(b.id).padStart(3, "0")}`;
+        const sessHint = !b.session_ready ? "不可用" : optLoginOk ? "可用" : "异常";
         return {
           value: String(b.id),
-          label: `#${b.id} · ${b.bot_token_masked} · ${sessHint} (${b.status})`,
+          label: `${botCode} · ${b.bot_token_masked} · ${sessHint}`,
           disabled: !b.session_ready,
         };
       }),
     ],
     [copyBots],
   );
+
+  const copyListenerDropdownOptions = useMemo(
+    () => [
+      { value: "", label: "自动分配（仅 Channel 场景需要）" },
+      ...copyListeners.map((x) => ({
+        value: String(x.id),
+        label: `#${x.id} · ${x.phone} · ${x.enabled ? "启用" : "停用"} · ${x.status}`,
+        disabled: !x.enabled || x.status !== "active" || !x.session_ready,
+      })),
+    ],
+    [copyListeners],
+  );
+
+  const copyListenerReadyForPhone = useMemo(() => {
+    const digits = String(copyListenerForm.phone || "").replace(/\D+/g, "");
+    if (!digits) return null;
+    return (
+      copyListeners.find((x) => String(x.phone || "").replace(/\D+/g, "") === digits && x.session_ready && x.status === "active") ||
+      null
+    );
+  }, [copyListenerForm.phone, copyListeners]);
 
   const userMgmtFilteredSorted = useMemo(() => {
     const q = userMgmtQuery.trim().toLowerCase();
@@ -2245,8 +2273,9 @@ export default function App() {
 
   const loadCopyData = useCallback(async () => {
     try {
-      const [cb, ct] = await Promise.all([api.listCopyBots(), api.listCopyTasks()]);
+      const [cb, cl, ct] = await Promise.all([api.listCopyBots(), api.listCopyListeners(), api.listCopyTasks()]);
       setCopyBots(cb.bots || []);
+      setCopyListeners(cl.listeners || []);
       setCopyTasks(ct.tasks || []);
     } catch {
       /* Copy 模块可选，失败不阻断主同步 */
@@ -3261,9 +3290,8 @@ export default function App() {
   const onCreateCopyBot = async () => {
     if (!guardLoggedIn()) return;
     if (copyBotSubmitRef.current) return;
-    const apiId = Number(copyBotForm.api_id);
-    if (!apiId || !String(copyBotForm.api_hash || "").trim() || !String(copyBotForm.bot_token || "").trim()) {
-      pushToast("请填写 api_id、api_hash、bot_token");
+    if (!String(copyBotForm.bot_token || "").trim()) {
+      pushToast("请填写 bot_token");
       return;
     }
     copyBotSubmitRef.current = true;
@@ -3271,7 +3299,7 @@ export default function App() {
     setMsg("");
     try {
       await api.createCopyBot(copyBotForm);
-      setCopyBotForm({ api_id: "", api_hash: "", bot_token: "" });
+      setCopyBotForm({ bot_token: "" });
       await loadCopyData();
     } catch (e) {
       pushToast(e?.message || "添加机器人失败");
@@ -3320,6 +3348,7 @@ export default function App() {
         source_channel: copyTaskForm.source_channel,
         target_channel: copyTaskForm.target_channel,
         bot_id: botId,
+        listener_id: copyTaskForm.listener_id ? Number(copyTaskForm.listener_id) : null,
       });
       setCopyTaskForm((f) => ({ ...f, source_channel: "", target_channel: "" }));
       await loadCopyData();
@@ -3328,6 +3357,64 @@ export default function App() {
     } finally {
       copyTaskSubmitRef.current = false;
       setCopyTaskSaving(false);
+    }
+  };
+
+  const onCopyListenerSendCode = async () => {
+    if (!guardLoggedIn()) return;
+    if (copyListenerSaving) return;
+    if (!String(copyListenerForm.phone || "").trim()) {
+      pushToast("请先填写手机号");
+      return;
+    }
+    setCopyListenerSaving(true);
+    try {
+      const res = await api.sendCopyListenerCode(copyListenerForm);
+      setCopyListenerCodeHash(String(res?.phone_code_hash || ""));
+      setCopyListenerNeedPassword(false);
+      setCopyListenerPassword("");
+      const ch = res?.sent_type ? `（渠道: ${res.sent_type}）` : "";
+      pushToast(`验证码已发送${ch}，请优先查看 Telegram App 系统消息`);
+    } catch (e) {
+      pushToast(e?.message || "发送验证码失败");
+    } finally {
+      setCopyListenerSaving(false);
+    }
+  };
+
+  const onCopyListenerLogin = async () => {
+    if (!guardLoggedIn()) return;
+    if (copyListenerSaving) return;
+    setCopyListenerSaving(true);
+    try {
+      const r = copyListenerNeedPassword
+        ? await api.loginCopyListener({
+            phone: copyListenerForm.phone,
+            code: "",
+            phone_code_hash: "",
+            password: copyListenerPassword,
+          })
+        : await api.loginCopyListener({
+            phone: copyListenerForm.phone,
+            code: copyListenerForm.code,
+            phone_code_hash: copyListenerCodeHash,
+            password: "",
+          });
+      if (r?.need_password) {
+        setCopyListenerNeedPassword(true);
+        pushToast("该账号开启了二步验证，请输入密码");
+        return;
+      }
+      pushToast("监听账号登录成功");
+      setCopyListenerForm((f) => ({ ...f, code: "" }));
+      setCopyListenerCodeHash("");
+      setCopyListenerNeedPassword(false);
+      setCopyListenerPassword("");
+      await loadCopyData();
+    } catch (e) {
+      pushToast(e?.message || "监听账号登录失败");
+    } finally {
+      setCopyListenerSaving(false);
     }
   };
 
@@ -3801,7 +3888,7 @@ export default function App() {
         ) : null}
 
         {tab === "用户增长" && (
-          <div className="relative flex flex-col overflow-visible rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#0b0f1a]/95 via-[#0c1220]/92 to-[#0f172a]/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_12px_48px_rgba(0,0,0,0.35)] backdrop-blur-[12px]">
+          <div className="relative flex h-[300vh] flex-col overflow-x-visible overflow-y-auto rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#0b0f1a]/95 via-[#0c1220]/92 to-[#0f172a]/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_12px_48px_rgba(0,0,0,0.35)] backdrop-blur-[12px]">
             <div
               className="pointer-events-none absolute left-[12%] top-0 h-48 w-48 -translate-y-1/2 rounded-full bg-cyan-500/10 blur-[80px]"
               aria-hidden
@@ -3815,8 +3902,8 @@ export default function App() {
               aria-hidden
             />
 
-            <div className="relative z-[1] flex flex-col gap-4 overflow-visible p-4 sm:p-5">
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(300px,340px)_minmax(0,1fr)] lg:items-stretch lg:gap-5">
+            <div className="relative z-[1] flex min-h-0 flex-1 flex-col gap-4 overflow-visible p-4 sm:p-5">
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(300px,340px)_minmax(0,1fr)] lg:items-stretch lg:gap-5">
                 {/* 左侧：统计 → 执行状态 → 账号队列（与右侧同列高，队列区 flex 铺满 + 内部滚动） */}
                 <div className="order-1 flex h-full min-h-0 flex-col gap-3 lg:order-none">
                   <div className="shrink-0">
@@ -5059,31 +5146,15 @@ export default function App() {
                   <div className={COPY_GLASS_CARD}>
                     <h3 className="text-base font-bold tracking-tight text-slate-100">机器人录入</h3>
                     <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                      填写后点击按钮：用 <span className="font-log">bot_token</span> 登录 Telegram，在{" "}
-                      <span className="font-log">backend/sessions/</span> 下生成{" "}
-                      <span className="font-log">bot_（数据库 id）.session</span>，转发任务仅使用该 session（不再走 HTTP Bot API）。凭证仅存服务端。
+                      只需填写 <span className="font-log">bot_token</span>。系统使用全局 Telegram 配置登录并建立 session。
                     </p>
                     <div className="mt-4 space-y-3">
-                      <label className="flex flex-col gap-1">
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">api_id</span>
-                        <input
-                          type="number"
-                          className={COPY_FIELD}
-                          placeholder="整数"
-                          value={copyBotForm.api_id}
-                          onChange={(e) => setCopyBotForm((f) => ({ ...f, api_id: e.target.value }))}
-                        />
-                      </label>
-                      <label className="flex flex-col gap-1">
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">api_hash</span>
-                        <input className={COPY_FIELD} placeholder="来自 my.telegram.org" value={copyBotForm.api_hash} onChange={(e) => setCopyBotForm((f) => ({ ...f, api_hash: e.target.value }))} />
-                      </label>
                       <label className="flex flex-col gap-1">
                         <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">bot_token</span>
                         <input
                           type="password"
                           className={COPY_FIELD}
-                          placeholder="BotFather 下发（仅首次写入 session 时使用）"
+                          placeholder="请输入 Bot Token（来自 @BotFather）"
                           value={copyBotForm.bot_token}
                           onChange={(e) => setCopyBotForm((f) => ({ ...f, bot_token: e.target.value }))}
                         />
@@ -5095,98 +5166,111 @@ export default function App() {
                             登录并写入 session…
                           </span>
                         ) : (
-                          "登录 Telegram 并写入 session"
+                          "接入 Bot"
                         )}
                       </button>
                     </div>
                   </div>
-                  <div className="space-y-3">
-                    {copyBots.length === 0 ? (
-                      <p className="text-sm text-slate-500">暂无机器人，请先添加。</p>
-                    ) : (
-                      copyBots.map((b) => {
-                        const sessionLoginOk =
-                          b.session_ok == null ? Boolean(b.session_ready && b.status === "active") : Boolean(b.session_ok);
-                        return (
-                        <div key={b.id} className={COPY_GLASS_CARD}>
-                          <div className="flex flex-wrap items-start justify-between gap-2">
-                            <div>
-                              <p className="font-log text-xs text-slate-500">#{b.id}</p>
-                              <p className="mt-0.5 text-sm font-semibold text-slate-200">
-                                api_id <span className="tabular-nums text-violet-200">{b.api_id}</span>
-                              </p>
-                              <p className="mt-1 font-log text-[11px] text-slate-500">{b.bot_token_masked}</p>
+                  <div className="flex min-h-[26rem] flex-1 flex-col gap-3">
+                    <div className={`${COPY_GLASS_CARD} min-h-0 flex-1`}>
+                      <h3 className="text-base font-bold tracking-tight text-slate-100">Bot 队列</h3>
+                      <p className="mt-1 text-xs text-slate-500">展示 Bot 会话可用状态与异常信息。</p>
+                      <div className="mt-3 h-[calc(100%-2.5rem)] min-h-[9rem] overflow-y-auto pr-1">
+                        {copyBots.length === 0 ? (
+                          <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-white/[0.12] bg-black/20 px-3 text-sm text-slate-500">
+                            暂无机器人，请先添加
+                          </div>
+                        ) : (
+                          copyBots.map((b) => {
+                            const sessionLoginOk =
+                              b.session_ok == null ? Boolean(b.session_ready && b.status === "active") : Boolean(b.session_ok);
+                            return (
+                            <div key={b.id} className={`${COPY_GLASS_CARD} mb-3 last:mb-0`}>
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div>
+                                  <span className="inline-flex items-center rounded-md border border-violet-400/30 bg-violet-500/10 px-2.5 py-1 font-log text-xs font-semibold tracking-[0.06em] text-violet-200">
+                                    BOT-{String(b.id).padStart(3, "0")}
+                                  </span>
+                                  <p className="mt-1 font-log text-[11px] text-slate-500">{b.bot_token_masked}</p>
+                                </div>
+                                <span
+                                  className={`shrink-0 rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                                    b.status === "active"
+                                      ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-200"
+                                      : "border-rose-400/35 bg-rose-500/10 text-rose-200"
+                                  }`}
+                                >
+                                  {b.status === "active" ? "🟢 已连接" : "🔴 失效"}
+                                </span>
+                                <span
+                                  className={`shrink-0 rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                                    sessionLoginOk
+                                      ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-200"
+                                      : "border-amber-400/40 bg-amber-500/12 text-amber-200"
+                                  }`}
+                                  title="文件存在且状态为 ACTIVE 时可启动转发任务"
+                                >
+                                  登录状态：{sessionLoginOk ? "OK" : "FAIL"}
+                                </span>
+                              </div>
+                              {!b.session_ready ? (
+                                <p className="mt-2 text-xs text-rose-400/90">未生成 session：请使用「导入 session」或删除后重新添加 Bot。</p>
+                              ) : null}
+                              {b.session_ready && b.status !== "active" ? (
+                                <p className="mt-1 text-xs text-amber-400/90">session 文件在库中，但机器人状态为 ERROR，请查看下方原因或「清除错误」后重试。</p>
+                              ) : null}
+                              {b.last_error ? (
+                                <p className="mt-2 line-clamp-3 text-xs text-rose-400/90" title={b.last_error}>
+                                  {b.last_error}
+                                </p>
+                              ) : null}
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {b.status === "error" ? (
+                                  <button type="button" disabled={!op} title={!op ? guestTitle : undefined} className={COPY_BTN_GLOW_SM} onClick={() => onResetCopyBot(b.id)}>
+                                    清除错误
+                                  </button>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  disabled={!op}
+                                  title={!op ? guestTitle : undefined}
+                                  className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-45"
+                                  onClick={() => onDeleteCopyBot(b.id)}
+                                >
+                                  删除
+                                </button>
+                              </div>
                             </div>
-                            <span
-                              className={`shrink-0 rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
-                                b.status === "active"
-                                  ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-200"
-                                  : "border-rose-400/35 bg-rose-500/10 text-rose-200"
-                              }`}
-                            >
-                              {b.status === "active" ? "ACTIVE" : "ERROR"}
-                            </span>
-                            <span
-                              className={`shrink-0 rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
-                                b.session_ready
-                                  ? "border-cyan-400/35 bg-cyan-500/10 text-cyan-200"
-                                  : "border-rose-400/40 bg-rose-500/12 text-rose-200"
-                              }`}
-                              title={b.session_name || ""}
-                            >
-                              {b.session_ready ? "SESSION 文件" : "无 SESSION"}
-                            </span>
-                            <span
-                              className={`shrink-0 rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
-                                sessionLoginOk
-                                  ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-200"
-                                  : "border-amber-400/40 bg-amber-500/12 text-amber-200"
-                              }`}
-                              title="文件存在且状态为 ACTIVE 时可启动转发任务"
-                            >
-                              登录状态：{sessionLoginOk ? "OK" : "FAIL"}
-                            </span>
-                          </div>
-                          {!b.session_ready ? (
-                            <p className="mt-2 text-xs text-rose-400/90">未生成 session：请使用「导入 session」或删除后重新添加 Bot。</p>
-                          ) : null}
-                          {b.session_ready && b.status !== "active" ? (
-                            <p className="mt-1 text-xs text-amber-400/90">session 文件在库中，但机器人状态为 ERROR，请查看下方原因或「清除错误」后重试。</p>
-                          ) : null}
-                          {b.last_error ? (
-                            <p className="mt-2 line-clamp-3 text-xs text-rose-400/90" title={b.last_error}>
-                              {b.last_error}
-                            </p>
-                          ) : null}
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              disabled={!op || uploadingSessionBotId != null}
-                              title={!op ? guestTitle : undefined}
-                              className="rounded-xl border border-violet-400/35 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50"
-                              onClick={() => triggerCopySessionImport(b.id)}
-                            >
-                              {uploadingSessionBotId === b.id ? "导入中…" : "导入 session"}
-                            </button>
-                            {b.status === "error" ? (
-                              <button type="button" disabled={!op} title={!op ? guestTitle : undefined} className={COPY_BTN_GLOW_SM} onClick={() => onResetCopyBot(b.id)}>
-                                清除错误
-                              </button>
-                            ) : null}
-                            <button
-                              type="button"
-                              disabled={!op}
-                              title={!op ? guestTitle : undefined}
-                              className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-45"
-                              onClick={() => onDeleteCopyBot(b.id)}
-                            >
-                              删除
-                            </button>
-                          </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  <div className={`${COPY_GLASS_CARD} min-h-0 flex-1`}>
+                    <h3 className="text-base font-bold tracking-tight text-slate-100">监听账号队列</h3>
+                    <p className="mt-1 text-xs text-slate-500">仅展示 Listener 会话可用状态与占用状态。</p>
+                    <div className="mt-3 h-[calc(100%-2.5rem)] min-h-[9rem] overflow-auto rounded-xl border border-white/[0.08] bg-black/20 p-2.5">
+                      {copyListeners.length === 0 ? (
+                        <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-white/[0.12] px-3 text-xs text-slate-500">
+                          暂无监听账号，请先在上方录入
                         </div>
-                        );
-                      })
-                    )}
+                      ) : (
+                        <ul className="space-y-2">
+                          {copyListeners.map((x) => (
+                            <li key={x.id} className="rounded-lg border border-white/[0.1] bg-white/[0.03] px-2.5 py-2 text-[11px] text-slate-300">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="font-log text-slate-200">#{x.id} · {x.phone}</p>
+                                <span className="rounded-md border border-cyan-400/25 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-200">
+                                  {x.session_status || x.status}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-slate-400">{x.running_tasks ? `运行任务: ${x.running_tasks}` : "当前空闲"}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
                   </div>
                 </div>
                 ) : (
@@ -5214,6 +5298,57 @@ export default function App() {
                 )}
 
                 <div className="flex min-w-0 flex-col gap-4">
+                  {isAdmin ? (
+                    <div className={COPY_GLASS_CARD}>
+                      <h3 className="text-base font-bold tracking-tight text-slate-100">监听账号池（Listener）</h3>
+                      <p className="mt-1 text-xs text-slate-500">仅用于监听来源消息，不参与发送。</p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <input
+                          className={COPY_FIELD}
+                          placeholder="手机号（+86...）"
+                          value={copyListenerForm.phone}
+                          onChange={(e) => {
+                            setCopyListenerForm((f) => ({ ...f, phone: e.target.value }));
+                            setCopyListenerNeedPassword(false);
+                            setCopyListenerPassword("");
+                          }}
+                        />
+                        {copyListenerReadyForPhone ? (
+                          <div className="rounded-xl border border-emerald-400/35 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200">
+                            ✅ 监听账号已就绪（session 已建立）
+                          </div>
+                        ) : copyListenerNeedPassword ? (
+                          <input
+                            type="password"
+                            className={COPY_FIELD}
+                            placeholder="二步验证密码（若开启）"
+                            value={copyListenerPassword}
+                            onChange={(e) => setCopyListenerPassword(e.target.value)}
+                            autoComplete="current-password"
+                          />
+                        ) : (
+                          <input className={COPY_FIELD} placeholder="验证码" value={copyListenerForm.code} onChange={(e) => setCopyListenerForm((f) => ({ ...f, code: e.target.value }))} />
+                        )}
+                      </div>
+                      <div className="mt-3 flex gap-2">
+                        <button type="button" className={COPY_BTN_GLOW_SM} disabled={copyListenerSaving} onClick={onCopyListenerSendCode}>
+                          发送验证码
+                        </button>
+                        <button
+                          type="button"
+                          className={COPY_BTN_GLOW_SM}
+                          disabled={
+                            copyListenerSaving ||
+                            Boolean(copyListenerReadyForPhone) ||
+                            (copyListenerNeedPassword ? !copyListenerPassword.trim() : !copyListenerForm.code.trim() || !copyListenerCodeHash)
+                          }
+                          onClick={onCopyListenerLogin}
+                        >
+                          登录监听账号
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className={COPY_GLASS_CARD}>
                     <h3 className="text-base font-bold tracking-tight text-slate-100">新建转发任务</h3>
                     {!isAdmin ? (
@@ -5242,6 +5377,18 @@ export default function App() {
                       <label className="flex flex-col gap-1 sm:col-span-2">
                         <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">来源频道 / 群</span>
                         <input className={COPY_FIELD} placeholder="@username 或 -100…" value={copyTaskForm.source_channel} onChange={(e) => setCopyTaskForm((f) => ({ ...f, source_channel: e.target.value }))} />
+                      </label>
+                      <label className="flex flex-col gap-1 sm:col-span-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">监听账号（可选）</span>
+                        <GlassDropdown
+                          variant="task"
+                          value={copyTaskForm.listener_id}
+                          onChange={(v) => setCopyTaskForm((f) => ({ ...f, listener_id: String(v || "") }))}
+                          options={copyListenerDropdownOptions}
+                          placeholder="自动分配或手动选择 Listener…"
+                          searchable
+                          className="w-full"
+                        />
                       </label>
                       <label className="flex flex-col gap-1 sm:col-span-2">
                         <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">目标频道 / 群</span>

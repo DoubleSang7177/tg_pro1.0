@@ -195,6 +195,7 @@ class CopyTask(Base):
     source_channel = Column(String(255), nullable=False)
     target_channel = Column(String(255), nullable=False)
     bot_id = Column(Integer, ForeignKey("copy_bots.id"), nullable=False, index=True)
+    listener_id = Column(Integer, ForeignKey("copy_listener_accounts.id"), nullable=True, index=True)
     status = Column(String(20), nullable=False, default="idle")  # idle / starting / running / paused / error
     last_run_at = Column(DateTime(timezone=True), nullable=True)
     last_error = Column(Text, nullable=True)
@@ -206,6 +207,24 @@ class CopyTask(Base):
     bot = relationship("CopyBot", back_populates="tasks")
     owner = relationship("User", foreign_keys=[owner_id])
     forwards = relationship("ForwardRecord", back_populates="task", cascade="all, delete-orphan")
+
+
+class CopyListenerAccount(Base):
+    """Copy 监听账号池：只监听 source，不做发送。"""
+
+    __tablename__ = "copy_listener_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    api_id = Column(Integer, nullable=False)
+    api_hash = Column(String(64), nullable=False)
+    phone = Column(String(32), nullable=False, unique=True)
+    session_name = Column(String(128), nullable=False, unique=True)
+    status = Column(String(20), nullable=False, default="active")  # active / disconnected / error
+    enabled = Column(Integer, nullable=False, default=1)
+    last_error = Column(Text, nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class ForwardRecord(Base):

@@ -292,8 +292,6 @@ export const api = {
     request("/copy/bots", {
       method: "POST",
       body: JSON.stringify({
-        api_id: Number(payload.api_id),
-        api_hash: String(payload.api_hash || "").trim(),
         bot_token: String(payload.bot_token || "").trim(),
       }),
     }),
@@ -304,6 +302,27 @@ export const api = {
     return request(`/copy/bots/${Number(botId)}/session`, { method: "POST", body: form });
   },
   resetCopyBot: (botId) => request(`/copy/bots/${Number(botId)}/reset`, { method: "POST" }),
+  listCopyListeners: () => request("/copy/listeners"),
+  sendCopyListenerCode: (payload) =>
+    request("/copy/listeners/send_code", {
+      method: "POST",
+      body: JSON.stringify({
+        phone: String(payload.phone || "").trim(),
+      }),
+    }),
+  loginCopyListener: (payload) =>
+    request("/copy/listeners/login", {
+      method: "POST",
+      body: JSON.stringify({
+        phone: String(payload.phone || "").trim(),
+        code: String(payload.code || "").trim(),
+        phone_code_hash: String(payload.phone_code_hash || "").trim() || null,
+        password: payload.password ? String(payload.password).trim() : null,
+      }),
+    }),
+  enableCopyListener: (id) => request(`/copy/listeners/${Number(id)}/enable`, { method: "POST" }),
+  disableCopyListener: (id) => request(`/copy/listeners/${Number(id)}/disable`, { method: "POST" }),
+  deleteCopyListener: (id) => request(`/copy/listeners/${Number(id)}`, { method: "DELETE" }),
   listCopyTasks: () => request("/copy/tasks"),
   createCopyTask: (payload) =>
     request("/copy/tasks", {
@@ -312,6 +331,7 @@ export const api = {
         source_channel: String(payload.source_channel || "").trim(),
         target_channel: String(payload.target_channel || "").trim(),
         bot_id: Number(payload.bot_id),
+        listener_id: payload.listener_id ? Number(payload.listener_id) : null,
       }),
     }),
   startCopyTask: (taskId) => request(`/copy/tasks/${Number(taskId)}/start`, { method: "POST" }),

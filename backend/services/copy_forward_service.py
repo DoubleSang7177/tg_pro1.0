@@ -26,6 +26,7 @@ log = logging.getLogger("copy_forward")
 
 # Telethon 会话目录：backend/sessions/{session_name}.session
 SESSIONS_DIR = Path(__file__).resolve().parent.parent / "sessions"
+COPY_CONNECT_TIMEOUT_SEC = float(os.getenv("COPY_CONNECT_TIMEOUT_SEC", "20"))
 
 
 def normalize_session_name(session_name: str | None) -> str | None:
@@ -185,6 +186,16 @@ def _session_lock_path(session_name: str) -> Path:
     return SESSIONS_DIR / f"{sn}.lock"
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def _acquire_session_lock(session_name: str, bot_id: int) -> bool:
     sn = normalize_session_name(session_name) or ""
     if not sn:
@@ -193,12 +204,28 @@ def _acquire_session_lock(session_name: str, bot_id: int) -> bool:
     if owner is not None and owner != bot_id:
         return False
     lock_path = _session_lock_path(sn)
+    if lock_path.exists():
+        try:
+            raw = lock_path.read_text(encoding="utf-8").strip()
+            lock_pid = int(raw.splitlines()[0]) if raw else 0
+        except Exception:
+            lock_pid = 0
+        if lock_pid > 0 and _pid_alive(lock_pid):
+            return False
+        try:
+            lock_path.unlink()
+        except OSError:
+            return False
     try:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
     except FileExistsError:
         return False
     except OSError:
         return False
+    try:
+        os.write(fd, f"{os.getpid()}\n{datetime.now(timezone.utc).isoformat()}".encode("utf-8"))
+    except OSError:
+        pass
     _session_owner[sn] = bot_id
     _session_lock_fd[bot_id] = fd
     _bot_session_name[bot_id] = sn
@@ -610,13 +637,15 @@ async def _ensure_client(bot_id: int) -> TelegramClient | None:
     _append_log("info", f"加载 session | 使用文件 {sn}.session，正在 connect() …", bot_id=bot_id)
     try:
         client = TelegramClient(base, api_id, api_hash)
-        await client.connect()
-        auth = await client.is_user_authorized()
+        _append_log("info", f"[SYSTEM] connect timeout={COPY_CONNECT_TIMEOUT_SEC:.0f}s", bot_id=bot_id)
+        await asyncio.wait_for(client.connect(), timeout=COPY_CONNECT_TIMEOUT_SEC)
+        _append_log("info", "[SYSTEM] connect() 成功，开始校验授权…", bot_id=bot_id)
+        auth = await asyncio.wait_for(client.is_user_authorized(), timeout=8.0)
         _append_log("info", f"加载 session | connect 完成 authorized={auth}", bot_id=bot_id)
         if not auth:
             await client.disconnect()
             raise RuntimeError("session 未授权或已失效")
-        me = await client.get_me()
+        me = await asyncio.wait_for(client.get_me(), timeout=8.0)
         who = f"id={me.id}" + (f" @{me.username}" if getattr(me, "username", None) else "")
         _append_log("info", f"加载 session | get_me() → {who} bot={bool(getattr(me, 'bot', False))}", bot_id=bot_id)
         _bot_clients[bot_id] = client
@@ -626,6 +655,28 @@ async def _ensure_client(bot_id: int) -> TelegramClient | None:
         _append_log("info", f"[SYSTEM] 已注册 NewMessage 监听器 | bot_id={bot_id}", bot_id=bot_id)
         _ensure_keepalive_started(bot_id)
         return client
+    except asyncio.TimeoutError:
+        _append_log(
+            "error",
+            (
+                "[ERROR] connect 超时：Telegram 连接未在限定时间内完成。"
+                "常见原因：网络不通、被防火墙拦截、代理不可用、DNS 异常。"
+            ),
+            bot_id=bot_id,
+        )
+        db2 = SessionLocal()
+        try:
+            row2 = db2.query(CopyBot).filter(CopyBot.id == bot_id).first()
+            if row2:
+                _mark_bot_error(db2, row2, "connect timeout to Telegram")
+        finally:
+            db2.close()
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        _release_session_lock(bot_id)
+        return None
     except AuthKeyDuplicatedError as exc:
         _append_log("error", f"AuthKeyDuplicatedError：session 已在其他进程/IP 使用 | {exc}", bot_id=bot_id)
         db2 = SessionLocal()

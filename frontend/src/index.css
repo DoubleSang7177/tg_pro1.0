@@ -1677,7 +1677,7 @@ body::after {
 /* —— 左侧栏 · 系统任务监控（交易台风卡片） —— */
 .sidebar-task-card {
   position: relative;
-  padding: 14px 16px;
+  padding: 10px 12px;
   border-radius: 14px;
   background: linear-gradient(135deg, rgba(20, 30, 50, 0.82), rgba(10, 20, 40, 0.92));
   border: 1px solid rgba(120, 180, 255, 0.15);
@@ -1723,8 +1723,8 @@ body::after {
 }
 
 .sidebar-task-icon-wrap {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1771,8 +1771,10 @@ body::after {
 .sidebar-task-sub {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.5);
-  margin-top: 2px;
+  margin-top: 1px;
   line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .sidebar-task-progress-track {
@@ -1780,7 +1782,7 @@ body::after {
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
-  margin-top: 10px;
+  margin-top: 6px;
 }
 
 .sidebar-task-progress-fill {
@@ -1806,9 +1808,6 @@ body::after {
 
 .sidebar-task-status {
   position: absolute;
-  top: 10px;
-  right: 12px;
-  z-index: 3;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -1816,6 +1815,35 @@ body::after {
   border-radius: 999px;
   pointer-events: none;
   line-height: 1.2;
+}
+
+.sidebar-task-status--inline {
+  position: static;
+  flex-shrink: 0;
+}
+
+.sidebar-task-list-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(110, 231, 183, 0.5) transparent;
+}
+
+.sidebar-task-list-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sidebar-task-list-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-task-list-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  background: linear-gradient(180deg, rgba(110, 231, 183, 0.55), rgba(45, 212, 191, 0.45));
+}
+
+.sidebar-task-list-scroll::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(134, 239, 172, 0.72), rgba(94, 234, 212, 0.62));
 }
 
 .sidebar-task-status--running {

@@ -340,6 +340,7 @@ function GlobalSidebarTaskMonitor({
   engagementSubmitting,
   engagementLiveLogs,
   nowMs,
+  onOpenTaskTab,
 }) {
   const rows = [];
 
@@ -496,32 +497,46 @@ function GlobalSidebarTaskMonitor({
         ? "sidebar-task-progress-fill sidebar-task-progress-fill--copy"
         : "sidebar-task-progress-fill sidebar-task-progress-fill--interact";
 
+  const openTaskTab = (variant) => {
+    if (typeof onOpenTaskTab !== "function") return;
+    if (variant === "growth") onOpenTaskTab("用户增长");
+    else if (variant === "copy") onOpenTaskTab("消息Copy");
+    else onOpenTaskTab("群组互动");
+  };
+
   return (
     <div className="shrink-0 border-t border-white/[0.06] px-2 pb-3 pt-2">
       <div className="mb-2 flex items-center gap-1.5 px-1">
         <Zap className="h-3.5 w-3.5 shrink-0 text-cyan-400/85" strokeWidth={2.25} aria-hidden />
         <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">系统任务</span>
       </div>
-      <div className="max-h-[180px] space-y-2.5 overflow-y-auto pr-0.5 [scrollbar-width:thin]">
+      <div className="sidebar-task-list-scroll max-h-[180px] space-y-2.5 overflow-y-auto pr-0.5 [scrollbar-width:thin]">
         {rows.map((r) => {
           const Icon = r.Icon;
           const w = Math.min(100, Math.max(0, Number(r.progressPct) || 0));
           return (
-            <div key={r.key} className={cardClass(r.variant, r.errorGlow)}>
-              <span className={statusPillClass(r.unified)}>{r.unified}</span>
+            <button
+              key={r.key}
+              type="button"
+              onClick={() => openTaskTab(r.variant)}
+              className={`${cardClass(r.variant, r.errorGlow)} w-full text-left`}
+            >
               <div className="relative flex gap-3">
                 <div className={iconWrapClass(r.variant, r.iconPulse)}>
                   <Icon className="h-[18px] w-[18px]" strokeWidth={2.25} aria-hidden />
                 </div>
-                <div className="min-w-0 flex-1 pr-[4.5rem]">
-                  <div className="sidebar-task-title">{r.title}</div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <div className="sidebar-task-title truncate">{r.title}</div>
+                    <span className={`${statusPillClass(r.unified)} sidebar-task-status--inline`}>{r.unified}</span>
+                  </div>
                   <div className="sidebar-task-sub">{r.subtitle}</div>
                   <div className="sidebar-task-progress-track">
                     <div className={fillClass(r.variant)} style={{ width: `${w}%` }} />
                   </div>
                 </div>
               </div>
-            </div>
+            </button>
           );
         })}
       </div>
@@ -820,7 +835,7 @@ function AccountPoolNeonDistributionPanel({
         <div className="flex min-h-0 flex-1 items-stretch gap-3 overflow-visible">
           <div
             ref={donutWrapRef}
-            className="relative w-[118px] shrink-0 overflow-visible sm:w-[128px]"
+            className="relative flex w-[118px] shrink-0 flex-col items-center overflow-visible sm:w-[128px]"
             onMouseLeave={(e) => {
               const next = e.relatedTarget;
               if (next instanceof Node && e.currentTarget.contains(next)) return;
@@ -878,10 +893,7 @@ function AccountPoolNeonDistributionPanel({
                 })
               )}
             </svg>
-            <div
-              className="pointer-events-none absolute left-1/2 top-[46%] flex w-full max-w-[5.5rem] -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-0.5 text-center"
-              aria-hidden
-            >
+            <div className="pointer-events-none mt-1.5 flex w-full max-w-[5.8rem] flex-col items-center gap-0.5 text-center" aria-hidden>
               <span className="font-log text-[10px] font-medium uppercase tracking-[0.26em] text-slate-500/90">TOTAL</span>
               <span className="bg-gradient-to-b from-white to-slate-300 bg-clip-text text-3xl font-extrabold tabular-nums leading-none text-transparent drop-shadow-[0_0_14px_rgba(255,255,255,0.12)]">
                 {total}
@@ -3898,6 +3910,7 @@ export default function App() {
             engagementSubmitting={engagementSubmitting}
             engagementLiveLogs={engagementLiveLogs}
             nowMs={sidebarMonitorNow}
+            onOpenTaskTab={setTab}
           />
         ) : null}
       </aside>

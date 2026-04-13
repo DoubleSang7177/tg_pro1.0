@@ -17,11 +17,12 @@ function poolStatusLabel(status) {
   return "失效";
 }
 
-function countryFlagEmoji(code) {
+function countryFlagIconUrl(code) {
   const c = String(code || "").trim().toUpperCase();
   if (c.length !== 2 || !/^[A-Z]{2}$/.test(c)) return "";
-  const cp = (ch) => 0x1f1e6 + (ch.charCodeAt(0) - 65);
-  return String.fromCodePoint(cp(c[0]), cp(c[1]));
+  const hexA = (0x1f1e6 + (c.charCodeAt(0) - 65)).toString(16);
+  const hexB = (0x1f1e6 + (c.charCodeAt(1) - 65)).toString(16);
+  return `https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg/${hexA}-${hexB}.svg`;
 }
 
 function poolCheckStatusUi(checkStatus) {
@@ -186,8 +187,17 @@ export function ProxyPoolGlassModal({
                                 {row.check_ip || "—"}
                               </span>
                               <span className="text-slate-600">·</span>
-                              <span>
-                                <span aria-hidden>{countryFlagEmoji(row.country_code)}</span>{" "}
+                              <span className="inline-flex items-center gap-1">
+                                {countryFlagIconUrl(row.country_code) ? (
+                                  <img
+                                    src={countryFlagIconUrl(row.country_code)}
+                                    alt={`${String(row.country_code || "").toUpperCase()} flag`}
+                                    className="h-3.5 w-3.5 rounded-[1px]"
+                                    loading="lazy"
+                                  />
+                                ) : (
+                                  <span aria-hidden>🌐</span>
+                                )}{" "}
                                 {row.check_country || "—"}
                               </span>
                               <span className="text-slate-600">·</span>

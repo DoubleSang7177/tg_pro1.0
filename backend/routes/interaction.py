@@ -43,6 +43,16 @@ class DeleteTargetGroupsBody(BaseModel):
     usernames: list[str] = Field(default_factory=list, description="待删除的互动目标群组 username 列表")
 
 
+class UpdateTargetGroupRemarkBody(BaseModel):
+    remark: str | None = Field(default=None, description="备注，空字符串表示清空")
+
+
+class UpdateTargetGroupBody(BaseModel):
+    username: str = Field(..., min_length=1, description="群组ID（如 @xxx 或 -100...）")
+    title: str | None = Field(default=None, description="群组名称（可选）")
+    remark: str | None = Field(default=None, description="备注（可选）")
+
+
 def _extract_identifiers(body: RegisterTargetGroupsBody) -> list[str]:
     def _canonical_username(raw: str) -> str:
         base = _normalize_chat_identifier(raw)
@@ -274,6 +284,70 @@ def delete_interaction_target_groups(
         if raw_key not in existing and norm_key not in existing:
             skipped.append(raw)
     return {"ok": True, "deleted": deleted, "skipped": skipped}
+
+
+@router.patch("/interaction/target-groups/{group_id}/remark")
+def update_interaction_target_group_remark(
+    group_id: int,
+    body: UpdateTargetGroupRemarkBody,
+    user: User = Depends(require_user_or_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    _ = user
+    row = db.query(InteractionTargetGroup).filter(InteractionTargetGroup.id == group_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="群组不存在")
+    remark = (body.remark or "").strip()[:255] or None
+    row.remark = remark
+    db.add(row)
+    db.commit()
+    return {"ok": True, "group": {"id": row.id, "remark": row.remark}}
+
+
+@router.patch("/interaction/target-groups/{group_id}")
+def update_interaction_target_group(
+    group_id: int,
+    body: UpdateTargetGroupBody,
+    user: User = Depends(require_user_or_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    _ = user
+    row = db.query(InteractionTargetGroup).filter(InteractionTargetGroup.id == group_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="群组不存在")
+
+    normalized_username = _normalize_chat_identifier(str(body.username or "").strip())
+    normalized_username = str(normalized_username or "").strip()
+    if not normalized_username:
+        raise HTTPException(status_code=400, detail="群组ID不能为空")
+
+    title = (body.title or "").strip()[:255] or normalized_username
+    remark = (body.remark or "").strip()[:255] or None
+
+    duplicate = (
+        db.query(InteractionTargetGroup)
+        .filter(InteractionTargetGroup.username == normalized_username, InteractionTargetGroup.id != group_id)
+        .first()
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="群组ID已存在，请使用其他值")
+
+    row.username = normalized_username
+    row.title = title
+    row.remark = remark
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {
+        "ok": True,
+        "group": {
+            "id": row.id,
+            "username": row.username,
+            "title": row.title,
+            "remark": row.remark,
+            "display_handle": row.username,
+        },
+    }
 
 
 @router.post("/interaction/tasks")

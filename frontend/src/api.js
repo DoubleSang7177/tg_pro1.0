@@ -291,6 +291,22 @@ export const api = {
         usernames: Array.isArray(usernames) ? usernames : [],
       }),
     }),
+  updateInteractionTargetGroupRemark: (groupId, remark) =>
+    request(`/interaction/target-groups/${Number(groupId)}/remark`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        remark: String(remark || ""),
+      }),
+    }),
+  updateInteractionTargetGroup: (groupId, payload) =>
+    request(`/interaction/target-groups/${Number(groupId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        username: String(payload?.username || "").trim(),
+        title: String(payload?.title || "").trim(),
+        remark: String(payload?.remark || ""),
+      }),
+    }),
   interactionLive: (jobId) => request(`/interaction/live/${encodeURIComponent(jobId)}`),
   startInteractionTask: (payload) =>
     request("/interaction/tasks", {

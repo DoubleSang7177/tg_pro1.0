@@ -139,6 +139,7 @@ def list_users(_admin: User = Depends(require_admin), db: Session = Depends(get_
                 "id": u.id,
                 "username": u.username,
                 "role": u.role,
+                "avatar_url": u.avatar_url,
                 "created_at": u.created_at.isoformat() if u.created_at else None,
                 "stats": analytics[u.id],
             }

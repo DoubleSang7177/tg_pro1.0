@@ -37,7 +37,7 @@ import {
   Users2,
   XCircle,
 } from "lucide-react";
-import { api, downloadScraperFile, downloadScraperTaskById, getWebSocketUrl } from "./api";
+import { api, BASE_URL, downloadScraperFile, downloadScraperTaskById, getWebSocketUrl } from "./api";
 import { AuthModal } from "./components/AuthModal";
 import { GlassDropdown } from "./components/GlassDropdown";
 import { AdminTradingSelect } from "./components/AdminTradingSelect";
@@ -86,12 +86,13 @@ function proxyListStatusLabel(status) {
   return String(status || "—");
 }
 
-/** Unicode 国旗（ISO 3166-1 alpha-2）；非法或空码为 🌐 */
-function countryCodeToFlag(code) {
-  if (!code || String(code).trim() === "") return "🌐";
-  const s = String(code).trim().toUpperCase();
-  if (s.length !== 2 || !/^[A-Z]{2}$/.test(s)) return "🌐";
-  return s.replace(/./g, (char) => String.fromCodePoint(127397 + char.charCodeAt(0)));
+/** 用 Twemoji SVG 显示国旗，避免部分系统把国旗 emoji 显示成 TH/MY 文本 */
+function countryCodeToTwemojiUrl(code) {
+  const s = String(code || "").trim().toUpperCase();
+  if (s.length !== 2 || !/^[A-Z]{2}$/.test(s)) return "";
+  const hexA = (0x1f1e6 + (s.charCodeAt(0) - 65)).toString(16);
+  const hexB = (0x1f1e6 + (s.charCodeAt(1) - 65)).toString(16);
+  return `https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg/${hexA}-${hexB}.svg`;
 }
 
 const countryMap = {
@@ -105,19 +106,25 @@ const countryMap = {
 function proxyGeoRegionCell(p) {
   const cc = String(p.country_code || "").trim().toUpperCase();
   const validCode = cc.length === 2 && /^[A-Z]{2}$/.test(cc);
-  const flag = validCode ? countryCodeToFlag(cc) : "🌐";
+  const flagUrl = validCode ? countryCodeToTwemojiUrl(cc) : "";
   const countryName = validCode && countryMap[cc] ? countryMap[cc] : "未知地区";
   const cityLine = String(p.check_city || "").trim() || "-";
 
   return (
     <div className="country-block min-w-0 max-w-[12rem] py-0.5">
       <div className="country-row flex items-center">
-        <span
-          className="flag mr-[6px] text-base leading-none [filter:drop-shadow(0_0_4px_rgba(255,255,255,0.2))]"
-          aria-hidden
-        >
-          {flag}
-        </span>
+        {flagUrl ? (
+          <img
+            src={flagUrl}
+            alt={`${cc} flag`}
+            className="mr-[6px] h-4 w-4 shrink-0 rounded-[2px] [filter:drop-shadow(0_0_4px_rgba(255,255,255,0.2))]"
+            loading="lazy"
+          />
+        ) : (
+          <span className="flag mr-[6px] text-base leading-none [filter:drop-shadow(0_0_4px_rgba(255,255,255,0.2))]" aria-hidden>
+            🌐
+          </span>
+        )}
         <span className="country-name text-[13px] font-medium leading-tight text-[#e2e8f0]">{countryName}</span>
       </div>
       <div className="city ml-[22px] text-xs leading-snug text-[#94a3b8]">{cityLine}</div>
@@ -172,6 +179,13 @@ function userAvatarHue(username) {
   const s = String(username || "?");
   for (let i = 0; i < s.length; i++) h = (h + s.charCodeAt(i) * (i + 1)) % 360;
   return h;
+}
+
+function resolveAvatarUrl(avatarUrl) {
+  const u = String(avatarUrl || "").trim();
+  if (!u) return "";
+  if (u.startsWith("http")) return u;
+  return `${BASE_URL}${u.startsWith("/") ? u : `/${u}`}`;
 }
 
 function formatUserLogTime(iso) {
@@ -1237,7 +1251,7 @@ function GroupsHeroCard({ group }) {
                 <span className="group-hero-badge">{isTodayLeader ? "今日增长最快" : "推荐群组"}</span>
               </span>
               <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-medium text-slate-400">
-                {isTodayLeader ? "按今日拉人" : "按累计拉人"}
+                {isTodayLeader ? "按今日增长" : "按累计增长"}
               </span>
             </div>
             <h2 className="truncate text-xl font-bold tracking-tight text-white md:text-2xl">{title}</h2>
@@ -1249,11 +1263,11 @@ function GroupsHeroCard({ group }) {
               </div>
               <div className="flex items-center gap-1.5 text-xs text-slate-500">
                 <BarChart3 className="h-3.5 w-3.5 text-sky-400/80" aria-hidden />
-                <span>累计拉人 {total.toLocaleString("zh-CN")}</span>
+                <span>累计增长 {total.toLocaleString("zh-CN")}</span>
               </div>
               <div className="flex items-center gap-1.5 text-xs text-slate-500">
                 <TrendingUp className="h-3.5 w-3.5 text-teal-400/80" aria-hidden />
-                <span>昨日拉人 {yest.toLocaleString("zh-CN")}</span>
+                <span>今日增长 {today.toLocaleString("zh-CN")}</span>
               </div>
               <div
                 className={`flex items-center gap-1.5 text-xs ${
@@ -1283,7 +1297,7 @@ function GroupsHeroCard({ group }) {
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-center gap-1 border-t border-white/[0.08] pt-6 md:border-l md:border-t-0 md:pl-10 md:pt-0">
-          <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">今日拉人</span>
+          <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">今日增长</span>
           <p className="group-hero-metric-xl tabular-nums">{today.toLocaleString("zh-CN")}</p>
           <span className="text-xs text-slate-500">核心增长指标</span>
         </div>
@@ -1347,7 +1361,7 @@ function TargetGroupDashboardCard({ group, onUpdateDailyLimit, operationsLocked 
         <div className="rounded-xl border border-violet-400/10 bg-[rgba(0,0,0,0.22)] px-3 py-3 backdrop-blur-sm">
           <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500/90">
             <span aria-hidden>📈</span>
-            <span>累计拉人</span>
+            <span>累计增长</span>
           </div>
           <p className="stat-num-dash-pull mt-1.5 text-xl font-bold tabular-nums leading-none sm:text-2xl">
             {total.toLocaleString("zh-CN")}
@@ -1358,15 +1372,15 @@ function TargetGroupDashboardCard({ group, onUpdateDailyLimit, operationsLocked 
       {/* 拉人 · 离群：无边框数据流（横向 label + value + 渐变分割线） */}
       <div className="tg-dash-metrics-stream mt-4">
         <div className="tg-dash-gradient-rule-h" aria-hidden />
-        <p className="tg-dash-stream-head">拉人 · 离群</p>
+        <p className="tg-dash-stream-head">增长 · 离群</p>
         <div className="flex min-h-[3.25rem] w-full items-stretch">
           <div className="tg-dash-metric-item flex min-w-0 flex-1 flex-col justify-center gap-1 px-1 sm:px-2">
-            <span className="tg-dash-stream-label">今日拉人</span>
+            <span className="tg-dash-stream-label">今日增长</span>
             <span className="tg-dash-stream-value">{today.toLocaleString("zh-CN")}</span>
           </div>
           <div className="tg-dash-gradient-rule-v shrink-0" aria-hidden />
           <div className="tg-dash-metric-item flex min-w-0 flex-1 flex-col justify-center gap-1 px-1 sm:px-2">
-            <span className="tg-dash-stream-label">昨日拉人</span>
+            <span className="tg-dash-stream-label">昨日增长</span>
             <span className="tg-dash-stream-value">{yest.toLocaleString("zh-CN")}</span>
           </div>
           <div className="tg-dash-gradient-rule-v shrink-0" aria-hidden />
@@ -1398,7 +1412,7 @@ function TargetGroupDashboardCard({ group, onUpdateDailyLimit, operationsLocked 
       <div className="tg-dash-net-row tg-dash-net-row--emphasis">
         <div className="tg-dash-gradient-rule-h" aria-hidden />
         <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
-          <span className="tg-dash-net-label">净增长（昨日拉人 − 昨日离群）</span>
+          <span className="tg-dash-net-label">净增长（昨日增长 − 昨日离群）</span>
           <p className={`${netValueClass} tg-dash-net-value-display`}>
             {netGrowth > 0 ? "+" : ""}
             {netGrowth.toLocaleString("zh-CN")}
@@ -2212,7 +2226,9 @@ export default function App() {
   const engagementGroupOptions = useMemo(
     () =>
       (interactionGroups || []).map((g) => ({
+        id: g.id,
         value: g.username,
+        title: g.title || "",
         label: `${g.title || g.username} (${g.display_handle || g.username})`,
         remark: g.remark || "",
       })),
@@ -2781,6 +2797,36 @@ export default function App() {
       pushToast(e.message);
     } finally {
       setEngagementDeleteSaving(false);
+    }
+  };
+
+  const onUpdateEngagementGroup = async (groupId, payload) => {
+    if (!guardLoggedIn()) return;
+    try {
+      const prevGroup = (interactionGroups || []).find((g) => Number(g.id) === Number(groupId));
+      const prevUsername = String(prevGroup?.username || "");
+      const res = await api.updateInteractionTargetGroup(groupId, payload);
+      const nextGroup = res?.group || {};
+      setInteractionGroups((prev) =>
+        (prev || []).map((g) =>
+          Number(g.id) === Number(groupId)
+            ? {
+                ...g,
+                username: nextGroup.username ?? g.username,
+                title: nextGroup.title ?? g.title,
+                remark: nextGroup.remark ?? "",
+                display_handle: nextGroup.display_handle ?? nextGroup.username ?? g.display_handle,
+              }
+            : g,
+        ),
+      );
+      if (prevUsername && nextGroup.username && prevUsername !== nextGroup.username) {
+        setEngagementSelectedGroups((prev) => prev.map((v) => (v === prevUsername ? nextGroup.username : v)));
+      }
+      pushToast("群组信息已更新");
+    } catch (e) {
+      pushToast(e.message);
+      throw e;
     }
   };
 
@@ -4481,6 +4527,7 @@ export default function App() {
                     values={engagementSelectedGroups}
                     onChange={setEngagementSelectedGroups}
                     onDeleteSelected={onDeleteEngagementSelected}
+                    onUpdateGroup={onUpdateEngagementGroup}
                     deleting={engagementDeleteSaving}
                     options={engagementGroupOptions}
                     disabled={!profile}
@@ -4594,7 +4641,9 @@ export default function App() {
               </div>
             </div>
 
-            <aside className="engagement-live-terminal flex min-h-[min(520px,72vh)] flex-col overflow-visible rounded-2xl border border-cyan-400/15 bg-[rgba(6,10,18,0.72)] shadow-[0_8px_40px_rgba(0,0,0,0.5),0_0_48px_rgba(34,211,238,0.08)] backdrop-blur-[20px]">
+            <aside
+              className="engagement-live-terminal flex h-full min-h-[min(900px,98vh)] max-h-[100dvh] flex-col overflow-hidden rounded-2xl border border-cyan-400/15 bg-[rgba(6,10,18,0.72)] shadow-[0_8px_40px_rgba(0,0,0,0.5),0_0_48px_rgba(34,211,238,0.08)] backdrop-blur-[20px]"
+            >
               <div className="flex shrink-0 items-center justify-between gap-2 border-b border-cyan-400/12 bg-[rgba(0,255,200,0.04)] px-4 py-3 backdrop-blur-md">
                 <div className="flex items-center gap-2">
                   <span
@@ -4612,7 +4661,7 @@ export default function App() {
                 ref={engagementLogRef}
                 role="log"
                 aria-live="polite"
-                className={`engagement-live-terminal-body growth-scroll ${PANEL_SCROLL_MAX_H} min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono`}
+                className="engagement-live-terminal-body growth-scroll min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono"
               >
                 {engagementLiveLogs.length === 0 ? (
                   <p className="py-12 text-center text-[11px] leading-relaxed text-slate-600">
@@ -5894,7 +5943,16 @@ export default function App() {
                               }}
                               aria-hidden
                             >
-                              {(u.username || "?").slice(0, 1).toUpperCase()}
+                              {u.avatar_url ? (
+                                <img
+                                  src={resolveAvatarUrl(u.avatar_url)}
+                                  alt={`${u.username || "user"} avatar`}
+                                  className="h-full w-full rounded-full object-cover"
+                                  loading="lazy"
+                                />
+                              ) : (
+                                (u.username || "?").slice(0, 1).toUpperCase()
+                              )}
                             </div>
                             <div className="min-w-0 flex-1">
                               <div className="flex flex-wrap items-center gap-2">

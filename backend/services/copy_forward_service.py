@@ -169,6 +169,8 @@ _runtime: dict[int, dict[str, Any]] = {}
 # bot_id -> source_chat_id -> list task_id
 _source_index: dict[int, dict[int, list[int]]] = {}
 _active_task_ids: set[int] = set()
+# bot_id -> 保活任务（get_me 防止长时间无流量被服务端回收）
+_keepalive_tasks: dict[int, asyncio.Task] = {}
 
 
 def _append_log(level: str, message: str, task_id: int | None = None, bot_id: int | None = None) -> None:
@@ -182,8 +184,30 @@ def _append_log(level: str, message: str, task_id: int | None = None, bot_id: in
     _log_deque.append(entry)
     if level == "error":
         log.error("copy | task=%s bot=%s | %s", task_id, bot_id, message)
+    elif level in ("warn", "warning"):
+        log.warning("copy | task=%s bot=%s | %s", task_id, bot_id, message)
     else:
         log.info("copy | task=%s bot=%s | %s", task_id, bot_id, message)
+
+
+def _event_text_preview(event: Any, limit: int = 50) -> str:
+    """NewMessage 事件文本预览（无正文时返回空串）。"""
+    msg = getattr(event, "message", None)
+    if msg is not None:
+        body = getattr(msg, "message", None)
+        if body is not None and str(body).strip():
+            s = str(body).replace("\r\n", " ").replace("\n", " ").strip()
+            return s[:limit]
+        raw_text = getattr(msg, "raw_text", None)
+        if raw_text and str(raw_text).strip():
+            s = str(raw_text).replace("\r\n", " ").replace("\n", " ").strip()
+            return s[:limit]
+    for attr in ("raw_text", "text"):
+        v = getattr(event, attr, None)
+        if v and str(v).strip():
+            s = str(v).replace("\r\n", " ").replace("\n", " ").strip()
+            return s[:limit]
+    return ""
 
 
 def log_snapshot(limit: int = 200) -> list[dict[str, Any]]:
@@ -192,6 +216,61 @@ def log_snapshot(limit: int = 200) -> list[dict[str, Any]]:
 
 def append_log(level: str, message: str, task_id: int | None = None, bot_id: int | None = None) -> None:
     _append_log(level, message, task_id=task_id, bot_id=bot_id)
+
+
+def _bot_has_active_tasks_in_memory(bot_id: int) -> bool:
+    """内存中该 Bot 是否仍有已注册的 copy 任务（监听索引用）。"""
+    s = _bot_task_ids.get(bot_id)
+    return bool(s)
+
+
+def bot_has_active_copy_tasks_sync(bot_id: int) -> bool:
+    """
+    同步判断：该 Bot 是否存在 status=running 的 copy 任务（以数据库为准，供路由/其它模块查询）。
+    与内存索引双保险，避免进程内状态与 DB 不一致时误断开。
+    """
+    db = SessionLocal()
+    try:
+        n = (
+            db.query(CopyTask)
+            .filter(CopyTask.bot_id == bot_id, CopyTask.status == "running")
+            .count()
+        )
+        return n > 0
+    finally:
+        db.close()
+
+
+def _stop_keepalive(bot_id: int) -> None:
+    t = _keepalive_tasks.pop(bot_id, None)
+    if t is not None and not t.done():
+        t.cancel()
+
+
+async def _keepalive_loop(bot_id: int) -> None:
+    """约每 30s 调用 get_me，降低长时间无交互被对端断开导致监听器失效的概率。"""
+    try:
+        while True:
+            await asyncio.sleep(30)
+            if bot_id not in _bot_clients:
+                break
+            c = _bot_clients.get(bot_id)
+            if not c:
+                break
+            try:
+                if c.is_connected():
+                    await c.get_me()
+            except Exception as exc:
+                log.debug("copy keepalive get_me failed bot_id=%s: %s", bot_id, exc)
+    except asyncio.CancelledError:
+        raise
+
+
+def _ensure_keepalive_started(bot_id: int) -> None:
+    existing = _keepalive_tasks.get(bot_id)
+    if existing is not None and not existing.done():
+        return
+    _keepalive_tasks[bot_id] = asyncio.create_task(_keepalive_loop(bot_id))
 
 
 def _message_hash(task_id: int, chat_id: int, message_id: int) -> str:
@@ -248,10 +327,21 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
         tids = list(_source_index.get(bot_id, {}).get(chat_id, []))
         client = _bot_clients.get(bot_id)
     if not tids:
+        _append_log(
+            "warn",
+            f"[FILTER] 消息被过滤（无任务监听此 chat，或源频道 id 与配置不一致）| chat_id={chat_id}",
+            bot_id=bot_id,
+        )
         return
     if not client:
         _append_log("warn", f"收到新消息但 Telethon 客户端未就绪（bot_id={bot_id}），跳过", bot_id=bot_id)
         return
+
+    _append_log(
+        "info",
+        f"[FILTER] 命中监听索引 | chat_id={chat_id} | 关联任务数={len(tids)}",
+        bot_id=bot_id,
+    )
 
     db = SessionLocal()
     try:
@@ -263,10 +353,30 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
             rt = _runtime.get(task_id)
             if not rt:
                 continue
+            source_id = int(rt["source_id"])
+            _append_log(
+                "info",
+                f"[FILTER] 当前消息来自: {chat_id} | 任务 source_id: {source_id} | task_id={task_id}",
+                task_id=task_id,
+                bot_id=bot_id,
+            )
             task = db.query(CopyTask).filter(CopyTask.id == task_id).first()
             if not task or task.status != "running":
+                st = getattr(task, "status", None) if task else None
+                _append_log(
+                    "warn",
+                    f"[FILTER] 消息被过滤（任务未运行）| task_id={task_id} status={st!r}",
+                    task_id=task_id,
+                    bot_id=bot_id,
+                )
                 continue
-            if int(rt["source_id"]) != chat_id:
+            if source_id != chat_id:
+                _append_log(
+                    "warn",
+                    "[FILTER] 消息被过滤（非目标源）",
+                    task_id=task_id,
+                    bot_id=bot_id,
+                )
                 continue
 
             msg_id = int(event.id)
@@ -278,13 +388,31 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
                 db.commit()
             except IntegrityError:
                 db.rollback()
+                _append_log(
+                    "info",
+                    f"[FILTER] 重复消息已处理，跳过转发 | msg_id={msg_id}",
+                    task_id=task_id,
+                    bot_id=bot_id,
+                )
                 continue
 
             tgt = int(rt["target_id"])
+            _append_log(
+                "info",
+                f"[FILTER] 判断通过 | task_id={task_id} source={chat_id} target={tgt}",
+                task_id=task_id,
+                bot_id=bot_id,
+            )
             try:
                 if not client.is_connected():
                     _append_log("warn", f"转发前重连 Telethon | task={task_id}", task_id=task_id, bot_id=bot_id)
                     await client.connect()
+                _append_log(
+                    "info",
+                    f"[FORWARD] 准备转发消息 id={msg_id} | target_id={tgt}",
+                    task_id=task_id,
+                    bot_id=bot_id,
+                )
                 await client.forward_messages(
                     tgt,
                     msg_id,
@@ -294,7 +422,7 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
                 )
             except Exception as exc:
                 err = str(exc)
-                _append_log("error", f"session 转发失败: {err}", task_id=task_id, bot_id=bot_id)
+                _append_log("error", f"[ERROR] 转发失败 msg_id={msg_id}: {err}", task_id=task_id, bot_id=bot_id)
                 if (
                     "AUTH_KEY" in err
                     or "SESSION" in err.upper()
@@ -326,7 +454,7 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
             db.commit()
             _append_log(
                 "info",
-                f"已通过 session 转发 msg_id={msg_id} → target {tgt}",
+                f"[SUCCESS] 转发成功 msg_id={msg_id} | target_id={tgt}",
                 task_id=task_id,
                 bot_id=bot_id,
             )
@@ -337,6 +465,15 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
 def _make_handler(bot_id: int):
     async def handler(event: Any) -> None:
         try:
+            chat_id = int(event.chat_id)
+            msg_id = int(event.id)
+            preview = _event_text_preview(event, 50)
+            _append_log(
+                "info",
+                f"[EVENT] 收到消息 | chat_id={chat_id} | msg_id={msg_id}",
+                bot_id=bot_id,
+            )
+            _append_log("info", f"[EVENT] 消息内容: {preview!r}", bot_id=bot_id)
             await _process_new_message(bot_id, event)
         except Exception:
             log.exception("copy handler bot_id=%s", bot_id)
@@ -346,6 +483,7 @@ def _make_handler(bot_id: int):
 
 async def _ensure_client(bot_id: int) -> TelegramClient | None:
     if bot_id in _bot_clients:
+        _ensure_keepalive_started(bot_id)
         return _bot_clients[bot_id]
 
     db = SessionLocal()
@@ -389,7 +527,8 @@ async def _ensure_client(bot_id: int) -> TelegramClient | None:
 
         h = _make_handler(bot_id)
         client.add_event_handler(h, events.NewMessage(incoming=True))
-        _append_log("info", f"Telethon 已连接并注册 NewMessage 监听 bot_id={bot_id}", bot_id=bot_id)
+        _append_log("info", f"[SYSTEM] 已注册 NewMessage 监听器 | bot_id={bot_id}", bot_id=bot_id)
+        _ensure_keepalive_started(bot_id)
         return client
     except Exception as exc:
         _append_log("error", f"连接 Bot(session) 失败: {exc}", bot_id=bot_id)
@@ -405,15 +544,29 @@ async def _ensure_client(bot_id: int) -> TelegramClient | None:
 
 async def _disconnect_bot_if_idle(bot_id: int) -> None:
     async with _registry_lock:
-        if _bot_task_ids.get(bot_id):
+        mem_busy = _bot_has_active_tasks_in_memory(bot_id)
+    if mem_busy:
+        return
+
+    if bot_has_active_copy_tasks_sync(bot_id):
+        msg = "[SYSTEM] 检测到空闲（内存无任务索引），但当前任务运行中，跳过断开"
+        _append_log("warn", msg, bot_id=bot_id)
+        log.warning("%s bot_id=%s", msg, bot_id)
+        return
+
+    async with _registry_lock:
+        if _bot_has_active_tasks_in_memory(bot_id):
             return
+
     c = _bot_clients.pop(bot_id, None)
-    if c:
-        try:
-            await c.disconnect()
-        except Exception:
-            log.debug("disconnect bot %s", bot_id, exc_info=True)
-        _append_log("info", f"已断开空闲 bot_id={bot_id}", bot_id=bot_id)
+    if not c:
+        return
+    _stop_keepalive(bot_id)
+    try:
+        await c.disconnect()
+    except Exception:
+        log.debug("disconnect bot %s", bot_id, exc_info=True)
+    _append_log("info", f"已断开空闲 bot_id={bot_id}", bot_id=bot_id)
 
 
 def _unregister_task_from_index(task_id: int, bot_id: int, source_id: int) -> None:
@@ -432,10 +585,13 @@ async def pause_task(task_id: int, *, reason: str | None = None) -> bool:
         rt = _runtime.pop(task_id, None)
         _active_task_ids.discard(task_id)
         if rt:
-            _unregister_task_from_index(task_id, int(rt["bot_id"]), int(rt["source_id"]))
-            bset = _bot_task_ids.setdefault(int(rt["bot_id"]), set())
+            bid = int(rt["bot_id"])
+            _unregister_task_from_index(task_id, bid, int(rt["source_id"]))
+            bset = _bot_task_ids.setdefault(bid, set())
             bset.discard(task_id)
-            bot_id = int(rt["bot_id"])
+            if not bset:
+                _bot_task_ids.pop(bid, None)
+            bot_id = bid
 
     db = SessionLocal()
     try:
@@ -529,7 +685,7 @@ async def start_task(task_id: int) -> dict[str, Any]:
 
         _append_log(
             "info",
-            f"任务启动成功 source={src_id} target={tgt_id}（监听与转发均使用 Telethon session，不使用 bot_token）",
+            f"[TASK] copy任务启动 | source={src_id} target={tgt_id}",
             task_id=task_id,
             bot_id=bot.id,
         )
@@ -603,6 +759,7 @@ def schedule_pause_task(task_id: int) -> None:
 
 
 async def force_disconnect_bot(bot_id: int) -> None:
+    _stop_keepalive(bot_id)
     c = _bot_clients.pop(bot_id, None)
     if c:
         try:

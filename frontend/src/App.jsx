@@ -5536,102 +5536,112 @@ export default function App() {
 
       {userDetailResolved && isAdmin ? (
         <div
-          className="fixed inset-0 z-[3000] flex items-center justify-center bg-[rgba(11,15,20,0.55)] p-4 backdrop-blur-md"
+          className="user-detail-glass-overlay"
           role="presentation"
           onClick={() => setUserDetailModal(null)}
         >
           <div
-            className={`${MODAL_SHELL} max-h-[min(90vh,720px)] w-full max-w-lg overflow-y-auto`}
+            className="user-detail-glass-dialog"
             role="dialog"
             aria-modal="true"
             aria-labelledby="user-detail-modal-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="border-b border-white/[0.06] px-5 py-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 id="user-detail-modal-title" className="text-lg font-bold tracking-tight text-slate-50">
-                    用户档案
-                  </h3>
-                  <p className="mt-1 font-mono text-sm text-cyan-300/90">{userDetailResolved.username}</p>
-                </div>
-                <button
-                  type="button"
-                  className={`${BTN_SECONDARY} shrink-0 px-3 py-1.5 text-sm`}
-                  onClick={() => setUserDetailModal(null)}
-                >
-                  关闭
-                </button>
+            <div className="user-detail-glass-header">
+              <div className="min-w-0">
+                <h3 id="user-detail-modal-title" className="user-detail-glass-title">
+                  用户档案
+                </h3>
+                <p className="user-detail-glass-subtitle">{userDetailResolved.username}</p>
               </div>
+              <button
+                type="button"
+                className="user-detail-glass-close"
+                onClick={() => setUserDetailModal(null)}
+              >
+                关闭
+              </button>
             </div>
-            <div className="space-y-5 px-5 py-4">
-              <section>
-                <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">基础信息</p>
-                <div className="space-y-2 rounded-xl border border-white/[0.08] bg-black/20 p-3 text-sm">
-                  <div className="flex justify-between gap-2">
-                    <span className="text-slate-500">用户名</span>
-                    <span className="font-medium text-slate-200">{userDetailResolved.username}</span>
+            <div className="user-detail-glass-body">
+              <section className="user-detail-glass-section">
+                <p className="user-detail-glass-section-label">基础信息</p>
+                <div className="user-detail-glass-card">
+                  <div className="user-detail-glass-row">
+                    <span className="user-detail-glass-field-label">用户名</span>
+                    <span className="user-detail-glass-field-value">{userDetailResolved.username}</span>
                   </div>
-                  <div className="flex justify-between gap-2">
-                    <span className="text-slate-500">创建时间</span>
-                    <span className="text-right text-slate-300">
+                  <div className="user-detail-glass-row">
+                    <span className="user-detail-glass-field-label">创建时间</span>
+                    <span className="user-detail-glass-field-value">
                       {userDetailResolved.created_at
                         ? new Date(userDetailResolved.created_at).toLocaleString("zh-CN", { hour12: false })
                         : "—"}
                     </span>
                   </div>
-                  <div className="flex justify-between gap-2">
-                    <span className="text-slate-500">角色</span>
-                    <span className="font-semibold text-amber-200/90">
+                  <div className="user-detail-glass-row">
+                    <span className="user-detail-glass-field-label">角色</span>
+                    <span className="user-detail-glass-field-value text-amber-200/95">
                       {String(userDetailResolved.role || "user").toUpperCase()}
                     </span>
                   </div>
                 </div>
               </section>
-              <section>
-                <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">行为统计</p>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="rounded-xl border border-sky-400/20 bg-sky-500/10 p-3">
-                    <p className="text-[10px] font-medium text-sky-200/80">今日操作</p>
-                    <p className="mt-1 text-2xl font-bold tabular-nums text-sky-100">
-                      {userDetailResolved.stats?.action_count_today ?? 0}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-violet-400/20 bg-violet-500/10 p-3">
-                    <p className="text-[10px] font-medium text-violet-200/80">总操作</p>
-                    <p className="mt-1 text-2xl font-bold tabular-nums text-violet-100">
-                      {userDetailResolved.stats?.total_actions ?? 0}
-                    </p>
-                  </div>
-                  <div className="col-span-2 rounded-xl border border-white/[0.08] bg-black/20 p-3">
-                    <p className="text-[10px] font-medium text-slate-500">最近活跃</p>
-                    <p className="mt-1 text-sm font-medium text-slate-200">
-                      {userDetailResolved.stats?.last_active_at
-                        ? new Date(userDetailResolved.stats.last_active_at).toLocaleString("zh-CN", { hour12: false })
-                        : "—"}
-                    </p>
-                    <p className="mt-0.5 text-[10px] text-slate-600">基于任务记录；与列表「在线」状态一致（5 分钟内）</p>
+              <section className="user-detail-glass-section">
+                <p className="user-detail-glass-section-label">行为统计</p>
+                <div className="user-detail-glass-card">
+                  <div className="user-detail-glass-metric-grid">
+                    <div className="user-detail-glass-metric">
+                      <span className="user-detail-glass-field-label">今日操作</span>
+                      <p className="user-detail-glass-metric-value user-detail-glass-metric-value--today">
+                        {userDetailResolved.stats?.action_count_today ?? 0}
+                      </p>
+                    </div>
+                    <div className="user-detail-glass-metric user-detail-glass-metric--total">
+                      <span className="user-detail-glass-field-label">总操作</span>
+                      <p className="user-detail-glass-metric-value user-detail-glass-metric-value--total">
+                        {userDetailResolved.stats?.total_actions ?? 0}
+                      </p>
+                    </div>
                   </div>
                 </div>
               </section>
-              <section>
-                <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">操作记录（最近 10 条）</p>
-                <div className="max-h-[220px] overflow-y-auto rounded-xl border border-white/[0.08] bg-black/30 p-2 font-mono text-[11px] leading-relaxed">
-                  {(userDetailResolved.stats?.activity_log || []).length === 0 ? (
-                    <p className="px-2 py-6 text-center text-slate-500">暂无任务类操作记录</p>
-                  ) : (
-                    (userDetailResolved.stats?.activity_log || []).map((line, idx) => (
-                      <div key={`${line.at}-${idx}`} className="border-b border-white/[0.05] py-2 last:border-b-0">
-                        <span className="text-slate-500">[{formatUserLogTime(line.at)}]</span>{" "}
-                        <span className="text-slate-200">{line.message}</span>
-                        {line.detail ? (
-                          <span className="mt-0.5 block truncate text-slate-500" title={line.detail}>
-                            {line.detail}
-                          </span>
-                        ) : null}
-                      </div>
-                    ))
-                  )}
+              <section className="user-detail-glass-section">
+                <p className="user-detail-glass-section-label">活跃信息</p>
+                <div className="user-detail-glass-card">
+                  <div className="user-detail-glass-row">
+                    <span className="user-detail-glass-field-label">最近活跃</span>
+                    <span className="user-detail-glass-field-value">
+                      {userDetailResolved.stats?.last_active_at
+                        ? new Date(userDetailResolved.stats.last_active_at).toLocaleString("zh-CN", { hour12: false })
+                        : "—"}
+                    </span>
+                  </div>
+                  <p className="user-detail-glass-log-hint mb-0 mt-2">
+                    基于任务记录；与列表「在线」状态一致（5 分钟内）
+                  </p>
+                </div>
+              </section>
+              <section className="user-detail-glass-section">
+                <p className="user-detail-glass-section-label">操作记录</p>
+                <div className="user-detail-glass-card user-detail-glass-card--log">
+                  <p className="user-detail-glass-log-hint">最近 10 条</p>
+                  <div className="user-detail-glass-log-scroll">
+                    {(userDetailResolved.stats?.activity_log || []).length === 0 ? (
+                      <p className="py-6 text-center text-sm text-slate-500">暂无任务类操作记录</p>
+                    ) : (
+                      (userDetailResolved.stats?.activity_log || []).map((line, idx) => (
+                        <div key={`${line.at}-${idx}`} className="user-detail-glass-log-row">
+                          <span className="user-detail-glass-log-time">[{formatUserLogTime(line.at)}]</span>{" "}
+                          <span className="user-detail-glass-log-msg">{line.message}</span>
+                          {line.detail ? (
+                            <span className="user-detail-glass-log-detail" title={line.detail}>
+                              {line.detail}
+                            </span>
+                          ) : null}
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
               </section>
             </div>

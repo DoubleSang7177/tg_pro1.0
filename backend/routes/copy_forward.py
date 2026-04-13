@@ -92,6 +92,7 @@ def list_bots(user: User | None = Depends(get_current_user_optional), db: Sessio
             "status": r.status,
             "last_error": r.last_error,
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "is_running_task": cfs.bot_has_active_copy_tasks_sync(r.id),
         }
         for r in rows
     ]

@@ -272,6 +272,25 @@ export const api = {
   },
   listScraperTasks: () => request("/scraper/tasks"),
   listInteractionTasks: () => request("/interaction/tasks"),
+  listInteractionTargetGroups: () => request("/interaction/target-groups"),
+  createInteractionTargetGroups: (payload) =>
+    request("/interaction/target-groups", {
+      method: "POST",
+      body: JSON.stringify({
+        usernames: Array.isArray(payload?.usernames) ? payload.usernames : [],
+        raw_input: String(payload?.raw_input || "").trim(),
+        title: String(payload?.title || "").trim() || null,
+        titles: Array.isArray(payload?.titles) ? payload.titles : [],
+        remark: String(payload?.remark || "").trim() || null,
+      }),
+    }),
+  deleteInteractionTargetGroups: (usernames) =>
+    request("/interaction/target-groups", {
+      method: "DELETE",
+      body: JSON.stringify({
+        usernames: Array.isArray(usernames) ? usernames : [],
+      }),
+    }),
   interactionLive: (jobId) => request(`/interaction/live/${encodeURIComponent(jobId)}`),
   startInteractionTask: (payload) =>
     request("/interaction/tasks", {
@@ -285,7 +304,12 @@ export const api = {
   registerInteractionTargetGroups: (usernames) =>
     request("/interaction/target-groups/register", {
       method: "POST",
-      body: JSON.stringify({ usernames: Array.isArray(usernames) ? usernames : [] }),
+      body: JSON.stringify({
+        usernames: Array.isArray(usernames) ? usernames : [],
+        raw_input: "",
+        title: null,
+        remark: null,
+      }),
     }),
   listCopyBots: () => request("/copy/bots"),
   createCopyBot: (payload) =>

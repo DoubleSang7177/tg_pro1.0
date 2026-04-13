@@ -1577,6 +1577,7 @@ export default function App() {
   const [sidebarEchoTick, setSidebarEchoTick] = useState(0);
   const [taskHighlight, setTaskHighlight] = useState({ active: null, previous: null, connecting: null });
   const [groups, setGroups] = useState([]);
+  const [interactionGroups, setInteractionGroups] = useState([]);
   const [proxyData, setProxyData] = useState({
     summary: {
       account_total: 0,
@@ -1796,6 +1797,13 @@ export default function App() {
   const engagementLogRef = useRef(null);
   const [engagementGroupResolution, setEngagementGroupResolution] = useState(null);
   const [engagementRegisterLoading, setEngagementRegisterLoading] = useState(false);
+  const [engagementAddModalOpen, setEngagementAddModalOpen] = useState(false);
+  const [engagementAddInput, setEngagementAddInput] = useState("");
+  const [engagementAddTitlesInput, setEngagementAddTitlesInput] = useState("");
+  const [engagementAddRemark, setEngagementAddRemark] = useState("");
+  const [engagementAddSaving, setEngagementAddSaving] = useState(false);
+  const [engagementDeleteSaving, setEngagementDeleteSaving] = useState(false);
+  const [engagementDeleteConfirmOpen, setEngagementDeleteConfirmOpen] = useState(false);
   const [sidebarMonitorNow, setSidebarMonitorNow] = useState(() => Date.now());
   const [targetGroupSortType, setTargetGroupSortType] = useState("today_join");
 
@@ -2203,11 +2211,12 @@ export default function App() {
 
   const engagementGroupOptions = useMemo(
     () =>
-      (groups || []).map((g) => ({
+      (interactionGroups || []).map((g) => ({
         value: g.username,
         label: `${g.title || g.username} (${g.display_handle || g.username})`,
+        remark: g.remark || "",
       })),
-    [groups],
+    [interactionGroups],
   );
 
   const engagementAccountPoolCount = useMemo(() => {
@@ -2333,10 +2342,16 @@ export default function App() {
           syncOk = false;
         }
       }
-      const baseCalls = [api.listTasks(), api.listAccounts(), api.listGroups(), api.listAccountPaths()];
+      const baseCalls = [
+        api.listTasks(),
+        api.listAccounts(),
+        api.listGroups(),
+        api.listAccountPaths(),
+        api.listInteractionTargetGroups(),
+      ];
       baseCalls.push(api.listProxies());
       const results = await Promise.all(baseCalls);
-      const [t, a, g, ap, p] = results;
+      const [t, a, g, ap, ig, p] = results;
       setTasks(t.tasks || []);
       setAccounts({
         active: a.active || [],
@@ -2346,6 +2361,7 @@ export default function App() {
         activity_feed: a.activity_feed || [],
       });
       setGroups(g.groups || []);
+      setInteractionGroups(ig.groups || []);
       setLastGroupMetadataSync(g.last_metadata_sync || null);
       setAccountPaths(ap.items || []);
       {
@@ -2671,7 +2687,7 @@ export default function App() {
   const onEngagementIgnoreUnknown = () => {
     const res = engagementGroupResolution;
     if (!res?.valid?.length) {
-      pushToast("没有已在目标群组库中的项，无法继续");
+      pushToast("没有已在互动目标群组库中的项，无法继续");
       setEngagementGroupResolution(null);
       return;
     }
@@ -2688,13 +2704,83 @@ export default function App() {
       await api.registerInteractionTargetGroups(res.invalid);
       await refreshBase();
       setEngagementGroupResolution(null);
-      pushToast("已写入目标群组库，正在启动任务…");
+      pushToast("已写入互动目标群组库，正在启动任务…");
       await runEngagementTask({ validOnly: false });
     } catch (e) {
       pushToast(e.message);
       setEngagementSubmitting(false);
     } finally {
       setEngagementRegisterLoading(false);
+    }
+  };
+
+  const openEngagementAddModal = () => {
+    if (!guardLoggedIn()) return;
+    setEngagementAddInput("");
+    setEngagementAddTitlesInput("");
+    setEngagementAddRemark("");
+    setEngagementAddModalOpen(true);
+  };
+
+  const closeEngagementAddModal = () => {
+    if (engagementAddSaving) return;
+    setEngagementAddModalOpen(false);
+  };
+
+  const onSubmitEngagementGroups = async () => {
+    if (!guardLoggedIn()) return;
+    const raw = String(engagementAddInput || "").trim();
+    if (!raw) {
+      pushToast("请先输入群组ID（支持换行批量）");
+      return;
+    }
+    const titleLines = String(engagementAddTitlesInput || "")
+      .split("\n")
+      .map((x) => x.trim());
+    setEngagementAddSaving(true);
+    try {
+      const r = await api.createInteractionTargetGroups({
+        raw_input: raw,
+        titles: titleLines,
+        remark: engagementAddRemark,
+      });
+      await refreshBase({ skipMetadataSync: true });
+      const added = (r?.added || []).length;
+      const updated = (r?.updated || []).length;
+      const skipped = (r?.skipped || []).length;
+      pushToast(`入库完成：新增 ${added}，更新 ${updated}，跳过 ${skipped}`);
+      setEngagementAddModalOpen(false);
+    } catch (e) {
+      pushToast(e.message);
+    } finally {
+      setEngagementAddSaving(false);
+    }
+  };
+
+  const onDeleteEngagementSelected = async () => {
+    if (!guardLoggedIn()) return;
+    const picked = engagementSelectedGroups || [];
+    if (!picked.length) return;
+    setEngagementDeleteConfirmOpen(true);
+  };
+
+  const onConfirmDeleteEngagementSelected = async () => {
+    const picked = engagementSelectedGroups || [];
+    if (!picked.length) {
+      setEngagementDeleteConfirmOpen(false);
+      return;
+    }
+    setEngagementDeleteSaving(true);
+    try {
+      const r = await api.deleteInteractionTargetGroups(picked);
+      await refreshBase({ skipMetadataSync: true });
+      setEngagementSelectedGroups([]);
+      setEngagementDeleteConfirmOpen(false);
+      pushToast(`已删除 ${r?.deleted?.length || 0} 个群组`);
+    } catch (e) {
+      pushToast(e.message);
+    } finally {
+      setEngagementDeleteSaving(false);
     }
   };
 
@@ -2744,6 +2830,7 @@ export default function App() {
     setAccounts({ active: [], limited: [], banned: [], recent_sidebar_echo: [], activity_feed: [] });
     setTaskHighlight({ active: null, previous: null, connecting: null });
     setGroups([]);
+    setInteractionGroups([]);
     setUsers([]);
       setAccountPaths([]);
       setSelectedGroup("");
@@ -2754,6 +2841,13 @@ export default function App() {
     setEngagementSelectedGroups([]);
     setEngagementGroupResolution(null);
     setEngagementRegisterLoading(false);
+    setEngagementAddModalOpen(false);
+    setEngagementAddInput("");
+    setEngagementAddTitlesInput("");
+    setEngagementAddRemark("");
+    setEngagementAddSaving(false);
+    setEngagementDeleteSaving(false);
+    setEngagementDeleteConfirmOpen(false);
     setGrowthExecSnapshot(null);
     setGrowthTaskStoppedUi(false);
     setPendingUsers([]);
@@ -4364,9 +4458,20 @@ export default function App() {
                       <span className="text-fuchsia-200/80">可用 + 当日受限</span> 账号（不含冷却中）· 今日消息随机表情 · 群间隔 5–15s
                     </p>
                   </div>
-                  <div className="rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/[0.06] px-3 py-2 text-center backdrop-blur-md sm:text-right">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-fuchsia-300/80">账号池</p>
-                    <p className="stat-num-risk text-2xl tabular-nums">{engagementAccountPoolCount}</p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={!op}
+                      title={!op ? guestTitle : undefined}
+                      onClick={openEngagementAddModal}
+                      className={`${SCRAPER_BTN_GLOW_SM} disabled:cursor-not-allowed disabled:opacity-45`}
+                    >
+                      添加群组
+                    </button>
+                    <div className="rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/[0.06] px-3 py-2 text-center backdrop-blur-md sm:text-right">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-fuchsia-300/80">账号池</p>
+                      <p className="stat-num-risk text-2xl tabular-nums">{engagementAccountPoolCount}</p>
+                    </div>
                   </div>
                 </div>
 
@@ -4375,11 +4480,13 @@ export default function App() {
                   <EngagementGroupPanel
                     values={engagementSelectedGroups}
                     onChange={setEngagementSelectedGroups}
+                    onDeleteSelected={onDeleteEngagementSelected}
+                    deleting={engagementDeleteSaving}
                     options={engagementGroupOptions}
                     disabled={!profile}
                   />
                   <p className="text-[10px] leading-relaxed text-slate-600">
-                    选项仅来自「目标群组」库（groups 表同步数据），不支持自由输入。
+                    选项仅来自「互动目标群组」库（interaction_target_groups 表），不支持自由输入。
                   </p>
                 </div>
 
@@ -4390,7 +4497,7 @@ export default function App() {
                   >
                     <h4 className="text-sm font-bold text-amber-200/95">部分群组未识别</h4>
                     <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                      下列标识在目标群组库中不存在。可登记入库后整单执行，或仅对已登记群继续。
+                      下列标识在互动目标群组库中不存在。可登记入库后整单执行，或仅对已登记群继续。
                     </p>
                     <ul className="mt-2 max-h-28 overflow-y-auto rounded-lg border border-white/[0.06] bg-black/25 px-2 py-1.5 font-mono text-[11px] text-amber-100/90">
                       {(engagementGroupResolution.invalid || []).map((u) => (
@@ -5986,6 +6093,122 @@ export default function App() {
           </div>
         </div>
       ) : null}
+
+      {engagementAddModalOpen && (
+        <div
+          className="fixed inset-0 z-[3200] flex items-center justify-center bg-[rgba(11,15,20,0.55)] p-4 backdrop-blur-md"
+          role="presentation"
+          onClick={closeEngagementAddModal}
+        >
+          <div
+            className={`${MODAL_SHELL} w-full max-w-xl p-5`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="engagement-add-group-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h3 id="engagement-add-group-title" className="text-base font-semibold text-slate-100">
+                添加互动目标群组
+              </h3>
+              <button type="button" className={`${BTN_SECONDARY} px-3 py-1.5 text-sm`} onClick={closeEngagementAddModal}>
+                关闭
+              </button>
+            </div>
+            <div className="space-y-3">
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium text-slate-300">群组ID（支持换行批量）</span>
+                <textarea
+                  rows={8}
+                  value={engagementAddInput}
+                  onChange={(e) => setEngagementAddInput(e.target.value)}
+                  placeholder={"@group_a\n@group_b\ngroup_c"}
+                  className={`${INPUT_FIELD} growth-scroll resize-y`}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium text-slate-300">群组名称（支持换行，与群组ID一一对应）</span>
+                <textarea
+                  rows={6}
+                  value={engagementAddTitlesInput}
+                  onChange={(e) => setEngagementAddTitlesInput(e.target.value)}
+                  placeholder={"CakeBaba 比特幣分析\nBTC每日必吃\n..."}
+                  className={`${INPUT_FIELD} growth-scroll resize-y`}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium text-slate-300">备注（可选）</span>
+                <input
+                  value={engagementAddRemark}
+                  onChange={(e) => setEngagementAddRemark(e.target.value)}
+                  placeholder="例如：仅互动，不增长"
+                  className={INPUT_FIELD}
+                  maxLength={255}
+                />
+              </label>
+              <p className="text-[11px] leading-relaxed text-slate-500">
+                群组ID会统一保存为 @xxx；名称不填时将使用对应 @xxx 作为展示名称。
+              </p>
+            </div>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button type="button" className={BTN_SECONDARY} disabled={engagementAddSaving} onClick={closeEngagementAddModal}>
+                取消
+              </button>
+              <button
+                type="button"
+                className={`${BTN_PRIMARY} min-w-[120px] disabled:cursor-not-allowed disabled:opacity-50`}
+                disabled={engagementAddSaving}
+                onClick={onSubmitEngagementGroups}
+              >
+                {engagementAddSaving ? "入库中…" : "确认入库"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {engagementDeleteConfirmOpen && (
+        <div
+          className="fixed inset-0 z-[3210] flex items-center justify-center bg-[rgba(11,15,20,0.58)] p-4 backdrop-blur-md"
+          role="presentation"
+          onClick={() => !engagementDeleteSaving && setEngagementDeleteConfirmOpen(false)}
+        >
+          <div
+            className={`${MODAL_SHELL} w-full max-w-lg p-5`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="engagement-delete-confirm-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3">
+              <h3 id="engagement-delete-confirm-title" className="text-base font-semibold text-rose-100">
+                删除互动目标群组
+              </h3>
+              <p className="mt-2 text-sm leading-relaxed text-slate-300">
+                确认删除已选 <span className="font-semibold text-rose-200">{engagementSelectedGroups.length}</span> 个群组？此操作会从互动目标群组库移除。
+              </p>
+            </div>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className={BTN_SECONDARY}
+                disabled={engagementDeleteSaving}
+                onClick={() => setEngagementDeleteConfirmOpen(false)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="rounded-xl border border-rose-400/35 bg-rose-500/20 px-4 py-2 text-sm font-semibold text-rose-100 shadow-[0_0_20px_rgba(244,63,94,0.22)] transition hover:border-rose-400/55 hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={engagementDeleteSaving}
+                onClick={onConfirmDeleteEngagementSelected}
+              >
+                {engagementDeleteSaving ? "删除中…" : "确认删除"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showPathModal && (
         <div

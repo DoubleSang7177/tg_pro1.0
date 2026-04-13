@@ -348,6 +348,69 @@ body::after {
   }
 }
 
+/* 群组互动 · 目标群组面板动态背景 */
+.engagement-panel-aurora {
+  position: absolute;
+  pointer-events: none;
+  z-index: 0;
+  border-radius: 999px;
+  filter: blur(42px);
+  opacity: 0.38;
+}
+
+.engagement-panel-aurora-a {
+  width: 420px;
+  height: 220px;
+  left: -120px;
+  top: -90px;
+  background: radial-gradient(circle, rgba(45, 212, 191, 0.35), rgba(56, 189, 248, 0.18), transparent 68%);
+  animation: engagement-aurora-a 9s ease-in-out infinite alternate;
+}
+
+.engagement-panel-aurora-b {
+  width: 480px;
+  height: 250px;
+  right: -160px;
+  bottom: -130px;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.28), rgba(45, 212, 191, 0.18), transparent 70%);
+  animation: engagement-aurora-b 11s ease-in-out infinite alternate;
+}
+
+.engagement-panel-grid-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+  background-size: 24px 24px, 24px 24px;
+  mask-image: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.85), transparent 80%);
+  opacity: 0.22;
+}
+
+@keyframes engagement-aurora-a {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.3;
+  }
+  100% {
+    transform: translate(26px, 18px) scale(1.07);
+    opacity: 0.5;
+  }
+}
+
+@keyframes engagement-aurora-b {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.24;
+  }
+  100% {
+    transform: translate(-30px, -20px) scale(1.08);
+    opacity: 0.44;
+  }
+}
+
 .group-hero-orbit {
   transform-origin: center;
   animation: group-hero-orbit 22s linear infinite;

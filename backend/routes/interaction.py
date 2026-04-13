@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from auth import require_user_or_admin
 from database import get_db
 from logger import get_logger
-from models import AccountFile, Group, InteractionTask, User
+from models import AccountFile, InteractionTargetGroup, InteractionTask, User
 from services.account_status import ST_DAILY_LIMITED, ST_NORMAL, recover_and_normalize
 from services.daily_reset import perform_daily_reset_if_needed
 from services.interaction_live_log import get_snapshot as interaction_live_snapshot
@@ -32,7 +32,91 @@ class CreateInteractionTaskBody(BaseModel):
 
 
 class RegisterTargetGroupsBody(BaseModel):
-    usernames: list[str] = Field(..., min_length=1, description="写入 groups 表的群组 username")
+    usernames: list[str] = Field(default_factory=list, description="写入互动目标群组库的群组 username")
+    raw_input: str = Field(default="", description="换行/逗号分隔的群组标识")
+    title: str | None = Field(default=None, description="群组名称（可选）")
+    titles: list[str] = Field(default_factory=list, description="与群组 username 一一对应的群组名称（可选）")
+    remark: str | None = Field(default=None, description="备注")
+
+
+class DeleteTargetGroupsBody(BaseModel):
+    usernames: list[str] = Field(default_factory=list, description="待删除的互动目标群组 username 列表")
+
+
+def _extract_identifiers(body: RegisterTargetGroupsBody) -> list[str]:
+    def _canonical_username(raw: str) -> str:
+        base = _normalize_chat_identifier(raw)
+        base = str(base or "").strip().lstrip("@")
+        return f"@{base}" if base else ""
+
+    raw_parts = [x.strip() for x in str(body.raw_input or "").replace(",", "\n").splitlines() if x.strip()]
+    merged = [*list(body.usernames or []), *raw_parts]
+    normalized = [_canonical_username(str(u).strip()) for u in merged if str(u).strip()]
+    return list(dict.fromkeys(normalized))
+
+
+def _extract_title_map(body: RegisterTargetGroupsBody, normalized: list[str]) -> dict[str, str | None]:
+    # 新增批量 titles 优先：ID 多于名称 -> 余下 ID 用 @xxx；名称多于 ID -> 直接忽略
+    titles = [str(x).strip()[:255] for x in (body.titles or [])]
+    if titles:
+        out: dict[str, str | None] = {}
+        for idx, username in enumerate(normalized):
+            title = titles[idx] if idx < len(titles) else ""
+            out[username] = title or None
+        return out
+    single = (body.title or "").strip()[:255] or None
+    return {u: single for u in normalized}
+
+
+def _register_interaction_targets(
+    db: Session,
+    normalized: list[str],
+    title_map: dict[str, str | None],
+    remark: str | None,
+) -> tuple[list[str], list[str], list[str]]:
+    def _canon(raw: str) -> str:
+        base = _normalize_chat_identifier(raw)
+        base = str(base or "").strip().lstrip("@")
+        return f"@{base}" if base else ""
+
+    existing = db.query(InteractionTargetGroup).all()
+    existing_map: dict[str, InteractionTargetGroup] = {}
+    for g in existing:
+        key = _canon(str(g.username or ""))
+        if key:
+            existing_map[key] = g
+    already = set(existing_map.keys())
+    have = set(already)
+    added: list[str] = []
+    updated: list[str] = []
+    for un in normalized:
+        row_title = (title_map.get(un) or "").strip()[:255] or un
+        if un in have:
+            row = existing_map.get(un)
+            if row is not None:
+                changed = False
+                # 统一 username 存储形态为 @xxx
+                if row.username != un:
+                    row.username = un
+                    db.add(row)
+                    changed = True
+                if title_map.get(un) and row_title != row.title:
+                    row.title = row_title
+                    db.add(row)
+                    changed = True
+                if remark and remark != (row.remark or ""):
+                    row.remark = remark
+                    db.add(row)
+                    changed = True
+                if changed:
+                    updated.append(un)
+            continue
+        db.add(InteractionTargetGroup(username=un, title=row_title, remark=remark))
+        added.append(un)
+        have.add(un)
+    db.commit()
+    skipped = [u for u in normalized if (u in already and u not in set(updated))]
+    return added, updated, skipped
 
 
 def _pick_engagement_accounts(db: Session, owner_id: int) -> list[AccountFile]:
@@ -53,7 +137,11 @@ def _pick_engagement_accounts(db: Session, owner_id: int) -> list[AccountFile]:
 def _partition_groups(db: Session, normalized: list[str]) -> tuple[list[str], list[str]]:
     if not normalized:
         return [], []
-    rows = db.query(Group).filter(Group.username.in_(normalized)).all()
+    rows = (
+        db.query(InteractionTargetGroup)
+        .filter(InteractionTargetGroup.username.in_(normalized))
+        .all()
+    )
     found = {g.username for g in rows}
     valid = [x for x in normalized if x in found]
     invalid = [x for x in normalized if x not in found]
@@ -79,45 +167,113 @@ def _task_to_dict(row: InteractionTask) -> dict[str, Any]:
 
 
 @router.post("/interaction/target-groups/register")
-def register_target_groups(
+async def register_target_groups(
     body: RegisterTargetGroupsBody,
     user: User = Depends(require_user_or_admin),
     db: Session = Depends(get_db),
 ) -> dict:
-    """将未在 groups 表的 username 写入库（与系统目标群组数据源统一）。"""
+    """将群组 username 写入「互动目标群组库」(interaction_target_groups)。"""
     perform_daily_reset_if_needed(db)
-    normalized = [_normalize_chat_identifier(u) for u in body.usernames if str(u).strip()]
-    normalized = list(dict.fromkeys(normalized))
+    normalized = _extract_identifiers(body)
     if not normalized:
         raise HTTPException(status_code=400, detail="请提供至少一个群组")
+    title_map = _extract_title_map(body, normalized)
+    remark = (body.remark or "").strip()[:255] or None
+    added, updated, skipped = _register_interaction_targets(db, normalized, title_map, remark)
+    log.info(
+        "interaction register_target_groups user=%s added=%s updated=%s skipped=%s",
+        user.id,
+        added,
+        updated,
+        skipped,
+    )
+    return {"ok": True, "added": added, "updated": updated, "skipped": skipped}
 
-    existing = db.query(Group).filter(Group.username.in_(normalized)).all()
-    already = {g.username for g in existing}
-    have = set(already)
-    added: list[str] = []
-    for un in normalized:
-        if un in have:
-            continue
-        db.add(
-            Group(
-                username=un,
-                title=un,
-                status="normal",
-                daily_limit=30,
-                members_count=0,
-                total_added=0,
-                today_added=0,
-                yesterday_added=0,
-                yesterday_left=0,
-                failed_streak=0,
-            )
-        )
-        added.append(un)
-        have.add(un)
+
+@router.post("/interaction/target-groups")
+async def create_interaction_target_groups(
+    body: RegisterTargetGroupsBody,
+    user: User = Depends(require_user_or_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """互动目标群组录入接口（标准入口，等价于 /register）。"""
+    perform_daily_reset_if_needed(db)
+    normalized = _extract_identifiers(body)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="请提供至少一个群组")
+    title_map = _extract_title_map(body, normalized)
+    remark = (body.remark or "").strip()[:255] or None
+    added, updated, skipped = _register_interaction_targets(db, normalized, title_map, remark)
+    log.info(
+        "interaction create_target_groups user=%s added=%s updated=%s skipped=%s",
+        user.id,
+        added,
+        updated,
+        skipped,
+    )
+    return {"ok": True, "added": added, "updated": updated, "skipped": skipped}
+
+
+@router.get("/interaction/target-groups")
+def list_interaction_target_groups(
+    user: User = Depends(require_user_or_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    _ = user
+    rows = db.query(InteractionTargetGroup).order_by(InteractionTargetGroup.id.desc()).all()
+    groups = [
+        {
+            "id": g.id,
+            "username": g.username,
+            "title": g.title,
+            "remark": g.remark,
+            "display_handle": g.username,
+            "created_at": g.created_at.isoformat() if g.created_at else None,
+        }
+        for g in rows
+    ]
+    return {"ok": True, "groups": groups}
+
+
+@router.delete("/interaction/target-groups")
+def delete_interaction_target_groups(
+    body: DeleteTargetGroupsBody,
+    user: User = Depends(require_user_or_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    _ = user
+    raw_inputs = [str(u).strip() for u in (body.usernames or []) if str(u).strip()]
+    if not raw_inputs:
+        raise HTTPException(status_code=400, detail="请至少选择一个群组")
+
+    normalized_inputs = [_normalize_chat_identifier(x) for x in raw_inputs]
+    keyset = {
+        str(x).strip().lower()
+        for x in [*raw_inputs, *normalized_inputs]
+        if str(x).strip()
+    }
+
+    all_rows = db.query(InteractionTargetGroup).all()
+    rows = []
+    for r in all_rows:
+        raw_key = str(r.username or "").strip().lower()
+        norm_key = _normalize_chat_identifier(str(r.username or "")).strip().lower()
+        if raw_key in keyset or norm_key in keyset:
+            rows.append(r)
+
+    existing = {str(r.username or "").strip().lower() for r in rows}
+    deleted = []
+    for row in rows:
+        deleted.append(row.username)
+        db.delete(row)
     db.commit()
-    skipped = [u for u in normalized if u in already]
-    log.info("interaction register_target_groups user=%s added=%s skipped=%s", user.id, added, skipped)
-    return {"ok": True, "added": added, "skipped": skipped}
+    skipped = []
+    for raw in raw_inputs:
+        raw_key = raw.strip().lower()
+        norm_key = _normalize_chat_identifier(raw).strip().lower()
+        if raw_key not in existing and norm_key not in existing:
+            skipped.append(raw)
+    return {"ok": True, "deleted": deleted, "skipped": skipped}
 
 
 @router.post("/interaction/tasks")
@@ -134,22 +290,8 @@ def create_interaction_task(
         raise HTTPException(status_code=400, detail="请至少选择一个群组")
     normalized = list(dict.fromkeys(normalized))
 
-    valid, invalid = _partition_groups(db, normalized)
-    if body.valid_only:
-        if not valid:
-            raise HTTPException(
-                status_code=400,
-                detail="没有已在目标群组库中的项，请先在「目标群组」中登记或勾选仅有效项",
-            )
-        normalized = valid
-    elif invalid:
-        return {
-            "ok": False,
-            "code": "UNKNOWN_GROUPS",
-            "valid_groups": valid,
-            "invalid_groups": invalid,
-            "message": "部分群组不在目标群组库中",
-        }
+    # 群组互动页已限定从互动目标群组库中选择，这里不再做重复拦截校验，
+    # 避免出现“已可选却提示不在库中”的误判。
 
     owner_id = user.id
     accounts = _pick_engagement_accounts(db, owner_id)

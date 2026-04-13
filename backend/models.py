@@ -94,6 +94,18 @@ class Group(Base):
     disabled_until = Column(DateTime(timezone=True), nullable=True)
 
 
+class InteractionTargetGroup(Base):
+    """群组互动专用目标群组库（与增长目标群组隔离）。"""
+
+    __tablename__ = "interaction_target_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(255), unique=True, nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    remark = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class Proxy(Base):
     __tablename__ = "proxies"
 

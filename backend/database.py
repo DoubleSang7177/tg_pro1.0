@@ -127,6 +127,16 @@ def _ensure_copy_tasks_owner_id() -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_copy_tasks_listener_id ON copy_tasks (listener_id)"))
 
 
+def _ensure_interaction_target_groups_columns() -> None:
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(interaction_target_groups)")).fetchall()
+        if not rows:
+            return
+        col_names = {r[1] for r in rows}
+        if "remark" not in col_names:
+            conn.execute(text("ALTER TABLE interaction_target_groups ADD COLUMN remark VARCHAR(255)"))
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_group_columns()
@@ -135,3 +145,4 @@ def init_db() -> None:
     _ensure_users_avatar_url()
     _ensure_copy_tasks_owner_id()
     _ensure_proxies_check_columns()
+    _ensure_interaction_target_groups_columns()

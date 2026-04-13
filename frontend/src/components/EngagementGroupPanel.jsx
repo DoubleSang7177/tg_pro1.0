@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 /**
  * 群组互动 · 高级多选面板（玻璃风、搜索、全选、已选数量）
  */
-export function EngagementGroupPanel({ options, values, onChange, disabled = false }) {
+export function EngagementGroupPanel({ options, values, onChange, onDeleteSelected, deleting = false, disabled = false }) {
   const [query, setQuery] = useState("");
 
   const filtered = useMemo(() => {
@@ -33,12 +33,20 @@ export function EngagementGroupPanel({ options, values, onChange, disabled = fal
     onChange(Array.from(next));
   };
 
-  const clearAll = () => onChange([]);
+  const unselectAllFiltered = () => {
+    const next = new Set(setSel);
+    filtered.forEach((o) => next.delete(o.value));
+    onChange(Array.from(next));
+  };
 
   const n = values?.length || 0;
 
   return (
-    <div className="engagement-group-panel rounded-2xl border border-cyan-400/12 bg-[rgba(8,12,22,0.55)] p-3 shadow-[0_8px_40px_rgba(0,0,0,0.45),0_0_40px_rgba(34,211,238,0.06)] backdrop-blur-[20px] sm:p-4">
+    <div className="engagement-group-panel relative overflow-hidden rounded-2xl border border-cyan-400/18 bg-[rgba(8,12,22,0.58)] p-3 shadow-[0_8px_40px_rgba(0,0,0,0.45),0_0_44px_rgba(34,211,238,0.08)] backdrop-blur-[20px] sm:p-4">
+      <div className="engagement-panel-aurora engagement-panel-aurora-a" aria-hidden />
+      <div className="engagement-panel-aurora engagement-panel-aurora-b" aria-hidden />
+      <div className="engagement-panel-grid-glow" aria-hidden />
+      <div className="relative z-[1]">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] pb-3">
         <div className="flex items-center gap-2">
           <span className="rounded-lg border border-violet-400/25 bg-violet-500/10 px-2.5 py-1 text-[11px] font-bold tabular-nums text-violet-200/95 shadow-[0_0_16px_rgba(139,92,246,0.2)]">
@@ -57,19 +65,19 @@ export function EngagementGroupPanel({ options, values, onChange, disabled = fal
           </button>
           <button
             type="button"
-            disabled={disabled || !filtered.length}
-            onClick={selectAllFiltered}
+            disabled={disabled || filtered.length === 0 || n === 0}
+            onClick={unselectAllFiltered}
             className="rounded-lg border border-white/[0.1] bg-white/[0.04] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-300 transition hover:border-cyan-400/30 hover:bg-gradient-to-r hover:from-cyan-500/15 hover:to-violet-500/12 hover:text-white disabled:opacity-40"
           >
-            全选结果
+            取消全选
           </button>
           <button
             type="button"
-            disabled={disabled || n === 0}
-            onClick={clearAll}
+            disabled={disabled || n === 0 || deleting}
+            onClick={onDeleteSelected}
             className="rounded-lg border border-rose-400/20 bg-rose-500/[0.07] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-rose-200/90 transition hover:border-rose-400/35 hover:shadow-[0_0_14px_rgba(251,113,133,0.2)] disabled:opacity-40"
           >
-            清空
+            {deleting ? "删除中" : "删除"}
           </button>
         </div>
       </div>
@@ -116,12 +124,18 @@ export function EngagementGroupPanel({ options, values, onChange, disabled = fal
                       ✓
                     </span>
                     <span className="min-w-0 flex-1 truncate text-slate-200 group-hover/opt:text-white">{opt.label}</span>
+                    {opt.remark ? (
+                      <span className="shrink-0 rounded-md border border-emerald-400/20 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-200/85">
+                        备注 {opt.remark}
+                      </span>
+                    ) : null}
                   </button>
                 </li>
               );
             })}
           </ul>
         )}
+      </div>
       </div>
     </div>
   );

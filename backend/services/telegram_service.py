@@ -400,9 +400,111 @@ async def _ensure_in_group(client: Client, group_username: str) -> tuple[bool, A
 
 def _normalize_chat_identifier(config_username: str) -> str:
     u = (config_username or "").strip()
+    u = re.sub(r"^https?://", "", u, flags=re.IGNORECASE)
+    u = re.sub(r"^telegram\.me/", "", u, flags=re.IGNORECASE)
+    u = re.sub(r"^t\.me/", "", u, flags=re.IGNORECASE)
+    u = u.split("?", 1)[0].split("#", 1)[0].strip("/")
     if u.startswith("@"):
-        return u[1:]
-    return u
+        u = u[1:]
+    # 邀请链接（+xxxx / joinchat）不属于 username，保持原样交给上层失败提示
+    if "/" in u:
+        u = u.split("/")[-1]
+    return u.strip()
+
+
+async def fetch_group_titles_by_scraper(usernames: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    使用采集账号抓取群组基础信息，返回 {username: {title, public_username, members_count, error}}。
+    """
+    normalized = []
+    seen = set()
+    for raw in usernames or []:
+        u = _normalize_chat_identifier(str(raw or "").strip())
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        normalized.append(u)
+    if not normalized:
+        return {}
+
+    db = SessionLocal()
+    client: Client | None = None
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        scraper_rows = (
+            db.query(ScraperAccount)
+            .filter(ScraperAccount.status == "active")
+            .order_by(ScraperAccount.id.asc())
+            .all()
+        )
+        session_base = None
+        phone = None
+        for row in scraper_rows:
+            raw = Path(row.session_file or "")
+            if raw.suffix == ".session":
+                raw = raw.with_suffix("")
+            if raw.with_suffix(".session").is_file():
+                session_base = str(raw)
+                phone = row.phone or f"scraper#{row.id}"
+                break
+        if not session_base:
+            for u in normalized:
+                out[u] = {
+                    "title": u,
+                    "public_username": None,
+                    "members_count": None,
+                    "error": "no_available_scraper",
+                }
+            return out
+
+        client = Client(session_base, API_ID, API_HASH, no_updates=True)
+        try:
+            ok_login = await _pyrogram_start_with_task_timeout(
+                client, TELEGRAM_LOGIN_ATTEMPT_TIMEOUT, lambda _msg: None, phone or "", 1, 1
+            )
+        except Exception as exc:
+            log.warning("fetch_group_titles_by_scraper login failed phone=%s err=%s", phone, str(exc)[:220])
+            for u in normalized:
+                out[u] = {
+                    "title": u,
+                    "public_username": None,
+                    "members_count": None,
+                    "error": f"scraper_login_error:{str(exc)[:120]}",
+                }
+            return out
+        if not ok_login:
+            for u in normalized:
+                out[u] = {"title": u, "public_username": None, "members_count": None, "error": "login_failed"}
+            return out
+
+        for u in normalized:
+            try:
+                ok_in, _ = await _ensure_in_group(client, u)
+                if not ok_in:
+                    raise RuntimeError("join failed")
+                chat = await client.get_chat(u)
+                title = (getattr(chat, "title", None) or "").strip() or u
+                pub = getattr(chat, "username", None)
+                if pub:
+                    pub = str(pub).strip() or None
+                mc = getattr(chat, "members_count", None)
+                out[u] = {
+                    "title": title[:255],
+                    "public_username": pub[:255] if pub else None,
+                    "members_count": int(mc) if mc is not None else None,
+                    "error": None,
+                }
+            except Exception as exc:
+                out[u] = {"title": u, "public_username": None, "members_count": None, "error": str(exc)[:220]}
+            await asyncio.sleep(random.uniform(0.6, 1.4))
+        return out
+    finally:
+        if client:
+            try:
+                await client.stop()
+            except Exception:
+                pass
+        db.close()
 
 
 def _metadata_sync_recent(db, force: bool) -> bool:

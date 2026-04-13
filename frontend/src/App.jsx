@@ -185,6 +185,17 @@ function formatUserLogTime(iso) {
   }
 }
 
+function formatUtc8Hms(iso) {
+  if (!iso) return "--:--:--";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "--:--:--";
+  const d = new Date(t + 8 * 60 * 60 * 1000);
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  const ss = String(d.getUTCSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
 /** 5 分钟内活跃视为在线（与后端一致，前端随 tick 刷新文案） */
 function userIsOnlineByActivity(lastActiveIso, nowMs = Date.now()) {
   if (!lastActiveIso) return false;
@@ -2123,6 +2134,23 @@ export default function App() {
       return 0;
     });
   }, [groups, targetGroupSortType]);
+
+  const copyBotDropdownOptions = useMemo(
+    () => [
+      { value: "", label: "选择库中 Bot…" },
+      ...copyBots.map((b) => {
+        const optLoginOk =
+          b.session_ok == null ? Boolean(b.session_ready && b.status === "active") : Boolean(b.session_ok);
+        const sessHint = !b.session_ready ? "无 session" : optLoginOk ? "session 可用" : "session/状态异常";
+        return {
+          value: String(b.id),
+          label: `#${b.id} · ${b.bot_token_masked} · ${sessHint} (${b.status})`,
+          disabled: !b.session_ready,
+        };
+      }),
+    ],
+    [copyBots],
+  );
 
   const userMgmtFilteredSorted = useMemo(() => {
     const q = userMgmtQuery.trim().toLowerCase();
@@ -5201,23 +5229,15 @@ export default function App() {
                     <div className="mt-4 grid gap-3 sm:grid-cols-2">
                       <label className="flex flex-col gap-1 sm:col-span-2">
                         <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">机器人</span>
-                        <select
-                          className={COPY_FIELD}
+                        <GlassDropdown
+                          variant="task"
                           value={copyTaskForm.bot_id}
-                          onChange={(e) => setCopyTaskForm((f) => ({ ...f, bot_id: e.target.value }))}
-                        >
-                          <option value="">选择库中 Bot…</option>
-                          {copyBots.map((b) => {
-                            const optLoginOk =
-                              b.session_ok == null ? Boolean(b.session_ready && b.status === "active") : Boolean(b.session_ok);
-                            const sessHint = !b.session_ready ? "无 session" : optLoginOk ? "session 可用" : "session/状态异常";
-                            return (
-                            <option key={b.id} value={String(b.id)} disabled={!b.session_ready}>
-                              #{b.id} · {b.bot_token_masked} · {sessHint} ({b.status})
-                            </option>
-                            );
-                          })}
-                        </select>
+                          onChange={(v) => setCopyTaskForm((f) => ({ ...f, bot_id: String(v || "") }))}
+                          options={copyBotDropdownOptions}
+                          placeholder="选择库中 Bot…"
+                          searchable
+                          className="w-full"
+                        />
                       </label>
                       <label className="flex flex-col gap-1 sm:col-span-2">
                         <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">来源频道 / 群</span>
@@ -5477,7 +5497,7 @@ export default function App() {
                         .join(" ");
                       return (
                         <div key={`${line.ts}-${idx}`} className={`border-b border-white/[0.04] py-1.5 last:border-b-0 ${cls}`}>
-                          <span className="text-slate-500">{line.ts}</span>
+                          <span className="text-slate-500">{formatUtc8Hms(line.ts)}</span>
                           {tail ? <span className="ml-2 text-slate-500">[{tail}]</span> : null}
                           <span className="ml-2 break-words">{line.message}</span>
                         </div>

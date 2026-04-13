@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import threading
 from collections import deque
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from telethon import TelegramClient, events
-from telethon.errors import RPCError
+from telethon.errors import AuthKeyDuplicatedError, RPCError
 
 from database import SessionLocal
 from models import CopyBot, CopyTask, ForwardRecord
@@ -171,6 +172,55 @@ _source_index: dict[int, dict[int, list[int]]] = {}
 _active_task_ids: set[int] = set()
 # bot_id -> 保活任务（get_me 防止长时间无流量被服务端回收）
 _keepalive_tasks: dict[int, asyncio.Task] = {}
+# bot_id -> session_name（用于会话独占与释放）
+_bot_session_name: dict[int, str] = {}
+# session_name -> bot_id（进程内独占）
+_session_owner: dict[str, int] = {}
+# bot_id -> lock 文件描述符（跨进程独占）
+_session_lock_fd: dict[int, int] = {}
+
+
+def _session_lock_path(session_name: str) -> Path:
+    sn = normalize_session_name(session_name) or ""
+    return SESSIONS_DIR / f"{sn}.lock"
+
+
+def _acquire_session_lock(session_name: str, bot_id: int) -> bool:
+    sn = normalize_session_name(session_name) or ""
+    if not sn:
+        return False
+    owner = _session_owner.get(sn)
+    if owner is not None and owner != bot_id:
+        return False
+    lock_path = _session_lock_path(sn)
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+    _session_owner[sn] = bot_id
+    _session_lock_fd[bot_id] = fd
+    _bot_session_name[bot_id] = sn
+    return True
+
+
+def _release_session_lock(bot_id: int) -> None:
+    fd = _session_lock_fd.pop(bot_id, None)
+    sn = _bot_session_name.pop(bot_id, None)
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    if sn:
+        _session_owner.pop(sn, None)
+        p = _session_lock_path(sn)
+        try:
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
 
 
 def _append_log(level: str, message: str, task_id: int | None = None, bot_id: int | None = None) -> None:
@@ -249,9 +299,11 @@ def _stop_keepalive(bot_id: int) -> None:
 
 async def _keepalive_loop(bot_id: int) -> None:
     """约每 30s 调用 get_me，降低长时间无交互被对端断开导致监听器失效的概率。"""
+    tick = 0
     try:
         while True:
             await asyncio.sleep(30)
+            tick += 1
             if bot_id not in _bot_clients:
                 break
             c = _bot_clients.get(bot_id)
@@ -260,6 +312,20 @@ async def _keepalive_loop(bot_id: int) -> None:
             try:
                 if c.is_connected():
                     await c.get_me()
+                    _append_log("info", "[HEARTBEAT] 监听中...", bot_id=bot_id)
+                    if tick % 2 == 0:
+                        task_ids = list(_bot_task_ids.get(bot_id, set()))
+                        for tid in task_ids:
+                            rt = _runtime.get(tid) or {}
+                            recv = int(rt.get("recv_count", 0))
+                            succ = int(rt.get("success_count", 0))
+                            fail = int(rt.get("fail_count", 0))
+                            _append_log(
+                                "info",
+                                f"[STATS] 收到消息: {recv} 转发成功: {succ} 转发失败: {fail}",
+                                task_id=tid,
+                                bot_id=bot_id,
+                            )
             except Exception as exc:
                 log.debug("copy keepalive get_me failed bot_id=%s: %s", bot_id, exc)
     except asyncio.CancelledError:
@@ -280,6 +346,18 @@ def _message_hash(task_id: int, chat_id: int, message_id: int) -> str:
 
 def _utc_day() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _classify_entity_error(err: BaseException, *, side: str) -> str:
+    s = str(err or "")
+    low = s.lower()
+    if "chat not found" in low or "peer_id_invalid" in low or "usernameinvaliderror" in low:
+        return f"[ERROR] {side} 无法访问"
+    if "channel_private" in low or "private" in low:
+        return f"[ERROR] 未加入 {side} 群"
+    if "chatadminrequired" in low or "forbidden" in low or "not enough rights" in low:
+        return "[ERROR] 无读取权限" if side == "source" else "[ERROR] target 无法发送"
+    return f"[ERROR] {side} 解析失败"
 
 
 def _mark_bot_error(db: Session, bot: CopyBot, msg: str) -> None:
@@ -323,6 +401,8 @@ def recover_stale_starting_tasks() -> None:
 
 async def _process_new_message(bot_id: int, event: Any) -> None:
     chat_id = int(event.chat_id)
+    msg_id = int(event.id)
+    _append_log("info", f"[FILTER] 开始过滤 msg_id={msg_id}", bot_id=bot_id)
     async with _registry_lock:
         tids = list(_source_index.get(bot_id, {}).get(chat_id, []))
         client = _bot_clients.get(bot_id)
@@ -353,6 +433,7 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
             rt = _runtime.get(task_id)
             if not rt:
                 continue
+            rt["recv_count"] = int(rt.get("recv_count", 0)) + 1
             source_id = int(rt["source_id"])
             _append_log(
                 "info",
@@ -379,7 +460,6 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
                 )
                 continue
 
-            msg_id = int(event.id)
             mh = _message_hash(task_id, chat_id, msg_id)
 
             rec = ForwardRecord(task_id=task_id, message_hash=mh)
@@ -420,8 +500,20 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
                     drop_author=True,
                     silent=True,
                 )
+            except AuthKeyDuplicatedError as exc:
+                _append_log(
+                    "error",
+                    f"[ERROR] AuthKeyDuplicatedError msg_id={msg_id}: {exc}",
+                    task_id=task_id,
+                    bot_id=bot_id,
+                )
+                _mark_bot_error(db, bot, "AuthKeyDuplicatedError: session 被并发使用")
+                _mark_task_error(db, task, "session 被并发占用，请确保只在单处运行")
+                await pause_task(task_id, reason="auth_key_duplicated")
+                return
             except Exception as exc:
                 err = str(exc)
+                rt["fail_count"] = int(rt.get("fail_count", 0)) + 1
                 _append_log("error", f"[ERROR] 转发失败 msg_id={msg_id}: {err}", task_id=task_id, bot_id=bot_id)
                 if (
                     "AUTH_KEY" in err
@@ -452,6 +544,7 @@ async def _process_new_message(bot_id: int, event: Any) -> None:
             task.last_error = None
             db.add(task)
             db.commit()
+            rt["success_count"] = int(rt.get("success_count", 0)) + 1
             _append_log(
                 "info",
                 f"[SUCCESS] 转发成功 msg_id={msg_id} | target_id={tgt}",
@@ -511,6 +604,9 @@ async def _ensure_client(bot_id: int) -> TelegramClient | None:
         return None
 
     base = str(SESSIONS_DIR / sn)
+    if not _acquire_session_lock(sn, bot_id):
+        _append_log("error", "session 正在被其他进程使用", bot_id=bot_id)
+        return None
     _append_log("info", f"加载 session | 使用文件 {sn}.session，正在 connect() …", bot_id=bot_id)
     try:
         client = TelegramClient(base, api_id, api_hash)
@@ -530,6 +626,17 @@ async def _ensure_client(bot_id: int) -> TelegramClient | None:
         _append_log("info", f"[SYSTEM] 已注册 NewMessage 监听器 | bot_id={bot_id}", bot_id=bot_id)
         _ensure_keepalive_started(bot_id)
         return client
+    except AuthKeyDuplicatedError as exc:
+        _append_log("error", f"AuthKeyDuplicatedError：session 已在其他进程/IP 使用 | {exc}", bot_id=bot_id)
+        db2 = SessionLocal()
+        try:
+            row2 = db2.query(CopyBot).filter(CopyBot.id == bot_id).first()
+            if row2:
+                _mark_bot_error(db2, row2, "AuthKeyDuplicatedError: session 被并发使用")
+        finally:
+            db2.close()
+        _release_session_lock(bot_id)
+        return None
     except Exception as exc:
         _append_log("error", f"连接 Bot(session) 失败: {exc}", bot_id=bot_id)
         db2 = SessionLocal()
@@ -539,6 +646,7 @@ async def _ensure_client(bot_id: int) -> TelegramClient | None:
                 _mark_bot_error(db2, row2, str(exc))
         finally:
             db2.close()
+        _release_session_lock(bot_id)
         return None
 
 
@@ -566,6 +674,7 @@ async def _disconnect_bot_if_idle(bot_id: int) -> None:
         await c.disconnect()
     except Exception:
         log.debug("disconnect bot %s", bot_id, exc_info=True)
+    _release_session_lock(bot_id)
     _append_log("info", f"已断开空闲 bot_id={bot_id}", bot_id=bot_id)
 
 
@@ -648,12 +757,12 @@ async def start_task(task_id: int) -> dict[str, Any]:
             src_ent = await client.get_entity(task.source_channel.strip())
             tgt_ent = await client.get_entity(task.target_channel.strip())
         except RPCError as e:
-            msg = f"解析频道失败: {e}"
+            msg = f"{_classify_entity_error(e, side='source')} / {_classify_entity_error(e, side='target')} | {e}"
             _mark_task_error(db, task, msg)
             _append_log("error", msg, task_id=task_id, bot_id=bot.id)
             return {"ok": False, "message": msg}
         except Exception as e:
-            msg = f"频道无权限或不存在: {e}"
+            msg = f"{_classify_entity_error(e, side='source')} / {_classify_entity_error(e, side='target')} | {e}"
             _mark_task_error(db, task, msg)
             _append_log("error", msg, task_id=task_id, bot_id=bot.id)
             return {"ok": False, "message": msg}
@@ -677,6 +786,9 @@ async def start_task(task_id: int) -> dict[str, Any]:
                 "bot_id": bot.id,
                 "source_id": src_id,
                 "target_id": tgt_id,
+                "recv_count": 0,
+                "success_count": 0,
+                "fail_count": 0,
             }
             mp = _source_index.setdefault(bot.id, {})
             mp.setdefault(src_id, []).append(task_id)
@@ -689,6 +801,19 @@ async def start_task(task_id: int) -> dict[str, Any]:
             task_id=task_id,
             bot_id=bot.id,
         )
+        _append_log(
+            "info",
+            (
+                "[TASK DEBUG]\n"
+                f"source: {src_id}\n"
+                f"target: {tgt_id}\n"
+                f"bot_id: {bot.id}\n"
+                "监听状态: 已注册"
+            ),
+            task_id=task_id,
+            bot_id=bot.id,
+        )
+        _append_log("info", f"[SYSTEM] 监听已启动 source={src_id}", task_id=task_id, bot_id=bot.id)
         return {"ok": True, "message": "已启动"}
     finally:
         db.close()
@@ -766,6 +891,7 @@ async def force_disconnect_bot(bot_id: int) -> None:
             await c.disconnect()
         except Exception:
             log.debug("force disconnect bot %s", bot_id, exc_info=True)
+    _release_session_lock(bot_id)
 
 
 def wait_force_disconnect_bot(bot_id: int, *, timeout: float = 20.0) -> None:

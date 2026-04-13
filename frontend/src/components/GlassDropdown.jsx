@@ -217,6 +217,7 @@ export function GlassDropdown({
               ) : (
                 filtered.map((opt) => {
                   const isActive = opt.value === value;
+                  const isDisabled = Boolean(opt.disabled);
                   const customOpt =
                     opt.itemInactiveClass != null ||
                     opt.itemActiveClass != null ||
@@ -233,22 +234,24 @@ export function GlassDropdown({
                         type="button"
                         role="option"
                         aria-selected={isActive}
+                        disabled={isDisabled}
                         onClick={() => {
+                          if (isDisabled) return;
                           onChange(opt.value);
                           close();
                         }}
                         className={
                           isTask
-                            ? `glass-dd-task-option ${isActive ? "glass-dd-task-option--active" : ""}`
+                            ? `glass-dd-task-option ${isActive ? "glass-dd-task-option--active" : ""} ${isDisabled ? "cursor-not-allowed opacity-45" : ""}`
                             : customOpt
                               ? `${optRowBase} ${
                                   isActive
                                     ? opt.itemActiveClass ?? defaultActive
                                     : opt.itemInactiveClass ?? defaultInactive
-                                }`
+                                } ${isDisabled ? "cursor-not-allowed opacity-45 hover:translate-x-0" : ""}`
                               : `flex w-full items-center px-3 py-2.5 text-left text-sm transition duration-200 ease-out will-change-transform hover:translate-x-1 ${
                                   isActive ? defaultActive : defaultInactive
-                                }`
+                                } ${isDisabled ? "cursor-not-allowed opacity-45 hover:translate-x-0" : ""}`
                         }
                       >
                         <span className="min-w-0 flex-1 truncate">{opt.label}</span>

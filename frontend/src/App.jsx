@@ -1053,12 +1053,18 @@ function GrowthExecutionStatusModule({ selectedGroup, snapshot, taskRunning, tas
               <span className="text-[11px] font-medium text-slate-500">进度百分比</span>
               <span className="font-mono text-[14px] font-semibold tabular-nums text-cyan-200/95">{pctLabel}</span>
             </div>
-            <div className="flex items-center justify-center gap-2 text-[13px] font-medium tabular-nums">
-              <span className="text-emerald-400/95">成功 {success}</span>
-              <span className="select-none text-slate-600" aria-hidden>
-                |
-              </span>
-              <span className="text-rose-400/95">失败 {failed}</span>
+            <div className="exec-status-result-row">
+              <div className="exec-status-result-item success">
+                <CheckCircle aria-hidden />
+                <span>成功</span>
+                <strong>{success}</strong>
+              </div>
+              <div className="exec-status-result-divider" aria-hidden />
+              <div className="exec-status-result-item fail">
+                <XCircle aria-hidden />
+                <span>失败</span>
+                <strong>{failed}</strong>
+              </div>
             </div>
             {uiStatus === "ERROR" && errorHint ? (
               <p className="line-clamp-2 text-[11px] leading-snug text-rose-300/90" title={errorHint}>

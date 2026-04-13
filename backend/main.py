@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -131,6 +132,27 @@ def startup() -> None:
             db.close()
 
     threading.Thread(target=_background_group_metadata_sync, name="group-metadata-sync", daemon=True).start()
+
+    def _group_sync_scheduler_loop() -> None:
+        from database import SessionLocal
+        from services.telegram_service import sync_groups_metadata
+
+        while True:
+            now = datetime.now()
+            next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+            if next_run <= now:
+                next_run = next_run + timedelta(days=1)
+            sleep_sec = max(1.0, (next_run - now).total_seconds())
+            time.sleep(sleep_sec)
+            db2 = SessionLocal()
+            try:
+                asyncio.run(sync_groups_metadata(None, False, db2))
+            except Exception:
+                api_logger.exception("scheduled group metadata sync failed")
+            finally:
+                db2.close()
+
+    threading.Thread(target=_group_sync_scheduler_loop, name="group-sync-scheduler", daemon=True).start()
     spawn_copy_forward_thread()
 
 

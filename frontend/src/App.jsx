@@ -1774,6 +1774,7 @@ export default function App() {
   const [engagementGroupResolution, setEngagementGroupResolution] = useState(null);
   const [engagementRegisterLoading, setEngagementRegisterLoading] = useState(false);
   const [sidebarMonitorNow, setSidebarMonitorNow] = useState(() => Date.now());
+  const [targetGroupSortType, setTargetGroupSortType] = useState("today_join");
 
   const isAdmin = useMemo(() => profile?.role === "admin", [profile]);
   const availableAccounts = useMemo(() => accounts.active || [], [accounts]);
@@ -2091,6 +2092,32 @@ export default function App() {
     [],
   );
 
+  const targetGroupSortOptions = useMemo(
+    () => [
+      { value: "today_join", label: "今日增长最多" },
+      { value: "total_join", label: "累计增长最多" },
+      { value: "today_leave", label: "今日离群最多" },
+    ],
+    [],
+  );
+
+  const targetGroupSortLabel = useMemo(
+    () => targetGroupSortOptions.find((x) => x.value === targetGroupSortType)?.label || "今日增长最多",
+    [targetGroupSortOptions, targetGroupSortType],
+  );
+
+  const sortedTargetGroups = useMemo(() => {
+    const getTodayJoin = (g) => Number(g?.today_join ?? g?.today_added ?? 0) || 0;
+    const getTotalJoin = (g) => Number(g?.total_join ?? g?.total_added ?? 0) || 0;
+    const getTodayLeave = (g) => Number(g?.today_leave ?? g?.today_leave_count ?? 0) || 0;
+    return [...(groups || [])].sort((a, b) => {
+      if (targetGroupSortType === "today_join") return getTodayJoin(b) - getTodayJoin(a);
+      if (targetGroupSortType === "total_join") return getTotalJoin(b) - getTotalJoin(a);
+      if (targetGroupSortType === "today_leave") return getTodayLeave(b) - getTodayLeave(a);
+      return 0;
+    });
+  }, [groups, targetGroupSortType]);
+
   const userMgmtFilteredSorted = useMemo(() => {
     const q = userMgmtQuery.trim().toLowerCase();
     let rows = users.filter((u) => (u.username || "").toLowerCase().includes(q));
@@ -2330,15 +2357,39 @@ export default function App() {
   const onForceSyncGroups = async () => {
     if (!guardLoggedIn()) return;
     try {
-      const r = await triggerForceSyncRefresh({ skipMetadataSync: false, forceMetadataSync: true });
-      if (r === undefined) return;
-      if (r.syncOk === false) {
-        setSystemBanner("数据同步失败，界面仍显示数据库中的群组与统计");
-      } else {
-        setSystemBanner("已从 Telegram 强制同步群组信息");
+      if (refreshLoadingRef.current) return;
+      refreshLoadingRef.current = true;
+      setRefreshPhase("force");
+      setRefreshLoading(true);
+      const start = await api.startGroupSync({ force: true });
+      const jid = start?.job_id;
+      if (!jid) throw new Error("同步任务创建失败");
+      appendLog(`群组同步任务已创建 job=${jid}`);
+      for (;;) {
+        const st = await api.groupSyncJobStatus(jid);
+        const status = st?.status;
+        if (status === "completed") {
+          const result = st?.result || {};
+          appendLog(`群组同步完成：更新 ${result.updated ?? 0} 条，失败 ${result.failed ?? 0} 条`);
+          (result.logs || []).slice(-30).forEach((line) => appendLog(`tg-sync | ${line}`));
+          await refreshBase({ skipMetadataSync: true });
+          setSystemBanner("已从 Telegram 强制同步群组信息");
+          break;
+        }
+        if (status === "failed") {
+          const msg = st?.error || st?.result?.message || "数据同步失败，界面仍显示数据库中的群组与统计";
+          appendLog(`群组同步失败：${msg}`);
+          setSystemBanner(msg);
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 1200));
       }
     } catch (e) {
       setSystemBanner(e.message);
+    } finally {
+      refreshLoadingRef.current = false;
+      setRefreshLoading(false);
+      setRefreshPhase(null);
     }
   };
 
@@ -3608,23 +3659,43 @@ export default function App() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {tab === "目标群组" ? (
-                <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
-                  <button
-                    type="button"
-                    disabled={refreshLoading || !op}
-                    className={`${BTN_PRIMARY} inline-flex items-center justify-center gap-2 px-4 py-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0`}
-                    onClick={onForceSyncGroups}
-                  >
-                  {refreshLoading && refreshPhase === "force" ? (
-                    <>
-                      <UiSpinner tone="primary" />
-                      同步中...
-                    </>
-                  ) : (
-                    "强制同步群组信息"
-                  )}
-                  </button>
-                </span>
+                <>
+                  <div className="flex items-center gap-2">
+                    <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
+                      <button
+                        type="button"
+                        disabled={refreshLoading || !op}
+                        className={`${BTN_PRIMARY} inline-flex items-center justify-center gap-2 px-4 py-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0`}
+                        onClick={onForceSyncGroups}
+                      >
+                      {refreshLoading && refreshPhase === "force" ? (
+                        <>
+                          <UiSpinner tone="primary" />
+                          同步中...
+                        </>
+                      ) : (
+                        "强制同步群组信息"
+                      )}
+                      </button>
+                    </span>
+                    <div className="min-w-[220px]">
+                      <GlassDropdown
+                        variant="task"
+                        disabled={!op}
+                        value={targetGroupSortType}
+                        onChange={setTargetGroupSortType}
+                        options={targetGroupSortOptions.map((opt) => ({
+                          ...opt,
+                          label: `${opt.label}${opt.value === targetGroupSortType ? "  ✔" : ""}`,
+                        }))}
+                        placeholder="排序方式"
+                        triggerPrefix="排序方式："
+                        className="w-full"
+                      />
+                    </div>
+                  </div>
+                  <span className="text-xs text-slate-400">当前：{targetGroupSortLabel}</span>
+                </>
               ) : null}
               <div
                 className={`inline-flex flex-col items-end gap-0.5 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.07] px-3 py-1.5 text-right backdrop-blur-md transition-opacity duration-300 ${isTicking ? "opacity-100" : "opacity-90"}`}
@@ -4134,13 +4205,14 @@ export default function App() {
           <div className="space-y-5">
             {featuredTargetGroup ? <GroupsHeroCard group={featuredTargetGroup} /> : null}
             <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-              {groups.map((g) => (
-                <TargetGroupDashboardCard
-                  key={g.id}
-                  group={g}
-                  onUpdateDailyLimit={onUpdateDailyLimit}
-                  operationsLocked={!op}
-                />
+              {sortedTargetGroups.map((g) => (
+                <div key={`${targetGroupSortType}-${g.id}`} className="target-group-sort-item">
+                  <TargetGroupDashboardCard
+                    group={g}
+                    onUpdateDailyLimit={onUpdateDailyLimit}
+                    operationsLocked={!op}
+                  />
+                </div>
               ))}
             </div>
           </div>

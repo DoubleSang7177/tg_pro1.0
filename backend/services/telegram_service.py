@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from cn_time import cn_hms
 from database import SessionLocal
 from logger import get_logger
-from models import AccountFile, Group, Proxy, Setting
+from models import AccountFile, Group, Proxy, ScraperAccount, Setting
 from services.account_status import (
     ST_BANNED,
     ST_COOLDOWN,
@@ -87,6 +87,7 @@ TELEGRAM_LOGIN_MAX_RETRIES = _env_int_bounded("TELEGRAM_LOGIN_MAX_RETRIES", 3, 2
 
 GROUP_METADATA_SYNC_KEY = "group_metadata_last_sync"
 GROUP_METADATA_STALE_SECONDS = int(os.getenv("GROUP_METADATA_STALE_SECONDS", str(24 * 3600)))
+MAX_CONCURRENT_SYNC_ACCOUNTS = _env_int_bounded("MAX_CONCURRENT_SYNC_ACCOUNTS", 3, 1, 5)
 
 
 def _is_pyrogram_banned_error(exc: BaseException) -> bool:
@@ -430,158 +431,150 @@ async def sync_groups_metadata(owner_id: int | None, force: bool, db) -> dict[st
     if _metadata_sync_recent(db, force):
         return {"ok": True, "skipped": True, "reason": "recently_synced", "logs": []}
 
-    query = db.query(AccountFile).order_by(AccountFile.id.desc())
-    if owner_id is not None:
-        query = query.filter(AccountFile.owner_id == owner_id)
-    account_rows = query.all()
-    now_utc = datetime.now(timezone.utc)
-    runnable: list[AccountFile] = []
-    for row in account_rows:
-        recover_and_normalize(row, now_utc)
-        if row.status in (ST_RISK_SUSPECTED, ST_BANNED):
-            continue
-        if row.status == ST_COOLDOWN:
-            continue
-        if row.status == ST_DAILY_LIMITED:
-            lu = row.limited_until
-            if lu and lu.tzinfo is None:
-                lu = lu.replace(tzinfo=timezone.utc)
-            elif lu:
-                lu = lu.astimezone(timezone.utc)
-            if lu and now_utc < lu:
-                continue
-        if row.status != ST_NORMAL:
-            continue
-        runnable.append(row)
-
-    if not runnable:
-        return {"ok": False, "skipped": False, "message": "无可用账号", "logs": ["没有可用于同步的活跃账号"]}
-
     group_rows = db.query(Group).order_by(Group.id.asc()).all()
     if not group_rows:
         return {"ok": True, "skipped": False, "logs": ["数据库中无群组记录"], "updated": 0}
-
+    scraper_rows = (
+        db.query(ScraperAccount)
+        .filter(ScraperAccount.status == "active")
+        .order_by(ScraperAccount.id.asc())
+        .all()
+    )
+    runnable_scrapers: list[ScraperAccount] = []
+    for row in scraper_rows:
+        raw = Path(row.session_file or "")
+        if raw.suffix == ".session":
+            raw = raw.with_suffix("")
+        if raw.with_suffix(".session").is_file():
+            runnable_scrapers.append(row)
     logs: list[str] = []
-    client: Client | None = None
-    used_phone: str | None = None
+    logs.append("[INFO] 使用采集账号同步群组")
+    logs.append(f"[INFO] 采集账号数量: {len(runnable_scrapers)}")
+    logs.append(f"[INFO] 群组总数: {len(group_rows)}")
+    if not runnable_scrapers:
+        return {"ok": False, "skipped": False, "message": "无可用采集账号", "logs": logs}
 
-    def _mlog(msg: str) -> None:
-        logs.append(msg)
+    group_ids = [int(g.id) for g in group_rows]
+    shards: list[list[int]] = [[] for _ in runnable_scrapers]
+    for idx, gid in enumerate(group_ids):
+        shards[idx % len(runnable_scrapers)].append(gid)
 
-    for account in runnable:
-        proxy_obj = db.query(Proxy).filter(Proxy.id == account.proxy_id).first() if account.proxy_id else None
-        proxy_dict = _build_proxy(proxy_obj, account.proxy_type)
-        session_name = _resolve_session_name(account)
-        if proxy_dict:
-            proxy_label = f"{proxy_dict.get('hostname', '?')}:{proxy_dict.get('port', '?')}"
-        else:
-            proxy_label = "直连"
-        login_ok = False
-        max_att = TELEGRAM_LOGIN_MAX_RETRIES
-        last_login_err: str | None = None
-        for attempt in range(1, max_att + 1):
-            ok, client, err = await _single_login_attempt(
-                account,
-                session_name,
-                proxy_dict,
-                proxy_label,
-                TELEGRAM_LOGIN_ATTEMPT_TIMEOUT,
-                attempt,
-                max_att,
-                _mlog,
-                db,
-            )
-            if err == "telegram_banned":
-                logs.append(f"[INFO] 账号 {account.phone} 已封号（Telegram banned），跳过元数据同步")
-                client = None
-                continue
-            if ok:
-                account.login_fail_count = 0
-                account.status = ST_NORMAL
-                account.limited_until = None
-                db.add(account)
-                used_phone = account.phone or ""
-                logs.append(f"[INFO] 使用账号 {account.phone} 同步群组元数据（第{attempt}次尝试成功）")
-                login_ok = True
-                _log_account_act(
-                    getattr(account, "owner_id", None) or 0,
-                    account.phone,
-                    action="登录",
-                    status="元数据同步·成功",
-                    level="success",
+    sem = asyncio.Semaphore(MAX_CONCURRENT_SYNC_ACCOUNTS)
+
+    async def _sync_with_scraper(row: ScraperAccount, assigned_group_ids: list[int]) -> tuple[int, int, list[str]]:
+        wlogs: list[str] = []
+        if not assigned_group_ids:
+            return 0, 0, wlogs
+        local_db: Session = SessionLocal()
+        updated = 0
+        failed = 0
+        client: Client | None = None
+        phone = row.phone or f"scraper#{row.id}"
+        base = Path(row.session_file or "")
+        if base.suffix == ".session":
+            base = base.with_suffix("")
+        session_name = str(base)
+        try:
+            async with sem:
+                wlogs.append(f"[ACCOUNT] {phone} 开始同步 ({len(assigned_group_ids)}个群)")
+                client = Client(session_name, API_ID, API_HASH, no_updates=True)
+                ok_login = await _pyrogram_start_with_task_timeout(
+                    client,
+                    TELEGRAM_LOGIN_ATTEMPT_TIMEOUT,
+                    wlogs.append,
+                    phone,
+                    1,
+                    1,
                 )
-                break
-            last_login_err = err
-            account.login_fail_count = (account.login_fail_count or 0) + 1
-            account.last_login_fail_at = datetime.now(timezone.utc)
-            db.add(account)
-        if not login_ok:
-            mark_risk_login_failed(
-                account,
-                datetime.now(timezone.utc),
-                logger=log,
-                task_notify=_mlog,
-                status_reason_cn=login_fail_reason_cn(last_login_err),
-            )
-            tag = "疑似风控"
-            logs.append(
-                f"[WARN] 账号 {account.phone} 登录失败（已达 {max_att} 次），标记为{tag}",
-            )
-            logs.append(f"[INFO] 跳过账号 {account.phone}（同步元数据）")
-            logs.append("[INFO] 切换账号")
-            logs.append("[INFO] 切换下一个账号（同步元数据）")
-            db.add(account)
-            client = None
-            _log_account_act(
-                getattr(account, "owner_id", None) or 0,
-                account.phone,
-                action="登录",
-                status=login_fail_reason_cn(last_login_err),
-                level="error",
-            )
-            db.commit()
-            continue
-        db.commit()
-        break
+                if not ok_login:
+                    row_db = local_db.query(ScraperAccount).filter(ScraperAccount.id == row.id).first()
+                    if row_db:
+                        row_db.status = "risk"
+                        row_db.updated_at = datetime.now(timezone.utc)
+                        local_db.add(row_db)
+                        local_db.commit()
+                    wlogs.append(f"[ERROR] 采集账号 {phone} 登录失败")
+                    return 0, len(assigned_group_ids), wlogs
+                row_db = local_db.query(ScraperAccount).filter(ScraperAccount.id == row.id).first()
+                if row_db:
+                    row_db.updated_at = datetime.now(timezone.utc)
+                    local_db.add(row_db)
+                    local_db.commit()
+                for gid in assigned_group_ids:
+                    g = local_db.query(Group).filter(Group.id == gid).first()
+                    if g is None:
+                        continue
+                    reason = None
+                    for attempt in (1, 2):
+                        try:
+                            ok_in, chat_obj = await _ensure_in_group(client, g.username)
+                            if not ok_in:
+                                raise RuntimeError("join failed")
+                            chat = await client.get_chat(_normalize_chat_identifier(g.username))
+                            title = (getattr(chat, "title", None) or "").strip() or g.username
+                            pub = getattr(chat, "username", None)
+                            if pub:
+                                pub = str(pub).strip() or None
+                            mc = getattr(chat, "members_count", None)
+                            g.title = title[:255]
+                            g.public_username = pub[:255] if pub else None
+                            g.members_count = int(mc) if mc is not None else (g.members_count or 0)
+                            local_db.add(g)
+                            local_db.commit()
+                            updated += 1
+                            wlogs.append(f"[SUCCESS] 群 {g.username} 更新成功 成员={g.members_count}")
+                            reason = None
+                            break
+                        except Exception as exc:
+                            reason = str(exc)
+                            if attempt == 1:
+                                await asyncio.sleep(random.uniform(1.0, 2.0))
+                    if reason is not None:
+                        failed += 1
+                        wlogs.append(f"[ERROR] 群 {g.username} 更新失败 reason={reason}")
+                    await asyncio.sleep(random.uniform(1.0, 3.0))
+        except Exception as exc:
+            row_db = local_db.query(ScraperAccount).filter(ScraperAccount.id == row.id).first()
+            if row_db:
+                row_db.status = "dead" if _is_pyrogram_banned_error(exc) else "risk"
+                row_db.updated_at = datetime.now(timezone.utc)
+                local_db.add(row_db)
+                local_db.commit()
+            wlogs.append(f"[ERROR] 采集账号 {phone} 异常: {exc}")
+        finally:
+            if client:
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+            local_db.close()
+        return updated, failed, wlogs
 
-    if not client:
-        return {"ok": False, "skipped": False, "message": "无法登录任何账号", "logs": logs}
-
-    updated = 0
-    try:
-        for g in group_rows:
-            ident = _normalize_chat_identifier(g.username)
-            try:
-                chat = await client.get_chat(ident)
-                title = (getattr(chat, "title", None) or "").strip() or g.username
-                pub = getattr(chat, "username", None)
-                if pub:
-                    pub = str(pub).strip() or None
-                mc = getattr(chat, "members_count", None)
-                g.title = title[:255]
-                g.public_username = pub[:255] if pub else None
-                g.members_count = int(mc) if mc is not None else (g.members_count or 0)
-                db.add(g)
-                updated += 1
-                logs.append(f"已更新 {g.username} → 名称={title!r} 公开@{pub or '-'} 人数={g.members_count}")
-            except Exception as exc:
-                logs.append(f"群组 {g.username} 获取失败: {exc}")
-        marker = db.query(Setting).filter(Setting.key == GROUP_METADATA_SYNC_KEY).first()
-        ts = datetime.now(timezone.utc).isoformat()
-        if marker:
-            marker.value = ts
-            db.add(marker)
-        else:
-            db.add(Setting(key=GROUP_METADATA_SYNC_KEY, value=ts))
-        db.commit()
-    finally:
-        if client:
-            try:
-                await client.stop()
-            except Exception:
-                pass
-
-    return {"ok": True, "skipped": False, "updated": updated, "logs": logs, "account": used_phone}
+    results = await asyncio.gather(
+        *[_sync_with_scraper(acc, shards[idx]) for idx, acc in enumerate(runnable_scrapers)]
+    )
+    updated_total = 0
+    failed_total = 0
+    for u, f, ls in results:
+        updated_total += int(u or 0)
+        failed_total += int(f or 0)
+        logs.extend(ls)
+    marker = db.query(Setting).filter(Setting.key == GROUP_METADATA_SYNC_KEY).first()
+    ts = datetime.now(timezone.utc).isoformat()
+    if marker:
+        marker.value = ts
+        db.add(marker)
+    else:
+        db.add(Setting(key=GROUP_METADATA_SYNC_KEY, value=ts))
+    db.commit()
+    logs.append("[INFO] 同步完成")
+    return {
+        "ok": True,
+        "skipped": False,
+        "updated": updated_total,
+        "failed": failed_total,
+        "logs": logs,
+    }
 
 
 async def _sleep_while_running(

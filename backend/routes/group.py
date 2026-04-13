@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import asyncio
+import time
+import traceback
+import uuid
 from datetime import datetime, timezone
+from threading import Lock
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from auth import get_current_user_optional, require_user_or_admin
-from database import get_db
+from database import SessionLocal, get_db
 from models import Group, Setting, User
 from services.daily_reset import perform_daily_reset_if_needed
 from services.telegram_service import GROUP_METADATA_SYNC_KEY, sync_groups_metadata
 
 
 router = APIRouter(tags=["groups"])
+_sync_jobs: dict[str, dict] = {}
+_sync_jobs_lock = Lock()
 
 
 class UpdateGroupLimitRequest(BaseModel):
@@ -22,6 +29,10 @@ class UpdateGroupLimitRequest(BaseModel):
 
 class SyncGroupMetadataRequest(BaseModel):
     force: bool = False
+
+
+class StartGroupSyncRequest(BaseModel):
+    force: bool = True
 
 
 def _as_utc(dt: datetime | None) -> datetime | None:
@@ -47,6 +58,65 @@ async def sync_group_metadata(
     owner_id = None if user.role == "admin" else user.id
     result = await sync_groups_metadata(owner_id, payload.force, db)
     return {"ok": result.get("ok", False), **{k: v for k, v in result.items() if k != "ok"}}
+
+
+async def _run_group_sync_job(job_id: str, owner_id: int | None, force: bool) -> None:
+    db = SessionLocal()
+    try:
+        with _sync_jobs_lock:
+            if job_id in _sync_jobs:
+                _sync_jobs[job_id]["status"] = "running"
+        result = await sync_groups_metadata(owner_id, force, db)
+        with _sync_jobs_lock:
+            if job_id in _sync_jobs:
+                _sync_jobs[job_id]["status"] = "completed" if result.get("ok") else "failed"
+                _sync_jobs[job_id]["result"] = result
+                _sync_jobs[job_id]["error"] = result.get("message") if not result.get("ok") else None
+    except Exception as exc:
+        traceback.print_exc()
+        with _sync_jobs_lock:
+            if job_id in _sync_jobs:
+                _sync_jobs[job_id]["status"] = "failed"
+                _sync_jobs[job_id]["error"] = str(exc)
+                _sync_jobs[job_id]["result"] = None
+    finally:
+        db.close()
+
+
+@router.post("/groups/sync")
+async def start_group_sync_job(
+    payload: StartGroupSyncRequest,
+    user: User = Depends(require_user_or_admin),
+) -> dict:
+    owner_id = None if user.role == "admin" else user.id
+    job_id = uuid.uuid4().hex
+    with _sync_jobs_lock:
+        _sync_jobs[job_id] = {
+            "owner_id": user.id,
+            "status": "queued",
+            "created_at": time.time(),
+            "result": None,
+            "error": None,
+        }
+    asyncio.get_running_loop().create_task(_run_group_sync_job(job_id, owner_id, payload.force))
+    return {"ok": True, "job_id": job_id, "status": "queued"}
+
+
+@router.get("/groups/sync/{job_id}")
+def get_group_sync_job_status(job_id: str, user: User = Depends(require_user_or_admin)) -> dict:
+    with _sync_jobs_lock:
+        row = _sync_jobs.get(job_id)
+    if row is None:
+        return {"ok": False, "message": "job not found"}
+    if user.role != "admin" and row.get("owner_id") != user.id:
+        return {"ok": False, "message": "forbidden"}
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "status": row.get("status"),
+        "result": row.get("result"),
+        "error": row.get("error"),
+    }
 
 
 @router.get("/groups")

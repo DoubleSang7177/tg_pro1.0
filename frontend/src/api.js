@@ -149,6 +149,12 @@ export const api = {
         return data;
       });
   },
+  startGroupSync: (payload = {}) =>
+    request("/groups/sync", {
+      method: "POST",
+      body: JSON.stringify({ force: Boolean(payload.force) }),
+    }),
+  groupSyncJobStatus: (jobId) => request(`/groups/sync/${encodeURIComponent(jobId)}`),
   updateGroupLimit: (groupId, dailyLimit) =>
     request(`/groups/${groupId}/limit`, {
       method: "PUT",

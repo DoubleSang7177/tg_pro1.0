@@ -20,6 +20,7 @@ from telethon import TelegramClient, events
 from telethon.errors import AuthKeyDuplicatedError, RPCError
 from telethon.tl.functions.channels import GetParticipantRequest, JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.utils import get_peer_id
 
 from database import SessionLocal
 from models import CopyBot, CopyListenerAccount, CopyTask, ForwardRecord
@@ -452,13 +453,19 @@ async def _process_new_message(bot_id: int, event: Any, *, listener_id: int | No
 
     db = SessionLocal()
     try:
-        bot = db.query(CopyBot).filter(CopyBot.id == bot_id).first()
-        if not bot or bot.status != "active":
-            return
-
         for task_id in tids:
             rt = _runtime.get(task_id)
             if not rt:
+                continue
+            sender_bot_id = int(rt.get("bot_id", 0))
+            sender_bot = db.query(CopyBot).filter(CopyBot.id == sender_bot_id).first()
+            if not sender_bot or sender_bot.status != "active":
+                _append_log(
+                    "warn",
+                    f"[FILTER] 发送Bot不可用，跳过 task_id={task_id} bot_id={sender_bot_id}",
+                    task_id=task_id,
+                    bot_id=sender_bot_id or bot_id,
+                )
                 continue
             rt["recv_count"] = int(rt.get("recv_count", 0)) + 1
             source_id = int(rt["source_id"])
@@ -510,7 +517,6 @@ async def _process_new_message(bot_id: int, event: Any, *, listener_id: int | No
                 task_id=task_id,
                 bot_id=bot_id,
             )
-            sender_bot_id = int(rt.get("bot_id", 0))
             sender_client = _bot_clients.get(sender_bot_id)
             if not sender_client:
                 sender_client = await _ensure_client(sender_bot_id)
@@ -967,7 +973,8 @@ async def start_task(task_id: int) -> dict[str, Any]:
             else:
                 _append_log("warn", f"[SYSTEM] 加入频道失败: {e}", task_id=task_id, bot_id=bot.id)
 
-        src_id = int(src_ent.id)
+        # 统一为与 NewMessage.event.chat_id 相同的 "marked id"（频道通常是 -100...）
+        src_id = int(get_peer_id(src_ent))
         try:
             await listener_client(GetParticipantRequest(channel=src_ent, participant="me"))
         except Exception as e:
@@ -989,7 +996,7 @@ async def start_task(task_id: int) -> dict[str, Any]:
             _append_log("error", msg, task_id=task_id, bot_id=bot.id)
             return {"ok": False, "message": msg}
 
-        tgt_id = int(tgt_ent.id)
+        tgt_id = int(get_peer_id(tgt_ent))
         _append_log(
             "info",
             f"[MONITOR] 监听初始化 | source_id={src_id} | target_id={tgt_id}",

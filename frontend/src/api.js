@@ -89,6 +89,24 @@ async function scraperPost(path, body) {
   return data;
 }
 
+/** 账号注册类接口：与 scraper 登录流一致，优先返回业务态 */
+async function accountRegisterPost(path, body) {
+  const token = localStorage.getItem("token") || "";
+  const res = await fetchApi(path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { ok: false, error: jsonErrorMessage(data) || `HTTP ${res.status}` };
+  }
+  return data;
+}
+
 export const api = {
   login: (username, password) =>
     request("/login", {
@@ -270,6 +288,19 @@ export const api = {
     }
     return scraperPost("/scraper/login", body);
   },
+  accountRegisterSendCode: (phone) =>
+    accountRegisterPost("/accounts/register/send_code", { phone: String(phone || "").trim() }),
+  accountRegisterComplete: (payload) =>
+    accountRegisterPost("/accounts/register/complete", {
+      account_id: Number(payload?.account_id),
+      phone: String(payload?.phone || "").trim(),
+      code: String(payload?.code ?? "").trim(),
+      phone_code_hash: String(payload?.phone_code_hash ?? "").trim(),
+      password:
+        payload?.password != null && String(payload.password).trim() !== ""
+          ? String(payload.password).trim()
+          : null,
+    }),
   listScraperTasks: () => request("/scraper/tasks"),
   listInteractionTasks: () => request("/interaction/tasks"),
   listInteractionTargetGroups: () => request("/interaction/target-groups"),

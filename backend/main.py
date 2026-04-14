@@ -15,6 +15,7 @@ from auth import complete_login, hash_password, require_admin
 from database import SessionLocal, get_db, init_db
 from logger import get_logger, setup_logging
 from routes.account import router as account_router
+from routes.account_register import router as account_register_router
 from routes.auth import router as auth_router
 from routes.logs import router as logs_router
 from routes.settings import router as settings_router
@@ -44,6 +45,7 @@ app.add_middleware(
 )
 app.include_router(task_router)
 app.include_router(account_router)
+app.include_router(account_register_router)
 app.include_router(auth_router)
 app.include_router(settings_router)
 app.include_router(logs_router)
@@ -153,6 +155,24 @@ def startup() -> None:
                 db2.close()
 
     threading.Thread(target=_group_sync_scheduler_loop, name="group-sync-scheduler", daemon=True).start()
+
+    def _account_warmup_scheduler_loop() -> None:
+        from database import SessionLocal
+        from services.account_register_service import run_warmup_cycle_once
+
+        while True:
+            db3 = SessionLocal()
+            try:
+                stats = run_warmup_cycle_once(db3)
+                api_logger.info("account warmup cycle done stats=%s", stats)
+            except Exception:
+                api_logger.exception("scheduled account warmup failed")
+            finally:
+                db3.close()
+            # 每日执行一次养号巡检
+            time.sleep(24 * 60 * 60)
+
+    threading.Thread(target=_account_warmup_scheduler_loop, name="account-warmup-scheduler", daemon=True).start()
     spawn_copy_forward_thread()
 
 

@@ -72,6 +72,12 @@ def _account_payload(row: AccountFile, proxy_ip: str | None = None) -> dict:
         "status_note": getattr(row, "status_note", None),
         "lifecycle_primary": lifecycle_ui_labels(row.status, getattr(row, "status_note", None))[0],
         "lifecycle_sub": lifecycle_ui_labels(row.status, getattr(row, "status_note", None))[1],
+        "source_type": getattr(row, "source_type", "upload"),
+        "register_status": getattr(row, "register_status", "none"),
+        "warmup_status": getattr(row, "warmup_status", "ready"),
+        "warmup_start_at": row.warmup_start_at.isoformat() if getattr(row, "warmup_start_at", None) else None,
+        "ready_at": row.ready_at.isoformat() if getattr(row, "ready_at", None) else None,
+        "session_path": getattr(row, "session_path", None),
         "filename": row.filename,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }

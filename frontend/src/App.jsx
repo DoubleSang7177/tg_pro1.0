@@ -47,7 +47,7 @@ import { UiSpinner } from "./components/UiSpinner";
 import { UserAccountDock } from "./components/UserAccountDock";
 import { SessionLogParticleBackdrop } from "./components/SessionLogParticleBackdrop";
 
-const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "消息Copy", "用户管理"];
+const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "账号注册", "消息Copy", "用户管理"];
 
 /** 代理列表 · 状态筛选（值与接口 p.status 一致：idle / used / dead） */
 const PROXY_STATUS_FILTER_OPTIONS = [
@@ -561,6 +561,7 @@ const MENU_ICONS = {
   群组互动: MessageCircle,
   代理监控: Network,
   用户采集: UserSearch,
+  账号注册: Rocket,
   消息Copy: Repeat2,
   用户管理: UserCog,
 };
@@ -578,6 +579,7 @@ const TAB_HEADER_ICONS = {
   群组互动: MessageCircle,
   代理监控: Network,
   用户采集: UserSearch,
+  账号注册: Rocket,
   消息Copy: Repeat2,
   用户管理: UserCog,
 };
@@ -1559,6 +1561,18 @@ function inferLogRowKind(message, type) {
   return "info";
 }
 
+function shouldSuppressVisualMessage(text) {
+  const s = String(text ?? "").trim().toLowerCase();
+  if (!s) return false;
+  return (
+    s.includes("无法连接后端") ||
+    s.includes("failed to fetch") ||
+    s.includes("networkerror") ||
+    s.includes("当前没有可执行的账号") ||
+    s.includes("当前没有可用或当日受限的账号")
+  );
+}
+
 function LogLineRow({ time, message, type, isLatest }) {
   const termCls =
     type === "error"
@@ -1678,6 +1692,7 @@ export default function App() {
   const pushToast = useCallback((text) => {
     const t = String(text ?? "").trim();
     if (!t) return;
+    if (shouldSuppressVisualMessage(t)) return;
     const id = ++toastIdRef.current;
     setToasts((prev) => [...prev, { id, text: t }]);
     window.setTimeout(() => {
@@ -1793,6 +1808,20 @@ export default function App() {
   const [scraperModalBanner, setScraperModalBanner] = useState(null);
   const [scraperNeedPassword, setScraperNeedPassword] = useState(false);
   const [scraperBindPassword, setScraperBindPassword] = useState("");
+  const [registerPhone, setRegisterPhone] = useState("");
+  const [registerCode, setRegisterCode] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
+  const [registerNeedPassword, setRegisterNeedPassword] = useState(false);
+  const [registerPhoneCodeHash, setRegisterPhoneCodeHash] = useState("");
+  const [registerAccountId, setRegisterAccountId] = useState(null);
+  const registerSendCodeRef = useRef(false);
+  const registerLoginRef = useRef(false);
+  const [registerSendCodeLoading, setRegisterSendCodeLoading] = useState(false);
+  const [registerLoginLoading, setRegisterLoginLoading] = useState(false);
+  const [registerStage, setRegisterStage] = useState("idle");
+  const [registerStatusText, setRegisterStatusText] = useState("等待操作");
+  const registerLogIdRef = useRef(0);
+  const [registerLogs, setRegisterLogs] = useState([]);
 
   const [copyBots, setCopyBots] = useState([]);
   const [copyListeners, setCopyListeners] = useState([]);
@@ -2601,7 +2630,7 @@ export default function App() {
       }
     }
 
-    const baseTabs = new Set(["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "消息Copy"]);
+    const baseTabs = new Set(["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "账号注册", "消息Copy"]);
     if (baseTabs.has(t)) {
       await refreshBaseRef.current({ skipMetadataSync: true, silent: true });
     }
@@ -3816,6 +3845,136 @@ export default function App() {
     }
   };
 
+  const appendRegisterLog = useCallback((message, type = "info") => {
+    const id = ++registerLogIdRef.current;
+    const line = {
+      id,
+      time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+      message: String(message || ""),
+      type,
+    };
+    setRegisterLogs((prev) => {
+      const next = [...prev, line];
+      return next.length > 80 ? next.slice(-80) : next;
+    });
+  }, []);
+
+  const formatRegisterPhone = useCallback((raw) => {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+    const hasPlus = s.startsWith("+");
+    const digits = s.replace(/\D/g, "");
+    return `${hasPlus ? "+" : ""}${digits}`;
+  }, []);
+
+  const onRegisterSendCode = async () => {
+    if (!guardLoggedIn()) return;
+    const phone = formatRegisterPhone(registerPhone);
+    if (!phone || registerSendCodeRef.current) return;
+    registerSendCodeRef.current = true;
+    setRegisterSendCodeLoading(true);
+    setRegisterNeedPassword(false);
+    setRegisterStage("sending");
+    setRegisterStatusText("发送验证码中…");
+    appendRegisterLog("[INFO] 正在发送验证码...");
+    try {
+      const r = await api.accountRegisterSendCode(phone);
+      if (r?.ok) {
+        setRegisterPhone(r.phone || phone);
+        setRegisterPhoneCodeHash(r.phone_code_hash || "");
+        setRegisterAccountId(Number(r.account_id) || null);
+        setRegisterStage("code_sent");
+        setRegisterStatusText("验证码已发送，等待输入");
+        appendRegisterLog("[SUCCESS] 验证码已发送", "success");
+      } else {
+        const err = r?.error || "发送失败";
+        setRegisterStage("failed");
+        setRegisterStatusText(err);
+        appendRegisterLog(`[ERROR] ${err}`, "error");
+        pushToast(err);
+      }
+    } catch (e) {
+      const err = e?.message || "发送失败";
+      setRegisterStage("failed");
+      setRegisterStatusText(err);
+      appendRegisterLog(`[ERROR] ${err}`, "error");
+      pushToast(err);
+    } finally {
+      registerSendCodeRef.current = false;
+      setRegisterSendCodeLoading(false);
+    }
+  };
+
+  const onRegisterLogin = async () => {
+    if (!guardLoggedIn()) return;
+    const phone = formatRegisterPhone(registerPhone);
+    if (!phone || !registerAccountId || registerLoginRef.current) return;
+    if (registerNeedPassword) {
+      if (!registerPassword.trim()) return;
+    } else if (!registerCode.trim() || !registerPhoneCodeHash) {
+      return;
+    }
+    registerLoginRef.current = true;
+    setRegisterLoginLoading(true);
+    setRegisterStage("logging");
+    setRegisterStatusText("正在登录并生成 session…");
+    appendRegisterLog("[INFO] 正在登录...");
+    try {
+      const r = await api.accountRegisterComplete({
+        account_id: registerAccountId,
+        phone,
+        code: registerNeedPassword ? "" : registerCode.trim(),
+        phone_code_hash: registerNeedPassword ? "" : registerPhoneCodeHash,
+        password: registerNeedPassword ? registerPassword.trim() : "",
+      });
+      if (r?.need_password) {
+        setRegisterNeedPassword(true);
+        setRegisterStage("need_password");
+        setRegisterStatusText("该账号开启二步验证，请输入密码");
+        appendRegisterLog("[WARN] 检测到二步验证，请输入密码", "warn");
+        return;
+      }
+      if (r?.ok) {
+        setRegisterNeedPassword(false);
+        setRegisterStage("success");
+        setRegisterStatusText("注册成功，账号已进入养号阶段");
+        appendRegisterLog("[SUCCESS] session 生成成功", "success");
+        appendRegisterLog("[INFO] 账号已加入养号池（Day 1/3）");
+        setRegisterCode("");
+        setRegisterPassword("");
+        pushToast("账号注册成功，已进入养号流程");
+        refreshBaseRef.current?.({ silent: true });
+        return;
+      }
+      const err = r?.error || "登录失败";
+      setRegisterStage("failed");
+      setRegisterStatusText(err);
+      appendRegisterLog(`[ERROR] ${err}`, "error");
+      pushToast(err);
+    } catch (e) {
+      const err = e?.message || "登录失败";
+      setRegisterStage("failed");
+      setRegisterStatusText(err);
+      appendRegisterLog(`[ERROR] ${err}`, "error");
+      pushToast(err);
+    } finally {
+      registerLoginRef.current = false;
+      setRegisterLoginLoading(false);
+    }
+  };
+
+  const onRegisterCancel = () => {
+    if (registerSendCodeLoading || registerLoginLoading) return;
+    setRegisterCode("");
+    setRegisterPassword("");
+    setRegisterNeedPassword(false);
+    setRegisterPhoneCodeHash("");
+    setRegisterAccountId(null);
+    setRegisterStage("idle");
+    setRegisterStatusText("已取消，等待新的注册操作");
+    appendRegisterLog("[INFO] 用户已取消本次注册流程");
+  };
+
   const stats = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
@@ -3834,6 +3993,17 @@ export default function App() {
     () => scraperTasks.filter((item) => (Number(item.user_count) || 0) > 0),
     [scraperTasks],
   );
+
+  const registerAccounts = useMemo(() => {
+    const all = [...(accounts.active || []), ...(accounts.limited || []), ...(accounts.banned || [])];
+    return all
+      .filter(
+        (a) =>
+          String(a?.source_type || "").toLowerCase() === "register" &&
+          String(a?.register_status || "").toLowerCase() === "success",
+      )
+      .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0));
+  }, [accounts]);
 
   /** 目标群组 Hero：今日拉人优先，否则按累计拉人、人数 */
   const featuredTargetGroup = useMemo(() => {
@@ -4034,7 +4204,7 @@ export default function App() {
         </header>
 
         <main className="min-w-0 overflow-visible px-6 pb-10 pt-6 lg:px-8">
-        {systemBanner ? (
+        {systemBanner && !shouldSuppressVisualMessage(systemBanner) ? (
           <p className="mb-4 shrink-0 rounded-lg border border-cyan-500/20 bg-cyan-500/[0.06] px-3 py-2 text-sm font-medium text-cyan-100/95 shadow-[0_0_20px_rgba(34,211,238,0.08)]">
             {systemBanner}
           </p>
@@ -5290,6 +5460,176 @@ export default function App() {
                 )}
               </aside>
             </div>
+          </div>
+        )}
+
+        {tab === "账号注册" && (
+          <div className="mx-auto max-w-7xl space-y-5">
+            <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(320px,420px)_minmax(420px,1fr)]">
+              <Card title="账号注册中心" subtitle="通过手机号创建新账号并自动进入养号流程">
+                <div className="space-y-3">
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">手机号（含国家区号）</span>
+                    <input
+                      className={INPUT_FIELD}
+                      placeholder="+86 13xxxxxxxxx"
+                      value={registerPhone}
+                      onChange={(e) => setRegisterPhone(formatRegisterPhone(e.target.value))}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">验证码</span>
+                    <input
+                      className={INPUT_FIELD}
+                      placeholder="请输入验证码"
+                      value={registerCode}
+                      onChange={(e) => setRegisterCode(e.target.value.replace(/\s+/g, "").slice(0, 8))}
+                      disabled={registerNeedPassword}
+                    />
+                  </label>
+                  {registerNeedPassword ? (
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">二步验证密码</span>
+                      <input
+                        type="password"
+                        className={INPUT_FIELD}
+                        placeholder="该账号开启了二步验证"
+                        value={registerPassword}
+                        onChange={(e) => setRegisterPassword(e.target.value)}
+                      />
+                    </label>
+                  ) : null}
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      disabled={!op || registerSendCodeLoading || !registerPhone.trim()}
+                      title={!op ? guestTitle : undefined}
+                      className={`${BTN_PRIMARY} justify-center`}
+                      onClick={onRegisterSendCode}
+                    >
+                      {registerSendCodeLoading ? <UiSpinner tone="primary" /> : null}
+                      发送验证码
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        !op ||
+                        registerLoginLoading ||
+                        !registerPhone.trim() ||
+                        !registerAccountId ||
+                        (!registerNeedPassword && !registerCode.trim())
+                      }
+                      title={!op ? guestTitle : undefined}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-300/35 bg-emerald-500/12 px-4 py-2.5 text-sm font-semibold text-emerald-100 transition hover:-translate-y-0.5 hover:shadow-[0_8px_28px_rgba(16,185,129,0.24)] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0"
+                      onClick={onRegisterLogin}
+                    >
+                      {registerLoginLoading ? <UiSpinner tone="muted" /> : <CheckCircle className="h-4 w-4" aria-hidden />}
+                      {registerStage === "success" ? "已登录" : "登录并创建 session"}
+                    </button>
+                  </div>
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      disabled={registerSendCodeLoading || registerLoginLoading}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl border border-rose-300/30 bg-rose-500/10 px-4 py-2 text-xs font-semibold text-rose-200 transition hover:-translate-y-0.5 hover:shadow-[0_10px_24px_rgba(244,63,94,0.2)] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0"
+                      onClick={onRegisterCancel}
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
+              </Card>
+
+              <Card title="当前注册状态" subtitle="状态流 + SESSION.LOG">
+                <div className="space-y-4">
+                  <div className="grid grid-cols-4 gap-2">
+                    {[
+                      ["sending", "发送验证码"],
+                      ["code_sent", "等待输入"],
+                      ["logging", "登录中"],
+                      ["success", "成功"],
+                    ].map(([key, label]) => {
+                      const active =
+                        registerStage === key ||
+                        (key === "sending" && ["code_sent", "logging", "success"].includes(registerStage)) ||
+                        (key === "code_sent" && ["logging", "success", "need_password"].includes(registerStage)) ||
+                        (key === "logging" && registerStage === "success");
+                      return (
+                        <div
+                          key={key}
+                          className={`rounded-xl border px-2 py-2 text-center text-[11px] font-semibold ${
+                            active
+                              ? "border-cyan-300/40 bg-cyan-500/14 text-cyan-100 shadow-[0_0_18px_rgba(34,211,238,0.25)]"
+                              : "border-white/10 bg-white/[0.02] text-slate-400"
+                          }`}
+                        >
+                          {label}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="rounded-xl border border-white/[0.12] bg-white/[0.03] px-3 py-2 text-sm text-slate-200">
+                    {registerStatusText}
+                  </div>
+                  <div className="rounded-2xl border border-cyan-400/18 bg-[linear-gradient(180deg,rgba(8,16,34,0.85)_0%,rgba(5,10,24,0.92)_100%)] p-3">
+                    <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wider text-slate-400">
+                      <span>SESSION.LOG</span>
+                      <span className="text-emerald-300">live</span>
+                    </div>
+                    <div className="growth-scroll max-h-56 space-y-1 overflow-y-auto pr-1 font-log text-[11px]">
+                      {registerLogs.length === 0 ? (
+                        <div className="text-slate-500">[INFO] 等待注册动作...</div>
+                      ) : (
+                        registerLogs.map((l, idx) => (
+                          <LogLineRow key={l.id} time={l.time} message={l.message} type={l.type} isLatest={idx === registerLogs.length - 1} />
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            </div>
+
+            <Card title="已注册账号池" subtitle="自动养号（3天）→ 可用">
+              {registerAccounts.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-white/[0.14] bg-white/[0.02] px-4 py-10 text-center text-sm text-slate-500">
+                  暂无注册账号，完成一次注册后将显示在这里
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+                  {registerAccounts.map((a) => {
+                    const startMs = a?.warmup_start_at ? new Date(a.warmup_start_at).getTime() : null;
+                    const elapsedDays = startMs ? Math.max(0, (Date.now() - startMs) / 86400000) : 0;
+                    const pct = a?.warmup_status === "ready" ? 100 : Math.max(5, Math.min(99, Math.round((elapsedDays / 3) * 100)));
+                    const isReady = String(a?.warmup_status || "").toLowerCase() === "ready";
+                    const isFail = String(a?.register_status || "").toLowerCase() === "failed";
+                    const statusCls = isFail
+                      ? "text-rose-300 border-rose-400/35 bg-rose-500/10"
+                      : isReady
+                        ? "text-emerald-200 border-emerald-400/35 bg-emerald-500/10"
+                        : "text-amber-200 border-amber-400/35 bg-amber-500/10";
+                    const statusText = isFail ? "失败" : isReady ? "可用" : `养号中 Day ${Math.max(1, Math.ceil(elapsedDays))} / 3`;
+                    return (
+                      <div key={a.id} className="rounded-2xl border border-white/[0.1] bg-white/[0.03] p-3 transition hover:-translate-y-0.5 hover:shadow-[0_14px_30px_rgba(0,0,0,0.3)]">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="font-log text-sm font-semibold text-slate-100">{a.phone || "—"}</p>
+                          <span className={`rounded-lg border px-2 py-0.5 text-[10px] font-semibold ${statusCls}`}>{statusText}</span>
+                        </div>
+                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/[0.08]">
+                          <div
+                            className="h-full rounded-full bg-[linear-gradient(90deg,#5b8cff_0%,#9f7aea_100%)] shadow-[0_0_12px_rgba(124,156,255,0.45)] transition-all"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <p className="mt-2 text-[11px] text-slate-400">
+                          养号进度 {pct}% · {a?.session_path ? "session已落盘" : "session待生成"}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Card>
           </div>
         )}
 

@@ -60,6 +60,24 @@ def _ensure_account_file_columns() -> None:
             conn.execute(text("ALTER TABLE account_files ADD COLUMN status_note VARCHAR(32)"))
         if "last_update" not in col_names:
             conn.execute(text("ALTER TABLE account_files ADD COLUMN last_update DATETIME"))
+        if "source_type" not in col_names:
+            conn.execute(
+                text("ALTER TABLE account_files ADD COLUMN source_type VARCHAR(20) NOT NULL DEFAULT 'upload'")
+            )
+        if "register_status" not in col_names:
+            conn.execute(
+                text("ALTER TABLE account_files ADD COLUMN register_status VARCHAR(20) NOT NULL DEFAULT 'none'")
+            )
+        if "warmup_status" not in col_names:
+            conn.execute(
+                text("ALTER TABLE account_files ADD COLUMN warmup_status VARCHAR(20) NOT NULL DEFAULT 'ready'")
+            )
+        if "warmup_start_at" not in col_names:
+            conn.execute(text("ALTER TABLE account_files ADD COLUMN warmup_start_at DATETIME"))
+        if "ready_at" not in col_names:
+            conn.execute(text("ALTER TABLE account_files ADD COLUMN ready_at DATETIME"))
+        if "session_path" not in col_names:
+            conn.execute(text("ALTER TABLE account_files ADD COLUMN session_path VARCHAR(500)"))
         conn.execute(
             text("UPDATE account_files SET status = 'normal' WHERE status IN ('active', '') OR status IS NULL")
         )
@@ -69,6 +87,16 @@ def _ensure_account_file_columns() -> None:
                 "UPDATE account_files SET status = 'risk_suspected' "
                 "WHERE status IN ('limited_long')"
             )
+        )
+        conn.execute(text("UPDATE account_files SET source_type = 'upload' WHERE source_type IS NULL OR source_type = ''"))
+        conn.execute(
+            text(
+                "UPDATE account_files SET register_status = 'none' "
+                "WHERE register_status IS NULL OR register_status = ''"
+            )
+        )
+        conn.execute(
+            text("UPDATE account_files SET warmup_status = 'ready' WHERE warmup_status IS NULL OR warmup_status = ''")
         )
 
 

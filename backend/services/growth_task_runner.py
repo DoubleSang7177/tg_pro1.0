@@ -24,11 +24,20 @@ log = get_logger("growth_task_runner")
 class GrowthTaskRunner:
     """running 标志 + stop()；run() 内通过 should_continue 协作退出。"""
 
-    __slots__ = ("job_id", "owner_id", "group", "users", "_running", "_lock")
+    __slots__ = ("job_id", "owner_id", "account_owner_id", "group", "users", "_running", "_lock")
 
-    def __init__(self, job_id: str, owner_id: int, group: str, users: list[str]) -> None:
+    def __init__(
+        self,
+        job_id: str,
+        owner_id: int,
+        group: str,
+        users: list[str],
+        *,
+        account_owner_id: int | None = None,
+    ) -> None:
         self.job_id = job_id
         self.owner_id = owner_id
+        self.account_owner_id = account_owner_id
         self.group = group
         self.users = users
         self._running = True
@@ -57,6 +66,7 @@ class GrowthTaskRunner:
         try:
             print(
                 f"[growth_runner] run() 开始 job_id={self.job_id} owner_id={self.owner_id} "
+                f"account_owner_id={self.account_owner_id} "
                 f"group={self.group!r} users={len(self.users)}",
                 flush=True,
             )
@@ -68,7 +78,7 @@ class GrowthTaskRunner:
             config: dict[str, Any] = {
                 "groups": [self.group],
                 "users": self.users,
-                "owner_id": self.owner_id,
+                "owner_id": self.account_owner_id,
                 "progress_job_id": self.job_id,
                 "should_continue": self.should_continue,
             }

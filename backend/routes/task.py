@@ -163,7 +163,17 @@ async def start_task(
         task_run_start()
         register_growth_job(job_id)
         print("[start_task] 7 task_run_start + register_growth_job 完成", flush=True)
-        runner = GrowthTaskRunner(job_id, user.id, payload.group, payload.users)
+        # 管理员任务使用全量账号池（不按 owner_id 过滤），与 /accounts 展示口径一致
+        account_owner_id = None if user.role == "admin" else user.id
+        print(f"[DEBUG] 当前用户: {user.id}", flush=True)
+        print(f"[DEBUG] owner_id过滤: {account_owner_id}", flush=True)
+        runner = GrowthTaskRunner(
+            job_id,
+            user.id,
+            payload.group,
+            payload.users,
+            account_owner_id=account_owner_id,
+        )
         with _growth_runners_lock:
             _growth_runners[job_id] = runner
         print("[start_task] 8 GrowthTaskRunner 已登记", flush=True)

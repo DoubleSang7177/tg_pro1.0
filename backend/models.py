@@ -49,6 +49,14 @@ class AccountFile(Base):
     status_note = Column(String(32), nullable=True)
     # 最近一次账号状态推送/同步时间（与 WebSocket 事件、列表 API 对齐）
     last_update = Column(DateTime(timezone=True), nullable=True)
+    # 注册来源与养号状态（注册模块）
+    source_type = Column(String(20), nullable=False, default="upload")  # upload / register / scan
+    register_status = Column(String(20), nullable=False, default="none")  # none / pending / success / failed
+    warmup_status = Column(String(20), nullable=False, default="ready")  # none / warming / ready
+    warmup_start_at = Column(DateTime(timezone=True), nullable=True)
+    ready_at = Column(DateTime(timezone=True), nullable=True)
+    # 注册账号的 Telethon session 文件绝对路径；仅保存路径，不保存内容
+    session_path = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

@@ -341,6 +341,13 @@ def _phone_digits(phone: str | None) -> str:
 
 
 def _resolve_session_name(account: AccountFile) -> str:
+    sp = getattr(account, "session_path", None)
+    if sp:
+        p = Path(sp)
+        if p.suffix == ".session":
+            p = p.with_suffix("")
+        if p.with_suffix(".session").exists():
+            return str(p)
     account_dir = Path(account.saved_path)
     digits = _phone_digits(account.phone)
     candidates = [
@@ -792,11 +799,14 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
 
     try:
         th_pub()
+        print(f"[DEBUG] 总账号数: {db.query(AccountFile).count()}", flush=True)
+        print(f"[DEBUG] owner_id过滤: {owner_id}", flush=True)
         # 与 /accounts 列表一致：id 降序，先使用左侧「账号队列」最上方的账号
         query = db.query(AccountFile).order_by(AccountFile.id.desc())
         if owner_id is not None:
             query = query.filter(AccountFile.owner_id == owner_id)
         account_rows = query.all()
+        print(f"[DEBUG] 过滤后账号数: {len(account_rows)}", flush=True)
         group_rows = db.query(Group).filter(Group.username.in_(groups)).all()
         group_map = {g.username: g for g in group_rows}
         available_groups: list[str] = []
@@ -821,6 +831,9 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
         runnable_accounts: list[AccountFile] = []
         for row in account_rows:
             recover_and_normalize(row, now_utc)
+            warmup = (getattr(row, "warmup_status", "ready") or "ready").lower()
+            if warmup != "ready":
+                continue
             if row.status in (ST_RISK_SUSPECTED, ST_BANNED):
                 updated["banned"] += 1
                 continue
@@ -834,6 +847,7 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
             if row.status != ST_NORMAL:
                 continue
             runnable_accounts.append(row)
+        print(f"[DEBUG] 最终可用账号数: {len(runnable_accounts)}", flush=True)
 
         if not runnable_accounts:
             raise ValueError("当前没有可执行的账号（账号受限或已封禁）")

@@ -129,12 +129,14 @@ def _register_interaction_targets(
     return added, updated, skipped
 
 
-def _pick_engagement_accounts(db: Session, owner_id: int) -> list[AccountFile]:
+def _pick_engagement_accounts(db: Session, owner_id: int | None) -> list[AccountFile]:
     """非风控：可用 + 当日受限（与账号列表 active + limited 一致，不含 risk_suspected）。"""
     from datetime import datetime, timezone
 
     now_utc = datetime.now(timezone.utc)
-    q = db.query(AccountFile).filter(AccountFile.owner_id == owner_id).order_by(AccountFile.id.desc())
+    q = db.query(AccountFile).order_by(AccountFile.id.desc())
+    if owner_id is not None:
+        q = q.filter(AccountFile.owner_id == owner_id)
     out: list[AccountFile] = []
     for row in q.all():
         recover_and_normalize(row, now_utc)
@@ -367,13 +369,14 @@ def create_interaction_task(
     # 群组互动页已限定从互动目标群组库中选择，这里不再做重复拦截校验，
     # 避免出现“已可选却提示不在库中”的误判。
 
-    owner_id = user.id
-    accounts = _pick_engagement_accounts(db, owner_id)
+    # 任务归属始终写当前用户；仅账号筛选口径对 admin 放开为全量
+    account_owner_filter = None if user.role == "admin" else user.id
+    accounts = _pick_engagement_accounts(db, account_owner_filter)
     if not accounts:
         raise HTTPException(status_code=400, detail="没有符合条件的账号（需要可用或当日受限，不含风控列）")
 
     task = InteractionTask(
-        owner_id=owner_id,
+        owner_id=user.id,
         target_groups=normalized,
         account_ids=[a.id for a in accounts],
         status="pending",

@@ -2548,9 +2548,18 @@ export default function App() {
         });
       })
       .then(() => refreshBase())
-      .catch(() => {
-        localStorage.removeItem("token");
-        setProfile(null);
+      .catch((e) => {
+        const msg = String(e?.message || "");
+        const isAuthError =
+          msg.includes("未登录") ||
+          msg.includes("Bearer Token") ||
+          msg.includes("无效或过期的令牌") ||
+          msg.includes("用户不存在");
+        if (isAuthError) {
+          localStorage.removeItem("token");
+          setProfile(null);
+        }
+        // 非鉴权错误（如网络抖动）保留登录态，避免误踢下线
         refreshBase({ skipMetadataSync: true }).catch(() => {});
       });
   }, []);

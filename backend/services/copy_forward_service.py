@@ -18,6 +18,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from telethon import TelegramClient, events
 from telethon.errors import AuthKeyDuplicatedError, RPCError
+from telethon.tl.functions.channels import GetParticipantRequest, JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
 
 from database import SessionLocal
 from models import CopyBot, CopyListenerAccount, CopyTask, ForwardRecord
@@ -936,8 +938,45 @@ async def start_task(task_id: int) -> dict[str, Any]:
         if not listener_client:
             return _fail_start_task(db, task, "监听账号不可用或连接失败", bot_id=bot.id)
 
+        source = task.source_channel.strip()
         try:
-            src_ent = await listener_client.get_entity(task.source_channel.strip())
+            src_ent = await listener_client.get_entity(source)
+        except Exception as e:
+            msg = f"[MONITOR ERROR] 无法获取频道信息: {e}"
+            _mark_task_error(db, task, msg)
+            _append_log("error", msg, task_id=task_id, bot_id=bot.id)
+            return {"ok": False, "message": msg}
+
+        try:
+            await listener_client(JoinChannelRequest(src_ent))
+            _append_log("info", f"[SYSTEM] 已自动加入频道 {source}", task_id=task_id, bot_id=bot.id)
+        except Exception as e:
+            # 私有邀请链接：t.me/+xxxx 或 joinchat/xxxx
+            src_low = source.lower()
+            invite_hash = ""
+            if "t.me/+" in src_low:
+                invite_hash = source.split("t.me/+", 1)[1].split("?", 1)[0].strip().lstrip("+")
+            elif "joinchat/" in src_low:
+                invite_hash = source.split("joinchat/", 1)[1].split("?", 1)[0].strip()
+            if invite_hash:
+                try:
+                    await listener_client(ImportChatInviteRequest(invite_hash))
+                    _append_log("info", f"[SYSTEM] 已通过邀请链接加入频道 {source}", task_id=task_id, bot_id=bot.id)
+                except Exception as e2:
+                    _append_log("warn", f"[SYSTEM] 加入频道失败: {e2}", task_id=task_id, bot_id=bot.id)
+            else:
+                _append_log("warn", f"[SYSTEM] 加入频道失败: {e}", task_id=task_id, bot_id=bot.id)
+
+        src_id = int(src_ent.id)
+        try:
+            await listener_client(GetParticipantRequest(channel=src_ent, participant="me"))
+        except Exception as e:
+            msg = f"[MONITOR ERROR] 监听账号不在该频道，无法监听: {e}"
+            _mark_task_error(db, task, msg)
+            _append_log("error", msg, task_id=task_id, bot_id=bot.id)
+            return {"ok": False, "message": msg}
+
+        try:
             tgt_ent = await sender_client.get_entity(task.target_channel.strip())
         except RPCError as e:
             msg = f"{_classify_entity_error(e, side='source')} / {_classify_entity_error(e, side='target')} | {e}"
@@ -950,7 +989,6 @@ async def start_task(task_id: int) -> dict[str, Any]:
             _append_log("error", msg, task_id=task_id, bot_id=bot.id)
             return {"ok": False, "message": msg}
 
-        src_id = int(src_ent.id)
         tgt_id = int(tgt_ent.id)
         _append_log(
             "info",

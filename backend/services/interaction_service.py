@@ -51,6 +51,8 @@ _FLUSH_EVERY = 12
 GROUP_HISTORY_LIMIT = 1
 GROUP_FETCH_TIMEOUT_SEC = 5.0
 GROUP_REACTION_TIMEOUT_SEC = 5.0
+ROUND_GAP_MIN_SEC = 8
+ROUND_GAP_MAX_SEC = 20
 
 
 def _mask_phone(phone: str | None) -> str:
@@ -188,423 +190,213 @@ async def _run_interaction_task_async(task_id: int, job_id: str | None = None) -
         def tl(msg: str) -> None:
             log.info("interaction tid=%s %s", task_id, msg)
 
-        for acc_i, account in enumerate(accounts_ordered, start=1):
-            pr_acc = f"账号 {acc_i}/{n_acc}" if n_acc else "账号 —"
-            if not task_run_should_continue():
-                mark_interrupted(pr_acc)
-                break
-            recover_and_normalize(account, datetime.now(timezone.utc))
-            if account.status not in (ST_NORMAL, ST_DAILY_LIMITED):
-                emit(
-                    "warn",
-                    _mask_phone(account.phone),
-                    "—",
-                    "⏭",
-                    "跳过 · 状态不可用",
-                    layer="account",
-                    progress=pr_acc,
-                )
-                continue
-
-            if acc_i > 1:
-                emit("success", "—", "SYSTEM", "🔁", "切换账号", layer="system", progress=pr_acc)
-
-            emit("success", _mask_phone(account.phone), "—", "📱", "开始账号", layer="account", progress=pr_acc)
-            max_login = TELEGRAM_LOGIN_MAX_RETRIES
-
-            proxy_obj = db.query(Proxy).filter(Proxy.id == account.proxy_id).first() if account.proxy_id else None
-            proxy_dict = _build_proxy(proxy_obj, account.proxy_type)
-            session_name = _resolve_session_name(account)
-            proxy_label = (
-                f"{proxy_dict.get('hostname', '?')}:{proxy_dict.get('port', '?')}" if proxy_dict else "直连"
-            )
-            client = None
-            login_ok = False
-            last_login_err: str | None = None
-            for attempt in range(1, max_login + 1):
+        last_interacted_msg_id: dict[str, int] = {}
+        round_idx = 0
+        while task_run_should_continue():
+            round_idx += 1
+            emit("success", "—", "SYSTEM", "🔁", f"开始第 {round_idx} 轮互动", layer="system", progress="—")
+            for acc_i, account in enumerate(accounts_ordered, start=1):
+                pr_acc = f"轮 {round_idx} · 账号 {acc_i}/{n_acc}" if n_acc else f"轮 {round_idx} · 账号 —"
                 if not task_run_should_continue():
                     mark_interrupted(pr_acc)
                     break
-                emit(
-                    "info",
-                    _mask_phone(account.phone),
-                    "—",
-                    "⏳",
-                    f"登录中（第{attempt}/{max_login}次）",
-                    layer="account",
-                    progress=pr_acc,
+                recover_and_normalize(account, datetime.now(timezone.utc))
+                if account.status not in (ST_NORMAL, ST_DAILY_LIMITED):
+                    emit(
+                        "warn",
+                        _mask_phone(account.phone),
+                        "—",
+                        "⏭",
+                        "跳过 · 状态不可用",
+                        layer="account",
+                        progress=pr_acc,
+                    )
+                    continue
+
+                if acc_i > 1:
+                    emit("success", "—", "SYSTEM", "🔁", "切换账号", layer="system", progress=pr_acc)
+
+                emit("success", _mask_phone(account.phone), "—", "📱", "开始账号", layer="account", progress=pr_acc)
+                max_login = TELEGRAM_LOGIN_MAX_RETRIES
+                proxy_obj = db.query(Proxy).filter(Proxy.id == account.proxy_id).first() if account.proxy_id else None
+                proxy_dict = _build_proxy(proxy_obj, account.proxy_type)
+                session_name = _resolve_session_name(account)
+                proxy_label = (
+                    f"{proxy_dict.get('hostname', '?')}:{proxy_dict.get('port', '?')}" if proxy_dict else "直连"
                 )
-                ok, client, err = await _single_login_attempt(
-                    account,
-                    session_name,
-                    proxy_dict,
-                    proxy_label,
-                    TELEGRAM_LOGIN_ATTEMPT_TIMEOUT,
-                    attempt,
-                    max_login,
-                    tl,
-                )
-                if ok:
-                    login_ok = True
+                client = None
+                login_ok = False
+                last_login_err: str | None = None
+
+                for attempt in range(1, max_login + 1):
+                    if not task_run_should_continue():
+                        mark_interrupted(pr_acc)
+                        break
+                    emit(
+                        "info",
+                        _mask_phone(account.phone),
+                        "—",
+                        "⏳",
+                        f"登录中（第{attempt}/{max_login}次）",
+                        layer="account",
+                        progress=pr_acc,
+                    )
+                    ok, client, err = await _single_login_attempt(
+                        account,
+                        session_name,
+                        proxy_dict,
+                        proxy_label,
+                        TELEGRAM_LOGIN_ATTEMPT_TIMEOUT,
+                        attempt,
+                        max_login,
+                        tl,
+                    )
+                    if ok:
+                        login_ok = True
+                        _interaction_activity(
+                            task_row.owner_id,
+                            account.phone,
+                            action="登录",
+                            status="互动·成功",
+                            level="success",
+                        )
+                        break
+                    last_login_err = err
+                    db.refresh(account)
+
+                if not login_ok:
+                    mark_risk_login_failed(
+                        account,
+                        datetime.now(timezone.utc),
+                        logger=log,
+                        task_notify=tl,
+                        status_reason_cn=login_fail_reason_cn(last_login_err),
+                    )
+                    db.add(account)
+                    db.commit()
                     _interaction_activity(
                         task_row.owner_id,
                         account.phone,
                         action="登录",
-                        status="互动·成功",
-                        level="success",
+                        status=login_fail_reason_cn(last_login_err),
+                        level="error",
                     )
-                    break
-                last_login_err = err
-                db.refresh(account)
+                    emit("warn", _mask_phone(account.phone), "—", "✕", "登录失败", layer="account", progress=pr_acc)
+                    emit("success", "—", "SYSTEM", "📋", "账号完成", layer="system", progress=pr_acc)
+                    if client:
+                        try:
+                            await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
+                        except Exception:
+                            pass
+                    continue
 
-            if user_stopped:
-                if client:
-                    try:
-                        await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
-                    except Exception:
-                        pass
-                break
-
-            if not login_ok:
-                mark_risk_login_failed(
-                    account,
-                    datetime.now(timezone.utc),
-                    logger=log,
-                    task_notify=tl,
-                    status_reason_cn=login_fail_reason_cn(last_login_err),
-                )
-                db.add(account)
-                db.commit()
-                _interaction_activity(
-                    task_row.owner_id,
-                    account.phone,
-                    action="登录",
-                    status=login_fail_reason_cn(last_login_err),
-                    level="error",
-                )
-                tl(f"[WARN] 跳过账号 {account.phone}（登录失败，已尝试 {max_login} 次）")
-                emit("warn", _mask_phone(account.phone), "—", "✕", "登录失败", layer="account", progress=pr_acc)
-                emit(
-                    "warn",
-                    _mask_phone(account.phone),
-                    "—",
-                    "⏭",
-                    f"跳过账号 · 登录失败（{max_login} 次）",
-                    layer="account",
-                    progress=pr_acc,
-                )
-                emit("success", "—", "SYSTEM", "📋", "账号完成", layer="system", progress=pr_acc)
-                if client:
-                    try:
-                        await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
-                    except Exception:
-                        pass
-                continue
-
-            emit("success", _mask_phone(account.phone), "—", "✓", "登录成功", layer="account", progress=pr_acc)
-            peer_flood_break = False
-            try:
-                for grp_i, gname in enumerate(group_names, start=1):
-                    if peer_flood_break:
-                        break
-                    pr_grp = f"账号 {acc_i}/{n_acc} · 群 {grp_i}/{n_grp}" if n_grp else pr_acc
-                    if not task_run_should_continue():
-                        mark_interrupted(pr_grp)
-                        break
-                    ident = _normalize_chat_identifier(gname)
-                    g_label = group_titles.get(ident, ident)
-                    try:
+                emit("success", _mask_phone(account.phone), "—", "✓", "登录成功", layer="account", progress=pr_acc)
+                peer_flood_break = False
+                try:
+                    for grp_i, gname in enumerate(group_names, start=1):
+                        if peer_flood_break:
+                            break
+                        pr_grp = f"轮 {round_idx} · 账号 {acc_i}/{n_acc} · 群 {grp_i}/{n_grp}" if n_grp else pr_acc
                         if not task_run_should_continue():
                             mark_interrupted(pr_grp)
                             break
-                        ok_join, chat = await asyncio.wait_for(
-                            _ensure_in_group(client, ident),
-                            timeout=TELEGRAM_ENSURE_GROUP_TIMEOUT,
-                        )
-                    except Exception as exc:
-                        tl(f"[WARN] 群组 {ident} 入群/校验失败，跳过: {str(exc)[:500]}")
-                        emit(
-                            "warn",
-                            _mask_phone(account.phone),
-                            g_label,
-                            "⚠️",
-                            "入群/校验失败 · 跳过",
-                            layer="group",
-                            progress=pr_grp,
-                        )
-                        fail_buf += 1
-                        if fail_buf >= _FLUSH_EVERY:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
-                        continue
-                    if not ok_join:
-                        tl(f"[WARN] 群组 {ident} 未加入，跳过")
-                        emit(
-                            "warn",
-                            _mask_phone(account.phone),
-                            g_label,
-                            "⚠️",
-                            "未加入群组 · 跳过",
-                            layer="group",
-                            progress=pr_grp,
-                        )
-                        fail_buf += 1
-                        if fail_buf >= _FLUSH_EVERY:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
-                        continue
+                        ident = _normalize_chat_identifier(gname)
+                        g_label = group_titles.get(ident, ident)
+                        try:
+                            ok_join, chat = await asyncio.wait_for(
+                                _ensure_in_group(client, ident),
+                                timeout=TELEGRAM_ENSURE_GROUP_TIMEOUT,
+                            )
+                        except Exception:
+                            fail_buf += 1
+                            if fail_buf >= _FLUSH_EVERY:
+                                succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
+                            continue
+                        if not ok_join:
+                            fail_buf += 1
+                            if fail_buf >= _FLUSH_EVERY:
+                                succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
+                            continue
 
-                    chat_id = chat.id
-                    emit(
-                        "success",
-                        _mask_phone(account.phone),
-                        g_label,
-                        "◎",
-                        "开始处理群",
-                        layer="group",
-                        progress=pr_grp,
-                    )
-                    emit(
-                        "info",
-                        _mask_phone(account.phone),
-                        g_label,
-                        "📥",
-                        "获取消息中…",
-                        layer="group",
-                        progress=pr_grp,
-                    )
+                        chat_id = chat.id
+                        msg = await _fetch_latest_message(client, chat_id, limit=GROUP_HISTORY_LIMIT)
+                        if msg is None or getattr(msg, "id", None) is None:
+                            continue
+                        if msg.date and _msg_utc(msg.date) < day_start:
+                            continue
 
-                    if not task_run_should_continue():
-                        mark_interrupted(pr_grp)
-                        break
+                        cursor_key = str(ident)
+                        if int(msg.id) <= int(last_interacted_msg_id.get(cursor_key, 0)):
+                            emit(
+                                "warn",
+                                _mask_phone(account.phone),
+                                g_label,
+                                "↺",
+                                "无新消息 · 跳过",
+                                layer="group",
+                                progress=pr_grp,
+                            )
+                            continue
 
-                    msg = None
-                    try:
-                        msg = await asyncio.wait_for(
-                            _fetch_latest_message(client, chat_id, limit=GROUP_HISTORY_LIMIT),
-                            timeout=GROUP_FETCH_TIMEOUT_SEC,
-                        )
-                    except asyncio.TimeoutError:
-                        tl(f"[WARN] 群组 {ident} 拉取消息超时（{GROUP_FETCH_TIMEOUT_SEC}s）")
+                        emoji = random.choice(ENGAGEMENT_REACTIONS)
                         emit(
-                            "warn",
-                            _mask_phone(account.phone),
-                            g_label,
-                            "⏱️",
-                            "拉取消息超时 · 跳过",
-                            layer="group",
-                            progress=pr_grp,
-                        )
-                        fail_buf += 1
-                        if fail_buf >= _FLUSH_EVERY:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
-                        if not peer_flood_break:
-                            if not await _sleep_if_running(float(random.randint(GROUP_GAP_MIN_SEC, GROUP_GAP_MAX_SEC))):
-                                mark_interrupted(pr_grp)
-                                break
-                        continue
-                    except Exception as exc:
-                        tl(f"[WARN] 群组 {ident} 拉取消息异常: {str(exc)[:400]}")
-                        emit(
-                            "warn",
-                            _mask_phone(account.phone),
-                            g_label,
-                            "⚠️",
-                            "拉取出错 · 跳过",
-                            layer="group",
-                            progress=pr_grp,
-                        )
-                        fail_buf += 1
-                        if fail_buf >= _FLUSH_EVERY:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
-                        if not peer_flood_break:
-                            if not await _sleep_if_running(float(random.randint(GROUP_GAP_MIN_SEC, GROUP_GAP_MAX_SEC))):
-                                mark_interrupted(pr_grp)
-                                break
-                        continue
-
-                    if msg is None:
-                        tl(f"[INFO] 群组 {ident} 无消息，跳过")
-                        emit(
-                            "warn",
-                            _mask_phone(account.phone),
-                            g_label,
-                            "∅",
-                            "无消息 · 跳过",
-                            layer="group",
-                            progress=pr_grp,
-                        )
-                        fail_buf += 1
-                        if fail_buf >= _FLUSH_EVERY:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
-                        if not peer_flood_break:
-                            if not await _sleep_if_running(float(random.randint(GROUP_GAP_MIN_SEC, GROUP_GAP_MAX_SEC))):
-                                mark_interrupted(pr_grp)
-                                break
-                        continue
-
-                    if getattr(msg, "id", None) is None:
-                        emit(
-                            "warn",
-                            _mask_phone(account.phone),
-                            g_label,
-                            "⚠️",
-                            "无有效消息 · 跳过",
-                            layer="group",
-                            progress=pr_grp,
-                        )
-                        fail_buf += 1
-                        if fail_buf >= _FLUSH_EVERY:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
-                        if not peer_flood_break:
-                            if not await _sleep_if_running(float(random.randint(GROUP_GAP_MIN_SEC, GROUP_GAP_MAX_SEC))):
-                                mark_interrupted(pr_grp)
-                                break
-                        continue
-
-                    if msg.date and _msg_utc(msg.date) < day_start:
-                        tl(f"[INFO] 群组 {ident} 最新一条非今日，跳过")
-                        emit(
-                            "warn",
-                            _mask_phone(account.phone),
-                            g_label,
-                            "∅",
-                            "无今日消息 · 跳过",
-                            layer="group",
-                            progress=pr_grp,
-                        )
-                        fail_buf += 1
-                        if fail_buf >= _FLUSH_EVERY:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
-                        if not peer_flood_break:
-                            if not await _sleep_if_running(float(random.randint(GROUP_GAP_MIN_SEC, GROUP_GAP_MAX_SEC))):
-                                mark_interrupted(pr_grp)
-                                break
-                        continue
-
-                    emit(
-                        "success",
-                        _mask_phone(account.phone),
-                        g_label,
-                        "✉️",
-                        "获取消息成功",
-                        layer="group",
-                        progress=pr_grp,
-                    )
-                    emoji = random.choice(ENGAGEMENT_REACTIONS)
-                    emit(
-                        "info",
-                        _mask_phone(account.phone),
-                        g_label,
-                        emoji,
-                        "发送互动",
-                        layer="group",
-                        progress=pr_grp,
-                    )
-                    if not task_run_should_continue():
-                        mark_interrupted(pr_grp)
-                        break
-                    try:
-                        await asyncio.wait_for(
-                            client.send_reaction(chat_id, msg.id, emoji=emoji),
-                            timeout=GROUP_REACTION_TIMEOUT_SEC,
-                        )
-                        succ_buf += 1
-                        emit(
-                            "success",
+                            "info",
                             _mask_phone(account.phone),
                             g_label,
                             emoji,
-                            "互动已送达",
+                            "发送互动",
                             layer="group",
                             progress=pr_grp,
                         )
-                        if succ_buf >= _FLUSH_EVERY:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
-                    except asyncio.TimeoutError:
-                        tl(f"[WARN] 群组 {ident} send_reaction 超时")
-                        emit(
-                            "warn",
-                            _mask_phone(account.phone),
-                            g_label,
-                            "⏱️",
-                            "反应超时 · 跳过",
-                            layer="group",
-                            progress=pr_grp,
-                        )
-                        fail_buf += 1
-                        if fail_buf >= _FLUSH_EVERY:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
-                    except PeerFlood:
-                        succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
-                        mark_daily_limited(account, datetime.now(timezone.utc), logger=log, task_notify=tl)
-                        db.add(account)
-                        db.commit()
-                        _interaction_activity(
-                            task_row.owner_id,
-                            account.phone,
-                            action="互动",
-                            status="PEER_FLOOD·当日受限",
-                            level="warn",
-                        )
-                        tl(f"[WARN] PEER_FLOOD 账号 {account.phone}，已标记当日受限")
-                        emit(
-                            "error",
-                            _mask_phone(account.phone),
-                            g_label,
-                            "🚫",
-                            "PEER_FLOOD",
-                            layer="group",
-                            progress=pr_grp,
-                        )
-                        peer_flood_break = True
-                    except FloodWait as fw:
-                        emit(
-                            "warn",
-                            _mask_phone(account.phone),
-                            g_label,
-                            "⏳",
-                            f"FloodWait · 跳过 ({int(fw.value)}s)",
-                            layer="group",
-                            progress=pr_grp,
-                        )
-                        fail_buf += 1
-                        if fail_buf >= _FLUSH_EVERY:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
                         try:
-                            sec = float(min(int(fw.value), 3))
-                            if not await _sleep_if_running(sec):
+                            await asyncio.wait_for(
+                                client.send_reaction(chat_id, msg.id, emoji=emoji),
+                                timeout=GROUP_REACTION_TIMEOUT_SEC,
+                            )
+                            succ_buf += 1
+                            last_interacted_msg_id[cursor_key] = int(msg.id)
+                            emit(
+                                "success",
+                                _mask_phone(account.phone),
+                                g_label,
+                                emoji,
+                                "互动已送达",
+                                layer="group",
+                                progress=pr_grp,
+                            )
+                            if succ_buf >= _FLUSH_EVERY:
+                                succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
+                        except PeerFlood:
+                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
+                            mark_daily_limited(account, datetime.now(timezone.utc), logger=log, task_notify=tl)
+                            db.add(account)
+                            db.commit()
+                            peer_flood_break = True
+                        except Exception:
+                            fail_buf += 1
+                            if fail_buf >= _FLUSH_EVERY:
+                                succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
+                        if not peer_flood_break:
+                            if not await _sleep_if_running(float(random.randint(GROUP_GAP_MIN_SEC, GROUP_GAP_MAX_SEC))):
                                 mark_interrupted(pr_grp)
                                 break
-                        except (TypeError, ValueError):
+                finally:
+                    if client:
+                        try:
+                            await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
+                        except Exception:
                             pass
-                    except Exception as exc:
-                        tl(f"[WARN] 群组 {ident} 反应失败: {str(exc)[:400]}")
-                        emit(
-                            "warn",
-                            _mask_phone(account.phone),
-                            g_label,
-                            "⚠️",
-                            "反应出错 · 跳过",
-                            layer="group",
-                            progress=pr_grp,
-                        )
-                        fail_buf += 1
-                        if fail_buf >= _FLUSH_EVERY:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
 
-                    if not peer_flood_break:
-                        if not await _sleep_if_running(float(random.randint(GROUP_GAP_MIN_SEC, GROUP_GAP_MAX_SEC))):
-                            mark_interrupted(pr_grp)
-                            break
-            finally:
-                if client:
-                    try:
-                        await asyncio.wait_for(client.stop(), timeout=TELEGRAM_CLIENT_STOP_TIMEOUT)
-                    except Exception:
-                        pass
+                if user_stopped:
+                    break
+                emit("success", "—", "SYSTEM", "📋", "账号完成", layer="system", progress=pr_acc)
 
             if user_stopped:
                 break
-            emit("success", "—", "SYSTEM", "📋", "账号完成", layer="system", progress=pr_acc)
+            emit("success", "—", "SYSTEM", "✅", f"第 {round_idx} 轮完成，等待下一轮新消息", layer="system", progress="—")
+            if not await _sleep_if_running(float(random.randint(ROUND_GAP_MIN_SEC, ROUND_GAP_MAX_SEC))):
+                mark_interrupted("—")
+                break
 
         succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
         task_row = db.query(InteractionTask).filter(InteractionTask.id == task_id).first()

@@ -60,6 +60,23 @@ class AccountFile(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class AccountFactory(Base):
+    """实验账号生产池（与正式账号系统隔离）。"""
+
+    __tablename__ = "accounts_factory"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    phone = Column(String(50), nullable=False, index=True)
+    country = Column(String(32), nullable=False, default="ID")
+    status = Column(String(20), nullable=False, default="NEW")  # NEW / WARMING / READY / FAILED / BANNED
+    session_path = Column(String(500), nullable=True)
+    warmup_until = Column(DateTime(timezone=True), nullable=True)
+    fail_reason = Column(Text, nullable=True)
+    source = Column(String(20), nullable=False, default="factory")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class TaskRecord(Base):
     __tablename__ = "task_records"
 

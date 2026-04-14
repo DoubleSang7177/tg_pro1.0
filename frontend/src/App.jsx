@@ -47,7 +47,7 @@ import { UiSpinner } from "./components/UiSpinner";
 import { UserAccountDock } from "./components/UserAccountDock";
 import { SessionLogParticleBackdrop } from "./components/SessionLogParticleBackdrop";
 
-const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "账号注册", "消息Copy", "用户管理"];
+const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "账号生产（测试）", "账号注册", "消息Copy", "用户管理"];
 
 /** 代理列表 · 状态筛选（值与接口 p.status 一致：idle / used / dead） */
 const PROXY_STATUS_FILTER_OPTIONS = [
@@ -561,6 +561,7 @@ const MENU_ICONS = {
   群组互动: MessageCircle,
   代理监控: Network,
   用户采集: UserSearch,
+  "账号生产（测试）": Sparkles,
   账号注册: Rocket,
   消息Copy: Repeat2,
   用户管理: UserCog,
@@ -579,10 +580,18 @@ const TAB_HEADER_ICONS = {
   群组互动: MessageCircle,
   代理监控: Network,
   用户采集: UserSearch,
+  "账号生产（测试）": Sparkles,
   账号注册: Rocket,
   消息Copy: Repeat2,
   用户管理: UserCog,
 };
+
+const FACTORY_COUNTRY_OPTIONS = [
+  { code: "ID", label: "印尼" },
+  { code: "PH", label: "菲律宾" },
+  { code: "BR", label: "巴西" },
+  { code: "IN", label: "印度" },
+];
 
 const STAT_ICON_BOX = {
   growth: "bg-emerald-500/12 text-emerald-300 ring-1 ring-emerald-400/25 shadow-[0_0_20px_rgba(52,211,153,0.12)]",
@@ -1822,6 +1831,23 @@ export default function App() {
   const [registerStatusText, setRegisterStatusText] = useState("等待操作");
   const registerLogIdRef = useRef(0);
   const [registerLogs, setRegisterLogs] = useState([]);
+  const [factoryCountries, setFactoryCountries] = useState(["ID", "PH", "BR", "IN"]);
+  const [factoryStrategy, setFactoryStrategy] = useState("balanced");
+  const [factoryMaxRetries, setFactoryMaxRetries] = useState(3);
+  const [factoryRuntimeStatus, setFactoryRuntimeStatus] = useState("idle");
+  const [factoryLogs, setFactoryLogs] = useState([]);
+  const factoryLogRef = useRef(null);
+  const [factoryPool, setFactoryPool] = useState([]);
+  const [factoryPhone, setFactoryPhone] = useState("");
+  const [factoryCountry, setFactoryCountry] = useState("ID");
+  const [factoryCode, setFactoryCode] = useState("");
+  const [factoryPassword, setFactoryPassword] = useState("");
+  const [factoryNeedPassword, setFactoryNeedPassword] = useState(false);
+  const [factoryPhoneCodeHash, setFactoryPhoneCodeHash] = useState("");
+  const [factoryAccountId, setFactoryAccountId] = useState(null);
+  const [factorySendCodeLoading, setFactorySendCodeLoading] = useState(false);
+  const [factoryLoginLoading, setFactoryLoginLoading] = useState(false);
+  const [factoryRuntimeLoading, setFactoryRuntimeLoading] = useState(false);
 
   const [copyBots, setCopyBots] = useState([]);
   const [copyListeners, setCopyListeners] = useState([]);
@@ -1838,6 +1864,8 @@ export default function App() {
   const copyTaskSubmitRef = useRef(false);
   const [copyBotSaving, setCopyBotSaving] = useState(false);
   const [copyTaskSaving, setCopyTaskSaving] = useState(false);
+  const [copyDeleteConfirmTaskId, setCopyDeleteConfirmTaskId] = useState(null);
+  const [copyDeleteSaving, setCopyDeleteSaving] = useState(false);
   const copySessionFileInputRef = useRef(null);
   const [copySessionImportBotId, setCopySessionImportBotId] = useState(null);
   const [uploadingSessionBotId, setUploadingSessionBotId] = useState(null);
@@ -2470,7 +2498,7 @@ export default function App() {
     if (syncOk === false) {
       setSystemBanner(`${welcomeLabel}：${u.username}（数据同步失败，当前为数据库缓存）`);
     } else {
-      setSystemBanner(`${welcomeLabel}：${u.username}`);
+      setSystemBanner("");
     }
     setMsg("");
     setAuthModalOpen(false);
@@ -2639,7 +2667,7 @@ export default function App() {
       }
     }
 
-    const baseTabs = new Set(["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "账号注册", "消息Copy"]);
+    const baseTabs = new Set(["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "账号生产（测试）", "账号注册", "消息Copy"]);
     if (baseTabs.has(t)) {
       await refreshBaseRef.current({ skipMetadataSync: true, silent: true });
     }
@@ -3655,7 +3683,14 @@ export default function App() {
 
   const onDeleteCopyTask = async (id) => {
     if (!guardLoggedIn()) return;
-    if (!window.confirm("确定删除此转发任务？")) return;
+    setCopyDeleteConfirmTaskId(Number(id));
+  };
+
+  const onConfirmDeleteCopyTask = async () => {
+    if (!guardLoggedIn()) return;
+    if (copyDeleteConfirmTaskId == null) return;
+    const id = Number(copyDeleteConfirmTaskId);
+    setCopyDeleteSaving(true);
     setMsg("");
     try {
       await api.deleteCopyTask(id);
@@ -3666,8 +3701,11 @@ export default function App() {
         return n;
       });
       await loadCopyData();
+      setCopyDeleteConfirmTaskId(null);
     } catch (e) {
       pushToast(e?.message || "删除失败");
+    } finally {
+      setCopyDeleteSaving(false);
     }
   };
 
@@ -3984,6 +4022,166 @@ export default function App() {
     appendRegisterLog("[INFO] 用户已取消本次注册流程");
   };
 
+  const maskFactoryPhone = useCallback((raw) => {
+    const s = String(raw || "");
+    if (s.length <= 6) return s;
+    return `${s.slice(0, 4)}****${s.slice(-4)}`;
+  }, []);
+
+  const formatFactoryPhone = useCallback((raw) => {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+    const hasPlus = s.startsWith("+");
+    const digits = s.replace(/\D/g, "");
+    return `${hasPlus ? "+" : ""}${digits}`;
+  }, []);
+
+  const loadFactoryData = useCallback(async () => {
+    if (!profile) return;
+    try {
+      const [runtime, accountsRes] = await Promise.all([api.factoryRuntime(), api.factoryAccounts()]);
+      setFactoryRuntimeStatus(String(runtime?.status || "idle"));
+      setFactoryLogs(Array.isArray(runtime?.logs) ? runtime.logs.slice(-500) : []);
+      if (Array.isArray(runtime?.countries) && runtime.countries.length > 0) {
+        setFactoryCountries(runtime.countries.map((x) => String(x || "").toUpperCase()));
+      }
+      if (runtime?.strategy) setFactoryStrategy(String(runtime.strategy));
+      if (runtime?.max_retries != null) {
+        const mr = Number(runtime.max_retries);
+        if (Number.isFinite(mr) && mr > 0) setFactoryMaxRetries(mr);
+      }
+      setFactoryPool(accountsRes?.items || []);
+    } catch {
+      // 实验模块拉取失败不阻断主流程
+    }
+  }, [profile]);
+
+  useEffect(() => {
+    if (tab !== "账号生产（测试）" || !profile) return undefined;
+    loadFactoryData().catch(() => {});
+    const id = window.setInterval(() => {
+      loadFactoryData().catch(() => {});
+    }, 2500);
+    return () => window.clearInterval(id);
+  }, [tab, profile, loadFactoryData]);
+
+  useEffect(() => {
+    if (tab !== "账号生产（测试）") return;
+    const el = factoryLogRef.current;
+    if (!el) return;
+    const id = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(id);
+  }, [factoryLogs, tab]);
+
+  const onFactoryToggleCountry = useCallback((code) => {
+    const c = String(code || "").toUpperCase();
+    setFactoryCountries((prev) => {
+      if (prev.includes(c)) return prev.filter((x) => x !== c);
+      return [...prev, c];
+    });
+  }, []);
+
+  const onFactoryStart = async () => {
+    if (!guardLoggedIn()) return;
+    if (factoryRuntimeLoading) return;
+    setFactoryRuntimeLoading(true);
+    try {
+      const r = await api.factoryStart({
+        countries: factoryCountries,
+        strategy: factoryStrategy,
+        max_retries: factoryMaxRetries,
+      });
+      if (r?.ok === false) {
+        pushToast(r?.error || "启动失败");
+      }
+      await loadFactoryData();
+    } catch (e) {
+      pushToast(e?.message || "启动失败");
+    } finally {
+      setFactoryRuntimeLoading(false);
+    }
+  };
+
+  const onFactoryStop = async () => {
+    if (!guardLoggedIn()) return;
+    if (factoryRuntimeLoading) return;
+    setFactoryRuntimeLoading(true);
+    try {
+      const r = await api.factoryStop();
+      if (r?.ok === false) {
+        pushToast(r?.error || "停止失败");
+      }
+      await loadFactoryData();
+    } catch (e) {
+      pushToast(e?.message || "停止失败");
+    } finally {
+      setFactoryRuntimeLoading(false);
+    }
+  };
+
+  const onFactorySendCode = async () => {
+    if (!guardLoggedIn()) return;
+    const phone = formatFactoryPhone(factoryPhone);
+    if (!phone || factorySendCodeLoading) return;
+    setFactorySendCodeLoading(true);
+    setFactoryNeedPassword(false);
+    try {
+      const r = await api.factorySendCode({
+        phone,
+        country: factoryCountry,
+        strategy: factoryStrategy,
+      });
+      if (r?.ok) {
+        setFactoryPhone(r.phone || phone);
+        setFactoryAccountId(Number(r.account_id) || null);
+        setFactoryPhoneCodeHash(r.phone_code_hash || "");
+        setFactoryCode("");
+      } else {
+        pushToast(r?.error || "发送失败");
+      }
+      await loadFactoryData();
+    } catch (e) {
+      pushToast(e?.message || "发送失败");
+    } finally {
+      setFactorySendCodeLoading(false);
+    }
+  };
+
+  const onFactoryLogin = async () => {
+    if (!guardLoggedIn()) return;
+    const phone = formatFactoryPhone(factoryPhone);
+    if (!phone || !factoryAccountId || factoryLoginLoading) return;
+    if (!factoryNeedPassword && (!factoryCode.trim() || !factoryPhoneCodeHash)) return;
+    if (factoryNeedPassword && !factoryPassword.trim()) return;
+    setFactoryLoginLoading(true);
+    try {
+      const r = await api.factoryComplete({
+        account_id: factoryAccountId,
+        phone,
+        code: factoryNeedPassword ? "" : factoryCode.trim(),
+        phone_code_hash: factoryNeedPassword ? "" : factoryPhoneCodeHash,
+        password: factoryNeedPassword ? factoryPassword.trim() : "",
+      });
+      if (r?.need_password) {
+        setFactoryNeedPassword(true);
+      } else if (r?.ok) {
+        setFactoryNeedPassword(false);
+        setFactoryCode("");
+        setFactoryPassword("");
+        pushToast("实验账号注册成功，已进入 WARMING");
+      } else {
+        pushToast(r?.error || "登录失败");
+      }
+      await loadFactoryData();
+    } catch (e) {
+      pushToast(e?.message || "登录失败");
+    } finally {
+      setFactoryLoginLoading(false);
+    }
+  };
+
   const stats = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
@@ -4060,8 +4258,13 @@ export default function App() {
                 key={m}
                 type="button"
                 onClick={() => setTab(m)}
+                title={m === "账号生产（测试）" ? "实验模块：用于账号批量生产测试，不参与正式业务" : undefined}
                 className={`group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition-all duration-[250ms] ease-out ${
-                  tab === m
+                  m === "账号生产（测试）"
+                    ? tab === m
+                      ? "border border-violet-300/35 bg-gradient-to-r from-violet-500/22 via-indigo-500/18 to-transparent text-violet-100 shadow-[0_0_28px_rgba(167,139,250,0.22)]"
+                      : "border border-violet-300/15 text-violet-200/90 hover:border-violet-300/35 hover:bg-violet-500/10 hover:text-violet-100 hover:shadow-[0_0_24px_rgba(167,139,250,0.16)]"
+                    : tab === m
                     ? "border border-white/[0.1] bg-gradient-to-r from-emerald-500/20 via-cyan-500/15 to-transparent text-white shadow-[0_0_28px_rgba(0,255,180,0.12)]"
                     : "border border-transparent text-slate-400 hover:border-white/[0.06] hover:bg-white/[0.04] hover:text-slate-200"
                 }`}
@@ -4075,7 +4278,14 @@ export default function App() {
                 >
                   <SidebarMenuIcon name={m} className="h-5 w-5 shrink-0" />
                 </span>
-                {m}
+                <span className="inline-flex min-w-0 items-center gap-2">
+                  <span className="truncate">{m}</span>
+                  {m === "账号生产（测试）" ? (
+                    <span className="rounded-md border border-violet-300/45 bg-violet-500/14 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-violet-100 shadow-[0_0_12px_rgba(167,139,250,0.3)]">
+                      Test / 实验
+                    </span>
+                  ) : null}
+                </span>
               </button>
             ))}
         </nav>
@@ -5472,6 +5682,178 @@ export default function App() {
           </div>
         )}
 
+        {tab === "账号生产（测试）" && (
+          <div className="mx-auto max-w-7xl space-y-5">
+            <Card
+              title="账号生产工厂控制台"
+              subtitle="实验性账号生产系统，用于验证自动注册与养号能力，不会影响当前业务系统。"
+              accent="risk"
+            >
+              <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(320px,420px)_minmax(380px,1fr)_minmax(280px,360px)]">
+                <div className="space-y-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Control Panel</p>
+                  <div className="space-y-2">
+                    <p className="text-xs text-slate-300">国家选择（多选）</p>
+                    <div className="flex flex-wrap gap-2">
+                      {FACTORY_COUNTRY_OPTIONS.map((c) => {
+                        const active = factoryCountries.includes(c.code);
+                        return (
+                          <button
+                            key={c.code}
+                            type="button"
+                            className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                              active
+                                ? "border-violet-300/45 bg-violet-500/18 text-violet-100 shadow-[0_0_16px_rgba(167,139,250,0.24)]"
+                                : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-violet-300/28 hover:text-violet-100"
+                            }`}
+                            onClick={() => onFactoryToggleCountry(c.code)}
+                          >
+                            {c.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">接码策略</span>
+                    <select
+                      className={INPUT_FIELD}
+                      value={factoryStrategy}
+                      onChange={(e) => setFactoryStrategy(e.target.value)}
+                    >
+                      <option value="low_cost">低成本优先</option>
+                      <option value="balanced">平衡模式</option>
+                      <option value="high_success">高成功率优先</option>
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">最大重试次数</span>
+                    <input
+                      className={INPUT_FIELD}
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={factoryMaxRetries}
+                      onChange={(e) => setFactoryMaxRetries(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+                    />
+                  </label>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <button type="button" className={`${BTN_PRIMARY} justify-center`} disabled={!op || factoryRuntimeLoading} onClick={onFactoryStart}>
+                      🚀 开始生产
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-flex items-center justify-center rounded-xl border border-rose-300/35 bg-gradient-to-r from-rose-500/26 to-red-500/22 px-4 py-2 text-sm font-semibold text-rose-100 shadow-[0_0_18px_rgba(244,63,94,0.25)] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-45"
+                      disabled={!op || factoryRuntimeLoading}
+                      onClick={onFactoryStop}
+                    >
+                      ⏹ 停止任务
+                    </button>
+                  </div>
+                  <div className="rounded-xl border border-white/[0.1] bg-white/[0.03] px-3 py-2 text-sm text-slate-200">
+                    当前任务状态：<span className="font-semibold text-violet-200">{factoryRuntimeStatus}</span>
+                  </div>
+                  <div className="space-y-2 rounded-xl border border-white/[0.08] bg-white/[0.02] p-3">
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">测试手机号</span>
+                      <input className={INPUT_FIELD} value={factoryPhone} onChange={(e) => setFactoryPhone(formatFactoryPhone(e.target.value))} placeholder="+62 xxxxxxxx" />
+                    </label>
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">国家</span>
+                      <select className={INPUT_FIELD} value={factoryCountry} onChange={(e) => setFactoryCountry(e.target.value)}>
+                        {FACTORY_COUNTRY_OPTIONS.map((c) => (
+                          <option key={c.code} value={c.code}>{c.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <button type="button" className={BTN_SECONDARY} disabled={!op || factorySendCodeLoading || !factoryPhone.trim()} onClick={onFactorySendCode}>
+                        发送验证码
+                      </button>
+                      <button type="button" className={BTN_SECONDARY} disabled={!op || factoryLoginLoading || !factoryAccountId} onClick={onFactoryLogin}>
+                        登录并入池
+                      </button>
+                    </div>
+                    {!factoryNeedPassword ? (
+                      <input className={INPUT_FIELD} value={factoryCode} onChange={(e) => setFactoryCode(e.target.value)} placeholder="验证码" />
+                    ) : (
+                      <input type="password" className={INPUT_FIELD} value={factoryPassword} onChange={(e) => setFactoryPassword(e.target.value)} placeholder="二步验证密码" />
+                    )}
+                  </div>
+                </div>
+
+                <div className="relative overflow-hidden rounded-2xl border border-violet-400/20 bg-[linear-gradient(145deg,rgba(18,28,56,0.82)_0%,rgba(24,12,56,0.86)_100%)] p-4 shadow-[0_12px_40px_rgba(0,0,0,0.45),0_0_42px_rgba(124,58,237,0.14)]">
+                  <div className="pointer-events-none absolute inset-0 opacity-60">
+                    <SessionLogParticleBackdrop />
+                  </div>
+                  <div className="pointer-events-none absolute inset-y-0 -left-1/3 h-full w-1/2 bg-[linear-gradient(90deg,transparent,rgba(148,163,184,0.16),transparent)]" />
+                  <div className="relative z-[1]">
+                    <div className="mb-3 flex items-center justify-between text-xs uppercase tracking-wider text-slate-400">
+                      <span>Factory.LOG</span>
+                      <span className="text-emerald-300">LIVE</span>
+                    </div>
+                    <div ref={factoryLogRef} className="growth-scroll max-h-[540px] space-y-1 overflow-y-auto pr-1 font-log text-[11px]">
+                      {factoryLogs.length === 0 ? (
+                        <div className="text-slate-500">[INFO] 等待实验任务启动…</div>
+                      ) : (
+                        factoryLogs.map((l, idx) => (
+                          <LogLineRow
+                            key={`${l.time}-${idx}-${l.message}`}
+                            time={l.time}
+                            message={`[${String(l.module || "SYSTEM").toUpperCase()}] ${l.message}`}
+                            type={String(l.level || "info").toLowerCase()}
+                            isLatest={idx === factoryLogs.length - 1}
+                          />
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Factory Pool</p>
+                  <div className="growth-scroll max-h-[540px] space-y-2 overflow-y-auto pr-1">
+                    {factoryPool.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-white/[0.14] bg-white/[0.02] px-3 py-8 text-center text-xs text-slate-500">
+                        暂无实验账号
+                      </div>
+                    ) : (
+                      factoryPool.map((a) => {
+                        const warmupUntil = a?.warmup_until ? new Date(a.warmup_until).getTime() : null;
+                        const remain = warmupUntil ? Math.max(0, warmupUntil - Date.now()) : 0;
+                        const day = Math.floor(remain / 86400000);
+                        const hour = Math.floor((remain % 86400000) / 3600000);
+                        const pct = warmupUntil ? Math.max(2, Math.min(100, Math.round((1 - remain / (3 * 86400000)) * 100))) : 0;
+                        const st = String(a.status || "NEW").toUpperCase();
+                        const stCls =
+                          st === "READY"
+                            ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-200"
+                            : st === "WARMING"
+                              ? "border-amber-400/40 bg-amber-500/12 text-amber-200 shadow-[0_0_14px_rgba(251,191,36,0.2)]"
+                              : st === "FAILED" || st === "BANNED"
+                                ? "border-rose-400/35 bg-rose-500/10 text-rose-200"
+                                : "border-cyan-400/35 bg-cyan-500/10 text-cyan-200";
+                        return (
+                          <div key={a.id} className="rounded-2xl border border-white/[0.1] bg-white/[0.03] p-3 transition hover:-translate-y-0.5 hover:shadow-[0_14px_30px_rgba(0,0,0,0.3)]">
+                            <p className="text-sm text-slate-200">{a.country} · {maskFactoryPhone(a.phone)}</p>
+                            <div className="mt-2 flex items-center justify-between gap-2">
+                              <span className={`rounded-lg border px-2 py-0.5 text-[10px] font-semibold ${stCls}`}>{st}</span>
+                              <span className="text-[10px] text-slate-400">{st === "WARMING" ? `剩余 ${day}天${hour}小时` : "—"}</span>
+                            </div>
+                            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
+                              <div className="h-full rounded-full bg-[linear-gradient(90deg,#5b8cff_0%,#9f7aea_100%)]" style={{ width: `${pct}%` }} />
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+
         {tab === "账号注册" && (
           <div className="mx-auto max-w-7xl space-y-5">
             <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(320px,420px)_minmax(420px,1fr)]">
@@ -6702,6 +7084,49 @@ export default function App() {
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {copyDeleteConfirmTaskId != null && (
+        <div
+          className="fixed inset-0 z-[3210] flex items-center justify-center bg-[rgba(11,15,20,0.58)] p-4 backdrop-blur-md"
+          role="presentation"
+          onClick={() => !copyDeleteSaving && setCopyDeleteConfirmTaskId(null)}
+        >
+          <div
+            className={`${MODAL_SHELL} w-full max-w-lg p-5`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="copy-delete-confirm-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3">
+              <h3 id="copy-delete-confirm-title" className="text-base font-semibold text-rose-100">
+                删除 Copy 任务
+              </h3>
+              <p className="mt-2 text-sm leading-relaxed text-slate-300">
+                确认删除该转发任务？删除后将停止监听与转发。
+              </p>
+            </div>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className={BTN_SECONDARY}
+                disabled={copyDeleteSaving}
+                onClick={() => setCopyDeleteConfirmTaskId(null)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="rounded-xl border border-rose-400/35 bg-rose-500/20 px-4 py-2 text-sm font-semibold text-rose-100 shadow-[0_0_20px_rgba(244,63,94,0.22)] transition hover:border-rose-400/55 hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={copyDeleteSaving}
+                onClick={onConfirmDeleteCopyTask}
+              >
+                {copyDeleteSaving ? "删除中…" : "确认删除"}
+              </button>
             </div>
           </div>
         </div>

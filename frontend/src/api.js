@@ -107,6 +107,24 @@ async function accountRegisterPost(path, body) {
   return data;
 }
 
+/** 实验账号生产接口：与注册流一致，优先返回业务态 */
+async function factoryPost(path, body) {
+  const token = localStorage.getItem("token") || "";
+  const res = await fetchApi(path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { ok: false, error: jsonErrorMessage(data) || `HTTP ${res.status}` };
+  }
+  return data;
+}
+
 export const api = {
   login: (username, password) =>
     request("/login", {
@@ -292,6 +310,32 @@ export const api = {
     accountRegisterPost("/accounts/register/send_code", { phone: String(phone || "").trim() }),
   accountRegisterComplete: (payload) =>
     accountRegisterPost("/accounts/register/complete", {
+      account_id: Number(payload?.account_id),
+      phone: String(payload?.phone || "").trim(),
+      code: String(payload?.code ?? "").trim(),
+      phone_code_hash: String(payload?.phone_code_hash ?? "").trim(),
+      password:
+        payload?.password != null && String(payload.password).trim() !== ""
+          ? String(payload.password).trim()
+          : null,
+    }),
+  factoryRuntime: () => request("/factory/runtime"),
+  factoryAccounts: () => request("/factory/accounts"),
+  factoryStart: (payload) =>
+    factoryPost("/factory/runtime/start", {
+      countries: Array.isArray(payload?.countries) ? payload.countries : [],
+      strategy: String(payload?.strategy || "balanced"),
+      max_retries: Number(payload?.max_retries ?? 3),
+    }),
+  factoryStop: () => factoryPost("/factory/runtime/stop", {}),
+  factorySendCode: (payload) =>
+    factoryPost("/factory/register/send_code", {
+      phone: String(payload?.phone || "").trim(),
+      country: String(payload?.country || "ID").trim().toUpperCase(),
+      strategy: String(payload?.strategy || "balanced").trim(),
+    }),
+  factoryComplete: (payload) =>
+    factoryPost("/factory/register/complete", {
       account_id: Number(payload?.account_id),
       phone: String(payload?.phone || "").trim(),
       code: String(payload?.code ?? "").trim(),

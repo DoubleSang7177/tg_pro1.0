@@ -15,6 +15,7 @@ from auth import complete_login, hash_password, require_admin
 from database import SessionLocal, get_db, init_db
 from logger import get_logger, setup_logging
 from routes.account import router as account_router
+from routes.account_factory import router as account_factory_router
 from routes.account_register import router as account_register_router
 from routes.auth import router as auth_router
 from routes.logs import router as logs_router
@@ -45,6 +46,7 @@ app.add_middleware(
 )
 app.include_router(task_router)
 app.include_router(account_router)
+app.include_router(account_factory_router)
 app.include_router(account_register_router)
 app.include_router(auth_router)
 app.include_router(settings_router)
@@ -173,6 +175,24 @@ def startup() -> None:
             time.sleep(24 * 60 * 60)
 
     threading.Thread(target=_account_warmup_scheduler_loop, name="account-warmup-scheduler", daemon=True).start()
+
+    def _factory_warmup_scheduler_loop() -> None:
+        from database import SessionLocal
+        from services.account_factory.warmup_engine import run_factory_warmup_cycle_once
+
+        while True:
+            db4 = SessionLocal()
+            try:
+                stats = run_factory_warmup_cycle_once(db4)
+                api_logger.info("factory warmup cycle done stats=%s", stats)
+            except Exception:
+                api_logger.exception("scheduled factory warmup failed")
+            finally:
+                db4.close()
+            # 每小时执行一次实验账号养号巡检
+            time.sleep(60 * 60)
+
+    threading.Thread(target=_factory_warmup_scheduler_loop, name="factory-warmup-scheduler", daemon=True).start()
     spawn_copy_forward_thread()
 
 

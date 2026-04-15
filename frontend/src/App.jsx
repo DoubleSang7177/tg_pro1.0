@@ -117,7 +117,8 @@ function proxyGeoRegionCell(p) {
   const cc = String(p.country_code || "").trim().toUpperCase();
   const validCode = cc.length === 2 && /^[A-Z]{2}$/.test(cc);
   const flagUrl = validCode ? countryCodeToTwemojiUrl(cc) : "";
-  const countryName = validCode && countryMap[cc] ? countryMap[cc] : "未知地区";
+  const countryFromCheck = String(p.check_country || "").trim();
+  const countryName = countryFromCheck || (validCode && countryMap[cc] ? countryMap[cc] : "未知地区");
   const cityLine = String(p.check_city || "").trim() || "-";
 
   return (

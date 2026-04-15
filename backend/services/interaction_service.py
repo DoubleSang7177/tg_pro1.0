@@ -59,9 +59,11 @@ def _mask_phone(phone: str | None) -> str:
     p = (phone or "").strip()
     if not p:
         return "—"
-    if len(p) <= 5:
+    if len(p) < 8:
         return "****"
-    return p[:5] + "****"
+    prefix = "+" + p[1:4] if p.startswith("+") and len(p) >= 5 else p[:3]
+    suffix = p[-4:]
+    return f"{prefix}**{suffix}"
 
 
 def _msg_utc(msg_date: datetime) -> datetime:
@@ -114,13 +116,22 @@ def _flush_task_buffers(
     task_id: int,
     succ_buf: int,
     fail_buf: int,
+    *,
+    cursor_map: dict[str, int] | None = None,
+    round_idx: int | None = None,
+    force: bool = False,
 ) -> tuple[int, int]:
-    if succ_buf == 0 and fail_buf == 0:
+    has_checkpoint = cursor_map is not None or round_idx is not None
+    if not force and succ_buf == 0 and fail_buf == 0 and not has_checkpoint:
         return 0, 0
     row = db.query(InteractionTask).filter(InteractionTask.id == task_id).first()
     if row:
         row.success_count = (row.success_count or 0) + succ_buf
         row.fail_count = (row.fail_count or 0) + fail_buf
+        if cursor_map is not None:
+            row.cursor_map = dict(cursor_map)
+        if round_idx is not None:
+            row.round_idx = max(0, int(round_idx))
         db.add(row)
         db.commit()
     return 0, 0
@@ -190,10 +201,31 @@ async def _run_interaction_task_async(task_id: int, job_id: str | None = None) -
         def tl(msg: str) -> None:
             log.info("interaction tid=%s %s", task_id, msg)
 
-        last_interacted_msg_id: dict[str, int] = {}
-        round_idx = 0
+        last_interacted_msg_id: dict[str, int] = {
+            str(k): int(v) for k, v in dict(task_row.cursor_map or {}).items() if str(k).strip()
+        }
+        round_idx = max(0, int(task_row.round_idx or 0))
+        if last_interacted_msg_id:
+            emit(
+                "info",
+                "—",
+                "SYSTEM",
+                "♻",
+                f"已加载断点记忆 {len(last_interacted_msg_id)} 条，继续执行",
+                layer="system",
+                progress="—",
+            )
         while task_run_should_continue():
             round_idx += 1
+            succ_buf, fail_buf = _flush_task_buffers(
+                db,
+                task_id,
+                succ_buf,
+                fail_buf,
+                cursor_map=last_interacted_msg_id,
+                round_idx=round_idx,
+                force=True,
+            )
             emit("success", "—", "SYSTEM", "🔁", f"开始第 {round_idx} 轮互动", layer="system", progress="—")
             for acc_i, account in enumerate(accounts_ordered, start=1):
                 pr_acc = f"轮 {round_idx} · 账号 {acc_i}/{n_acc}" if n_acc else f"轮 {round_idx} · 账号 —"
@@ -366,9 +398,23 @@ async def _run_interaction_task_async(task_id: int, job_id: str | None = None) -
                                 progress=pr_grp,
                             )
                             if succ_buf >= _FLUSH_EVERY:
-                                succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
+                                succ_buf, fail_buf = _flush_task_buffers(
+                                    db,
+                                    task_id,
+                                    succ_buf,
+                                    fail_buf,
+                                    cursor_map=last_interacted_msg_id,
+                                    round_idx=round_idx,
+                                )
                         except PeerFlood:
-                            succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
+                            succ_buf, fail_buf = _flush_task_buffers(
+                                db,
+                                task_id,
+                                succ_buf,
+                                fail_buf,
+                                cursor_map=last_interacted_msg_id,
+                                round_idx=round_idx,
+                            )
                             mark_daily_limited(account, datetime.now(timezone.utc), logger=log, task_notify=tl)
                             db.add(account)
                             db.commit()
@@ -376,7 +422,14 @@ async def _run_interaction_task_async(task_id: int, job_id: str | None = None) -
                         except Exception:
                             fail_buf += 1
                             if fail_buf >= _FLUSH_EVERY:
-                                succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
+                                succ_buf, fail_buf = _flush_task_buffers(
+                                    db,
+                                    task_id,
+                                    succ_buf,
+                                    fail_buf,
+                                    cursor_map=last_interacted_msg_id,
+                                    round_idx=round_idx,
+                                )
                         if not peer_flood_break:
                             if not await _sleep_if_running(float(random.randint(GROUP_GAP_MIN_SEC, GROUP_GAP_MAX_SEC))):
                                 mark_interrupted(pr_grp)
@@ -399,7 +452,15 @@ async def _run_interaction_task_async(task_id: int, job_id: str | None = None) -
                 mark_interrupted("—")
                 break
 
-        succ_buf, fail_buf = _flush_task_buffers(db, task_id, succ_buf, fail_buf)
+        succ_buf, fail_buf = _flush_task_buffers(
+            db,
+            task_id,
+            succ_buf,
+            fail_buf,
+            cursor_map=last_interacted_msg_id,
+            round_idx=round_idx,
+            force=True,
+        )
         task_row = db.query(InteractionTask).filter(InteractionTask.id == task_id).first()
         if task_row:
             task_row.status = "stopped" if user_stopped else "completed"

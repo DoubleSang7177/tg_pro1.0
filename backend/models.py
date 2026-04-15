@@ -199,6 +199,10 @@ class InteractionTask(Base):
     status = Column(String(32), nullable=False, default="pending")
     success_count = Column(Integer, nullable=False, default=0)
     fail_count = Column(Integer, nullable=False, default=0)
+    # 断点记忆：key=account_id:group_ident, value=last_msg_id
+    cursor_map = Column(JSON, nullable=False, default=dict)
+    # 已完成到的轮次（用于重启后延续轮次计数与进度感知）
+    round_idx = Column(Integer, nullable=False, default=0)
     scan_limit = Column(Integer, nullable=False, default=300)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 

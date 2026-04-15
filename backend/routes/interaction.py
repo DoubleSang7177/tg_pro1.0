@@ -29,6 +29,10 @@ class CreateInteractionTaskBody(BaseModel):
         False,
         description="为 True 时仅执行数据库中存在的群组，忽略未知项",
     )
+    force_reset_memory: bool = Field(
+        False,
+        description="为 True 时强制清空互动游标记忆并从头开始",
+    )
 
 
 class RegisterTargetGroupsBody(BaseModel):
@@ -173,6 +177,8 @@ def _task_to_dict(row: InteractionTask) -> dict[str, Any]:
         "status": row.status,
         "success_count": row.success_count or 0,
         "fail_count": row.fail_count or 0,
+        "round_idx": int(row.round_idx or 0),
+        "memory_size": len(dict(row.cursor_map or {})),
         "scan_limit": row.scan_limit or 300,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
@@ -375,6 +381,26 @@ def create_interaction_task(
     if not accounts:
         raise HTTPException(status_code=400, detail="没有符合条件的账号（需要可用或当日受限，不含风控列）")
 
+    resume_cursor_map: dict[str, int] = {}
+    resume_round_idx = 0
+    if not bool(body.force_reset_memory):
+        history = (
+            db.query(InteractionTask)
+            .filter(InteractionTask.owner_id == user.id)
+            .order_by(InteractionTask.id.desc())
+            .limit(100)
+            .all()
+        )
+        for old in history:
+            if list(old.target_groups or []) == normalized:
+                resume_cursor_map = {
+                    str(k): int(v)
+                    for k, v in dict(old.cursor_map or {}).items()
+                    if str(k).strip()
+                }
+                resume_round_idx = max(0, int(old.round_idx or 0))
+                break
+
     task = InteractionTask(
         owner_id=user.id,
         target_groups=normalized,
@@ -382,6 +408,8 @@ def create_interaction_task(
         status="pending",
         success_count=0,
         fail_count=0,
+        cursor_map=resume_cursor_map,
+        round_idx=resume_round_idx,
         scan_limit=int(body.scan_limit),
     )
     db.add(task)

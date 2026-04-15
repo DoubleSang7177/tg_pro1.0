@@ -165,6 +165,19 @@ def _ensure_interaction_target_groups_columns() -> None:
             conn.execute(text("ALTER TABLE interaction_target_groups ADD COLUMN remark VARCHAR(255)"))
 
 
+def _ensure_interaction_tasks_columns() -> None:
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(interaction_tasks)")).fetchall()
+        if not rows:
+            return
+        col_names = {r[1] for r in rows}
+        if "cursor_map" not in col_names:
+            conn.execute(text("ALTER TABLE interaction_tasks ADD COLUMN cursor_map JSON"))
+            conn.execute(text("UPDATE interaction_tasks SET cursor_map = '{}' WHERE cursor_map IS NULL"))
+        if "round_idx" not in col_names:
+            conn.execute(text("ALTER TABLE interaction_tasks ADD COLUMN round_idx INTEGER NOT NULL DEFAULT 0"))
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_group_columns()
@@ -174,3 +187,4 @@ def init_db() -> None:
     _ensure_copy_tasks_owner_id()
     _ensure_proxies_check_columns()
     _ensure_interaction_target_groups_columns()
+    _ensure_interaction_tasks_columns()

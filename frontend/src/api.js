@@ -390,6 +390,7 @@ export const api = {
         groups: payload.groups || [],
         scan_limit: Number(payload.scan_limit ?? 300),
         valid_only: Boolean(payload.valid_only),
+        force_reset_memory: Boolean(payload.force_reset_memory),
       }),
     }),
   registerInteractionTargetGroups: (usernames) =>

@@ -47,7 +47,7 @@ import { UiSpinner } from "./components/UiSpinner";
 import { UserAccountDock } from "./components/UserAccountDock";
 import { SessionLogParticleBackdrop } from "./components/SessionLogParticleBackdrop";
 
-const menus = ["用户增长", "账号检测", "目标群组", "群组互动", "代理监控", "用户采集", "账号生产（测试）", "账号注册", "消息Copy", "用户管理"];
+const menus = ["用户增长", "群组互动", "消息Copy", "用户采集", "账号检测", "目标群组", "代理监控", "账号注册", "账号生产（测试）", "用户管理"];
 
 /** 代理列表 · 状态筛选（值与接口 p.status 一致：idle / used / dead） */
 const PROXY_STATUS_FILTER_OPTIONS = [

@@ -325,7 +325,8 @@ async def _run_interaction_task_async(task_id: int, job_id: str | None = None) -
                         if msg.date and _msg_utc(msg.date) < day_start:
                             continue
 
-                        cursor_key = str(ident)
+                        # 按「账号 + 群组」维护游标，避免首个账号互动后把同群其他账号误判为无新消息
+                        cursor_key = f"{account.id}:{ident}"
                         if int(msg.id) <= int(last_interacted_msg_id.get(cursor_key, 0)):
                             emit(
                                 "warn",

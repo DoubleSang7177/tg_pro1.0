@@ -6222,18 +6222,19 @@ export default function App() {
 
             <Card title="筛选结果" subtitle="可拉用户 / 不可拉用户">
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <select
-                  className={INPUT_FIELD}
-                  value={userFilterSelectedTaskId || ""}
-                  onChange={(e) => setUserFilterSelectedTaskId(Number(e.target.value) || null)}
-                >
-                  <option value="">选择任务</option>
-                  {(userFilterTasks || []).map((t) => (
-                    <option key={t.id} value={t.id}>
-                      #{t.id} {t.name} ({t.processed_users}/{t.total_users})
-                    </option>
-                  ))}
-                </select>
+                <GlassDropdown
+                  value={String(userFilterSelectedTaskId || "")}
+                  onChange={(v) => setUserFilterSelectedTaskId(Number(v) || null)}
+                  options={[
+                    { value: "", label: "选择任务" },
+                    ...(userFilterTasks || []).map((t) => ({
+                      value: String(t.id),
+                      label: `任务 ${t.id} ${t.name}（已筛选 ${t.processed_users} / ${t.total_users}）`,
+                    })),
+                  ]}
+                  placeholder="选择任务"
+                  className="min-w-[16rem] flex-1"
+                />
                 <button type="button" className={BTN_SECONDARY} disabled={!userFilterSelectedTaskId} onClick={() => loadUserFilterResults(userFilterSelectedTaskId)}>
                   刷新结果
                 </button>

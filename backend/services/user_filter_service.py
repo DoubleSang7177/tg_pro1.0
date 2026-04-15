@@ -136,6 +136,21 @@ class _RateLimiter:
         self.hour_window.append(now)
         return True
 
+    def seconds_until_allow(self) -> float:
+        now = time.time()
+        while self.minute_window and now - self.minute_window[0] > 60:
+            self.minute_window.popleft()
+        while self.hour_window and now - self.hour_window[0] > 3600:
+            self.hour_window.popleft()
+
+        wait_min = 0.0
+        wait_hour = 0.0
+        if len(self.minute_window) >= 10:
+            wait_min = max(0.0, 60.0 - (now - self.minute_window[0]))
+        if len(self.hour_window) >= 100:
+            wait_hour = max(0.0, 3600.0 - (now - self.hour_window[0]))
+        return max(wait_min, wait_hour, 0.0)
+
 
 def _pick_available_account(accounts: list[FilterAccount], limiters: dict[int, _RateLimiter]) -> FilterAccount | None:
     random.shuffle(accounts)
@@ -146,6 +161,18 @@ def _pick_available_account(accounts: list[FilterAccount], limiters: dict[int, _
         if limiter.allow():
             return a
     return None
+
+
+def _seconds_until_any_available(accounts: list[FilterAccount], limiters: dict[int, _RateLimiter]) -> float:
+    waits: list[float] = []
+    for a in accounts:
+        if str(a.status or "").lower() == "banned":
+            continue
+        limiter = limiters.setdefault(a.id, _RateLimiter(deque(), deque()))
+        waits.append(limiter.seconds_until_allow())
+    if not waits:
+        return 0.0
+    return min(waits)
 
 
 def _evaluate_can_invite(username: str) -> tuple[bool, str | None]:
@@ -224,13 +251,13 @@ def run_task_sync(task_id: int, job_id: str | None = None) -> None:
 
             probe = _pick_available_account(probe_accounts, limiters)
             if probe is None:
-                task.status = "failed"
-                task.last_error = "所有 probe 账号都触发限速，请稍后重试"
-                db.add(task)
-                db.commit()
-                _append_log(job_id, "error", "RUNNER", task.last_error)
-                _job_finalize(job_id, "failed")
-                return
+                wait_sec = _seconds_until_any_available(probe_accounts, limiters)
+                wait_sec = max(1.0, min(30.0, float(wait_sec or 1.0)))
+                _append_log(job_id, "warn", "RUNNER", f"probe 账号触发限速，等待 {int(wait_sec)}s 后继续")
+                time.sleep(wait_sec)
+                probe = _pick_available_account(probe_accounts, limiters)
+                if probe is None:
+                    continue
 
             can_invite, reason = _evaluate_can_invite(username)
             verified_by_real = 0

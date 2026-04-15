@@ -180,6 +180,25 @@ def _ensure_interaction_tasks_columns() -> None:
             conn.execute(text("ALTER TABLE interaction_tasks ADD COLUMN round_idx INTEGER NOT NULL DEFAULT 0"))
 
 
+def _ensure_scraper_and_listener_proxy_columns() -> None:
+    with engine.begin() as conn:
+        scraper_rows = conn.execute(text("PRAGMA table_info(scraper_account)")).fetchall()
+        if scraper_rows:
+            scraper_cols = {r[1] for r in scraper_rows}
+            if "proxy_id" not in scraper_cols:
+                conn.execute(text("ALTER TABLE scraper_account ADD COLUMN proxy_id INTEGER"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_scraper_account_proxy_id ON scraper_account (proxy_id)"))
+
+        listener_rows = conn.execute(text("PRAGMA table_info(copy_listener_accounts)")).fetchall()
+        if listener_rows:
+            listener_cols = {r[1] for r in listener_rows}
+            if "proxy_id" not in listener_cols:
+                conn.execute(text("ALTER TABLE copy_listener_accounts ADD COLUMN proxy_id INTEGER"))
+                conn.execute(
+                    text("CREATE INDEX IF NOT EXISTS ix_copy_listener_accounts_proxy_id ON copy_listener_accounts (proxy_id)")
+                )
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_group_columns()
@@ -190,3 +209,4 @@ def init_db() -> None:
     _ensure_proxies_check_columns()
     _ensure_interaction_target_groups_columns()
     _ensure_interaction_tasks_columns()
+    _ensure_scraper_and_listener_proxy_columns()

@@ -2014,7 +2014,11 @@ export default function App() {
       const vb = b[key] != null ? String(b[key]) : "";
       const cmp = va.localeCompare(vb, "zh-CN", { numeric: true, sensitivity: "base" });
       if (cmp !== 0) return cmp * mul;
-      return (Number(a.id) - Number(b.id)) * mul;
+      const sa = Number(a.sort_id ?? a.id);
+      const sb = Number(b.sort_id ?? b.id);
+      const fa = Number.isFinite(sa) ? sa : 0;
+      const fb = Number.isFinite(sb) ? sb : 0;
+      return (fa - fb) * mul;
     });
     return rows;
   }, [proxyData.items, proxyTableQuery, proxyTableStatusFilter, proxyTableUsageFilter, proxyTableSort]);
@@ -5636,9 +5640,9 @@ export default function App() {
                       </th>
                       <th className="px-3 py-3 whitespace-nowrap">功能分类</th>
                       <th className="px-3 py-3 whitespace-nowrap">出口 IP</th>
-                      <th className="px-3 py-3 whitespace-nowrap">国家 / 城市</th>
-                      <th className="px-3 py-3 whitespace-nowrap">检测</th>
-                      <th className="px-3 py-3">
+                      <th className="w-[8.75rem] pl-2 pr-1 py-3 whitespace-nowrap">国家 / 城市</th>
+                      <th className="w-[6rem] pl-0.5 pr-1.5 py-3 whitespace-nowrap">检测</th>
+                      <th className="w-[5.5rem] px-1.5 py-3 whitespace-nowrap">
                         <button
                           type="button"
                           className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-white/[0.06] hover:text-slate-200"
@@ -5650,7 +5654,7 @@ export default function App() {
                           ) : null}
                         </button>
                       </th>
-                      <th className="px-3 py-3">操作</th>
+                      <th className="w-[8.5rem] px-2 py-3 whitespace-nowrap">操作</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -5716,8 +5720,8 @@ export default function App() {
                               <span className="text-xs text-slate-500">🌐 未检测</span>
                             )}
                           </td>
-                          <td className="max-w-[12rem] px-3 py-2.5 align-top text-slate-300">{proxyGeoRegionCell(p)}</td>
-                          <td className="whitespace-nowrap px-3 py-2.5 text-xs">
+                          <td className="w-[8.75rem] max-w-[8.75rem] pl-2 pr-1 py-2.5 align-top text-slate-300">{proxyGeoRegionCell(p)}</td>
+                          <td className="w-[6rem] whitespace-nowrap pl-0.5 pr-1.5 py-2.5 text-xs">
                             {(() => {
                               const v = proxyExportCheckVisual(p.check_status);
                               return (
@@ -5728,9 +5732,9 @@ export default function App() {
                               );
                             })()}
                           </td>
-                          <td className="px-3 py-2.5">
+                          <td className="w-[5.5rem] whitespace-nowrap px-1.5 py-2.5">
                             <span
-                              className={`rounded-lg border px-2 py-0.5 text-xs font-medium ${
+                              className={`inline-flex whitespace-nowrap rounded-lg border px-2 py-0.5 text-xs font-medium ${
                                 p.status === "idle"
                                   ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-300"
                                   : p.status === "used"
@@ -5741,8 +5745,8 @@ export default function App() {
                               {proxyListStatusLabel(p.status)}
                             </span>
                           </td>
-                          <td className="px-3 py-2.5">
-                            <div className="flex flex-wrap gap-2">
+                          <td className="w-[8.5rem] whitespace-nowrap px-2 py-2.5">
+                            <div className="flex flex-nowrap gap-2">
                               <button
                                 type="button"
                                 className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-2 py-1 text-xs font-medium text-rose-300 transition hover:-translate-y-0.5 hover:shadow-[0_0_14px_rgba(251,113,133,0.2)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"

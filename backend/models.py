@@ -167,6 +167,7 @@ class ScraperAccount(Base):
     id = Column(Integer, primary_key=True, index=True)
     phone = Column(String(32), nullable=False, unique=True)
     session_file = Column(String(500), nullable=False)
+    proxy_id = Column(Integer, ForeignKey("proxies.id"), nullable=True)
     status = Column(String(20), nullable=False, default="active")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -313,6 +314,7 @@ class CopyListenerAccount(Base):
     api_hash = Column(String(64), nullable=False)
     phone = Column(String(32), nullable=False, unique=True)
     session_name = Column(String(128), nullable=False, unique=True)
+    proxy_id = Column(Integer, ForeignKey("proxies.id"), nullable=True)
     status = Column(String(20), nullable=False, default="active")  # active / disconnected / error
     enabled = Column(Integer, nullable=False, default=1)
     last_error = Column(Text, nullable=True)

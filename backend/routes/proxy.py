@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user_optional, require_admin
 from database import SessionLocal, get_db
 from logger import get_logger
-from models import AccountFile, FilterAccount, Proxy, User
+from models import AccountFile, CopyListenerAccount, FilterAccount, Proxy, ScraperAccount, User
 from services.proxy_check_service import (
     CHECK_JOBS,
     RUNNING_TASKS,
@@ -20,7 +20,7 @@ from services.proxy_check_service import (
     run_checks_for_ids,
     run_manual_check_job,
 )
-from services.proxy_service import assign_proxy_to_account, import_proxies_from_file, import_proxies_from_text
+from services.proxy_service import import_proxies_from_file, import_proxies_from_text
 
 
 router = APIRouter(tags=["proxy"])
@@ -203,52 +203,115 @@ def run_proxy_match(
     db: Session = Depends(get_db),
 ) -> dict:
     proxy_by_id = {p.id: p for p in db.query(Proxy).all()}
-    accounts = db.query(AccountFile).order_by(AccountFile.id.asc()).all()
-    candidate_ids: list[int] = []
-    seen: set[int] = set()
-    for a in accounts:
-        if body.match_unbound:
-            if (a.proxy_type or "").lower() == "direct" and not a.proxy_id:
-                if a.id not in seen:
-                    candidate_ids.append(a.id)
-                    seen.add(a.id)
+    growth_accounts = db.query(AccountFile).order_by(AccountFile.id.asc()).all()
+    filter_accounts = db.query(FilterAccount).order_by(FilterAccount.id.asc()).all()
+    scraper_accounts = db.query(ScraperAccount).order_by(ScraperAccount.id.asc()).all()
+    listener_accounts = db.query(CopyListenerAccount).order_by(CopyListenerAccount.id.asc()).all()
+
+    candidate_refs: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+
+    def _add_candidate(kind: str, rid: int) -> None:
+        key = (kind, int(rid))
+        if key in seen:
+            return
+        seen.add(key)
+        candidate_refs.append(key)
+
+    for a in growth_accounts:
+        if body.match_unbound and (a.proxy_type or "").lower() == "direct" and not a.proxy_id:
+            _add_candidate("growth", a.id)
         if body.match_dead_proxy and a.proxy_id:
             pr = proxy_by_id.get(a.proxy_id)
             if pr is not None and (pr.status or "").lower() == "dead":
-                if a.id not in seen:
-                    candidate_ids.append(a.id)
-                    seen.add(a.id)
+                _add_candidate("growth", a.id)
+
+    for a in filter_accounts:
+        if body.match_unbound and not a.proxy_id:
+            _add_candidate("filter", a.id)
+        if body.match_dead_proxy and a.proxy_id:
+            pr = proxy_by_id.get(a.proxy_id)
+            if pr is not None and (pr.status or "").lower() == "dead":
+                _add_candidate("filter", a.id)
+
+    for a in scraper_accounts:
+        if body.match_unbound and not a.proxy_id:
+            _add_candidate("scraper", a.id)
+        if body.match_dead_proxy and a.proxy_id:
+            pr = proxy_by_id.get(a.proxy_id)
+            if pr is not None and (pr.status or "").lower() == "dead":
+                _add_candidate("scraper", a.id)
+
+    for a in listener_accounts:
+        if body.match_unbound and not a.proxy_id:
+            _add_candidate("listener", a.id)
+        if body.match_dead_proxy and a.proxy_id:
+            pr = proxy_by_id.get(a.proxy_id)
+            if pr is not None and (pr.status or "").lower() == "dead":
+                _add_candidate("listener", a.id)
+
+    def _pick_idle_proxy() -> Proxy | None:
+        return db.query(Proxy).filter(Proxy.status == "idle").order_by(Proxy.id.asc()).first()
 
     logs: list[str] = []
     assigned = 0
-    for aid in candidate_ids:
-        a = db.query(AccountFile).filter(AccountFile.id == aid).first()
-        if a is None:
+    for kind, rid in candidate_refs:
+        row = None
+        if kind == "growth":
+            row = db.query(AccountFile).filter(AccountFile.id == rid).first()
+        elif kind == "filter":
+            row = db.query(FilterAccount).filter(FilterAccount.id == rid).first()
+        elif kind == "scraper":
+            row = db.query(ScraperAccount).filter(ScraperAccount.id == rid).first()
+        elif kind == "listener":
+            row = db.query(CopyListenerAccount).filter(CopyListenerAccount.id == rid).first()
+        if row is None:
             continue
-        if a.proxy_id:
-            pr = db.query(Proxy).filter(Proxy.id == a.proxy_id).first()
-            if pr is not None and (pr.status or "").lower() == "dead":
-                pr.assigned_account_id = None
-                db.add(pr)
-                a.proxy_id = None
-                a.proxy_type = "direct"
-                db.add(a)
-                db.flush()
-                logs.append(f"[解绑失效代理] {a.phone}")
 
-        r = assign_proxy_to_account(a)
+        phone = str(getattr(row, "phone", "") or f"{kind}#{rid}")
+        row_proxy_id = getattr(row, "proxy_id", None)
+
+        if row_proxy_id:
+            pr = db.query(Proxy).filter(Proxy.id == row_proxy_id).first()
+            if pr is not None and (pr.status or "").lower() == "dead":
+                if kind == "growth":
+                    pr.assigned_account_id = None
+                db.add(pr)
+                setattr(row, "proxy_id", None)
+                if kind == "growth":
+                    row.proxy_type = "direct"
+                db.add(row)
+                db.flush()
+                logs.append(f"[解绑失效代理] [{kind}] {phone}")
+
+        proxy = _pick_idle_proxy()
+        if proxy is None:
+            logs.append(f"[跳过] [{kind}] {phone} — 无代理库存")
+            continue
+
+        proxy.status = "used"
+        if kind == "growth":
+            proxy.assigned_account_id = row.id
+            proxy.usage_type = "growth"
+            row.proxy_type = "proxy"
+        elif kind == "filter":
+            proxy.usage_type = "real" if str(getattr(row, "type", "")).lower() == "real" else "probe"
+        elif kind == "scraper":
+            proxy.usage_type = "scraper"
+        elif kind == "listener":
+            proxy.usage_type = "listener"
+        setattr(row, "proxy_id", proxy.id)
+        db.add(proxy)
+        db.add(row)
         db.commit()
-        if r.get("ok"):
-            assigned += 1
-            logs.append(f"[分配成功] {a.phone} → proxy #{r.get('proxy_id')}")
-        else:
-            logs.append(f"[跳过] {a.phone} — {r.get('warning', '未知原因')}")
+        assigned += 1
+        logs.append(f"[分配成功] [{kind}] {phone} → proxy #{proxy.id}")
 
     return {
         "ok": True,
         "logs": logs,
         "assigned_count": assigned,
-        "candidates": len(candidate_ids),
+        "candidates": len(candidate_refs),
     }
 
 
@@ -318,26 +381,44 @@ def list_proxies(
     db: Session = Depends(get_db),
 ) -> dict:
     account_rows = db.query(AccountFile).order_by(AccountFile.id.asc()).all()
+    filter_rows_all = db.query(FilterAccount).order_by(FilterAccount.id.asc()).all()
+    scraper_rows_all = db.query(ScraperAccount).order_by(ScraperAccount.id.asc()).all()
+    listener_rows_all = db.query(CopyListenerAccount).order_by(CopyListenerAccount.id.asc()).all()
     proxy_rows = db.query(Proxy).order_by(Proxy.id.asc()).all()
     proxy_map = {p.id: p for p in proxy_rows}
     usage_roles: dict[int, set[str]] = {p.id: {str(p.usage_type or "unknown").lower()} for p in proxy_rows}
-    filter_rows = db.query(FilterAccount).filter(FilterAccount.proxy_id.isnot(None)).all()
-    for fa in filter_rows:
+    for fa in filter_rows_all:
         if not fa.proxy_id:
             continue
         usage_roles.setdefault(int(fa.proxy_id), {"unknown"}).add("real" if fa.type == "real" else "probe")
     for a in account_rows:
         if a.proxy_id:
             usage_roles.setdefault(int(a.proxy_id), {"unknown"}).add("growth")
+    for sa in scraper_rows_all:
+        if sa.proxy_id:
+            usage_roles.setdefault(int(sa.proxy_id), {"unknown"}).add("scraper")
+    for la in listener_rows_all:
+        if la.proxy_id:
+            usage_roles.setdefault(int(la.proxy_id), {"unknown"}).add("listener")
 
-    account_total = len(account_rows)
+    account_total = len(account_rows) + len(filter_rows_all) + len(scraper_rows_all) + len(listener_rows_all)
     accounts_with_proxy = 0
     accounts_direct = 0
     bound_dead_proxy_accounts = 0
     items = []
-    for a in account_rows:
-        proxy_obj = proxy_map.get(a.proxy_id) if a.proxy_id else None
-        if (a.proxy_type or "").lower() == "direct":
+
+    def _append_row(
+        *,
+        row_id: int | str,
+        sort_id: int,
+        phone: str,
+        proxy_type: str,
+        proxy_id: int | None,
+        default_usage_type: str = "unknown",
+    ) -> None:
+        nonlocal accounts_with_proxy, accounts_direct, bound_dead_proxy_accounts, items
+        proxy_obj = proxy_map.get(proxy_id) if proxy_id else None
+        if (proxy_type or "").lower() == "direct":
             accounts_direct += 1
         else:
             accounts_with_proxy += 1
@@ -345,7 +426,7 @@ def list_proxies(
             bound_dead_proxy_accounts += 1
 
         proxy_value = "-"
-        status = "idle" if (a.proxy_type or "").lower() == "direct" else "used"
+        status = "idle" if (proxy_type or "").lower() == "direct" else "used"
         geo = {
             "check_ip": "",
             "check_country": "",
@@ -360,19 +441,64 @@ def list_proxies(
                 proxy_value = f"{proxy_obj.host}:{proxy_obj.port}"
             status = proxy_obj.status
             geo = _proxy_geo_public(proxy_obj)
-        usage_type = _pick_proxy_usage_type(usage_roles.get(int(a.proxy_id or 0), {"unknown"})) if a.proxy_id else "unknown"
+        usage_type = (
+            _pick_proxy_usage_type(usage_roles.get(int(proxy_id or 0), {"unknown"}))
+            if proxy_id
+            else str(default_usage_type or "unknown").lower()
+        )
 
         items.append(
             {
-                "id": a.id,
-                "phone": a.phone,
-                "proxy_type": a.proxy_type,
+                "id": row_id,
+                "sort_id": sort_id,
+                "phone": phone,
+                "proxy_type": proxy_type,
                 "proxy_value": proxy_value,
                 "usage_type": usage_type,
                 "status": status,
-                "proxy_id": a.proxy_id,
+                "proxy_id": proxy_id,
                 **geo,
             }
+        )
+
+    for a in account_rows:
+        _append_row(
+            row_id=a.id,
+            sort_id=int(a.id),
+            phone=a.phone,
+            proxy_type=a.proxy_type,
+            proxy_id=a.proxy_id,
+            default_usage_type="growth",
+        )
+
+    for fa in filter_rows_all:
+        _append_row(
+            row_id=f"f-{fa.id}",
+            sort_id=1_000_000 + int(fa.id),
+            phone=fa.phone,
+            proxy_type="proxy" if fa.proxy_id else "direct",
+            proxy_id=fa.proxy_id,
+            default_usage_type="real" if fa.type == "real" else "probe",
+        )
+
+    for sa in scraper_rows_all:
+        _append_row(
+            row_id=f"s-{sa.id}",
+            sort_id=2_000_000 + int(sa.id),
+            phone=sa.phone,
+            proxy_type="proxy" if sa.proxy_id else "direct",
+            proxy_id=sa.proxy_id,
+            default_usage_type="scraper",
+        )
+
+    for la in listener_rows_all:
+        _append_row(
+            row_id=f"l-{la.id}",
+            sort_id=3_000_000 + int(la.id),
+            phone=la.phone,
+            proxy_type="proxy" if la.proxy_id else "direct",
+            proxy_id=la.proxy_id,
+            default_usage_type="listener",
         )
 
     return {
@@ -412,18 +538,37 @@ def unbind_proxy(
     if proxy is None:
         raise HTTPException(status_code=404, detail="代理不存在")
 
+    touched = 0
     if proxy.assigned_account_id:
         account = db.query(AccountFile).filter(AccountFile.id == proxy.assigned_account_id).first()
         if account is not None:
             account.proxy_id = None
             account.proxy_type = "direct"
             db.add(account)
+            touched += 1
+
+    # 用户筛选模块账号同样可能绑定该代理，需一并解绑
+    fa_rows = db.query(FilterAccount).filter(FilterAccount.proxy_id == proxy.id).all()
+    for fa in fa_rows:
+        fa.proxy_id = None
+        db.add(fa)
+        touched += 1
+    sa_rows = db.query(ScraperAccount).filter(ScraperAccount.proxy_id == proxy.id).all()
+    for sa in sa_rows:
+        sa.proxy_id = None
+        db.add(sa)
+        touched += 1
+    la_rows = db.query(CopyListenerAccount).filter(CopyListenerAccount.proxy_id == proxy.id).all()
+    for la in la_rows:
+        la.proxy_id = None
+        db.add(la)
+        touched += 1
 
     proxy.assigned_account_id = None
     proxy.status = "idle"
     db.add(proxy)
     db.commit()
-    return {"ok": True, "id": proxy.id, "status": proxy.status}
+    return {"ok": True, "id": proxy.id, "status": proxy.status, "affected_accounts": touched}
 
 
 @router.post("/proxy/{proxy_id}/usage_type")

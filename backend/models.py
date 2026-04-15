@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, Text, String, UniqueConstraint
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, JSON, Text, String, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -148,6 +148,7 @@ class Proxy(Base):
     proxy_city = Column(String(128), nullable=True)
     proxy_country_code = Column(String(4), nullable=True)
     proxy_status = Column(String(16), nullable=False, default="unknown")
+    usage_type = Column(String(20), nullable=False, default="unknown")
 
 
 class AccountPath(Base):
@@ -204,6 +205,57 @@ class InteractionTask(Base):
     # 已完成到的轮次（用于重启后延续轮次计数与进度感知）
     round_idx = Column(Integer, nullable=False, default=0)
     scan_limit = Column(Integer, nullable=False, default=300)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class UserFilterTask(Base):
+    __tablename__ = "user_filter_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False, default="")
+    source_group_id = Column(String(255), nullable=False, default="")
+    source_task_id = Column(Integer, ForeignKey("scraper_tasks.id"), nullable=True, index=True)
+    status = Column(String(20), nullable=False, default="idle")  # idle / running / finished / stopped / failed
+    total_users = Column(Integer, nullable=False, default=0)
+    processed_users = Column(Integer, nullable=False, default=0)
+    success_count = Column(Integer, nullable=False, default=0)
+    fail_count = Column(Integer, nullable=False, default=0)
+    real_verify_enabled = Column(Integer, nullable=False, default=0)
+    real_verify_ratio = Column(Float, nullable=False, default=0.1)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class UserFilterResult(Base):
+    __tablename__ = "user_filter_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("user_filter_tasks.id"), nullable=False, index=True)
+    user_id = Column(String(64), nullable=False, default="")
+    username = Column(String(255), nullable=True)
+    phone = Column(String(64), nullable=True)
+    can_invite = Column(Integer, nullable=False, default=0)
+    fail_reason = Column(String(255), nullable=True)
+    probe_account_id = Column(Integer, ForeignKey("filter_accounts.id"), nullable=True, index=True)
+    verified_by_real = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class FilterAccount(Base):
+    __tablename__ = "filter_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    type = Column(String(16), nullable=False, default="probe")  # probe / real
+    phone = Column(String(32), nullable=False)
+    api_id = Column(Integer, nullable=True)
+    api_hash = Column(String(128), nullable=True)
+    session_path = Column(String(500), nullable=False)
+    status = Column(String(20), nullable=False, default="active")  # active / banned / idle
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    proxy_id = Column(Integer, ForeignKey("proxies.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

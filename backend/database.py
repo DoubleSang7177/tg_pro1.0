@@ -138,6 +138,8 @@ def _ensure_proxies_check_columns() -> None:
             conn.execute(
                 text("ALTER TABLE proxies ADD COLUMN proxy_status VARCHAR(16) NOT NULL DEFAULT 'unknown'")
             )
+        if "usage_type" not in col_names:
+            conn.execute(text("ALTER TABLE proxies ADD COLUMN usage_type VARCHAR(20) NOT NULL DEFAULT 'unknown'"))
 
 
 def _ensure_copy_tasks_owner_id() -> None:

@@ -167,6 +167,7 @@ def assign_proxy_to_account(account: AccountFile) -> dict:
 
     proxy.status = "used"
     proxy.assigned_account_id = account.id
+    proxy.usage_type = "growth"
     account.proxy_id = proxy.id
     account.proxy_type = "proxy"
     db.add(proxy)

@@ -28,6 +28,7 @@ from routes.scraper import router as scraper_router
 from routes.interaction import router as interaction_router
 from routes.copy_forward import router as copy_forward_router
 from routes.realtime_ws import router as realtime_ws_router
+from routes.user_filter import router as user_filter_router
 from routes.auth import LoginRequest
 from models import Group, User
 from services.copy_forward_service import spawn_copy_forward_thread
@@ -58,6 +59,7 @@ app.include_router(scraper_router)
 app.include_router(interaction_router)
 app.include_router(copy_forward_router)
 app.include_router(realtime_ws_router)
+app.include_router(user_filter_router)
 
 _upload_root = Path(__file__).resolve().parent / "uploads"
 _upload_root.mkdir(parents=True, exist_ok=True)

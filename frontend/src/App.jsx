@@ -47,7 +47,7 @@ import { UiSpinner } from "./components/UiSpinner";
 import { UserAccountDock } from "./components/UserAccountDock";
 import { SessionLogParticleBackdrop } from "./components/SessionLogParticleBackdrop";
 
-const menus = ["用户增长", "群组互动", "消息Copy", "用户采集", "账号检测", "目标群组", "代理监控", "账号注册", "账号生产（测试）", "用户管理"];
+const menus = ["用户增长", "群组互动", "消息Copy", "用户采集", "用户筛选", "账号检测", "目标群组", "代理监控", "账号注册", "账号生产（测试）", "用户管理"];
 
 /** 代理列表 · 状态筛选（值与接口 p.status 一致：idle / used / dead） */
 const PROXY_STATUS_FILTER_OPTIONS = [
@@ -77,6 +77,16 @@ const PROXY_STATUS_FILTER_OPTIONS = [
     itemInactiveClass: "text-rose-300/95 hover:bg-rose-500/[0.16]",
     itemActiveClass: "bg-rose-500/20 text-rose-50 border border-rose-400/35 ring-1 ring-rose-400/18",
   },
+];
+
+const PROXY_USAGE_FILTER_OPTIONS = [
+  { value: "all", label: "全部" },
+  { value: "growth", label: "增长号" },
+  { value: "scraper", label: "采集号" },
+  { value: "listener", label: "监听号" },
+  { value: "probe", label: "探测号" },
+  { value: "real", label: "真实号" },
+  { value: "unknown", label: "未分类" },
 ];
 
 function proxyListStatusLabel(status) {
@@ -160,6 +170,16 @@ function proxyTypeRowVisual(proxyType) {
   const isDirect = t === "direct" || t.includes("direct");
   if (isDirect) return { Icon: Zap, label: raw || "-", iconClass: "text-amber-400/95 drop-shadow-[0_0_6px_rgba(251,191,36,0.35)]" };
   return { Icon: Shield, label: raw || "-", iconClass: "text-cyan-400/90 drop-shadow-[0_0_6px_rgba(34,211,238,0.25)]" };
+}
+
+function proxyUsageTypeVisual(usageType) {
+  const v = String(usageType || "unknown").toLowerCase();
+  if (v === "growth") return { label: "增长号", cls: "border-emerald-400/35 bg-emerald-500/10 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.2)]" };
+  if (v === "scraper") return { label: "采集号", cls: "border-sky-400/35 bg-sky-500/10 text-sky-200 shadow-[0_0_12px_rgba(56,189,248,0.2)]" };
+  if (v === "listener") return { label: "监听号", cls: "border-violet-400/35 bg-violet-500/10 text-violet-200 shadow-[0_0_12px_rgba(168,85,247,0.2)]" };
+  if (v === "probe") return { label: "探测号", cls: "border-amber-400/35 bg-amber-500/10 text-amber-200 shadow-[0_0_12px_rgba(251,191,36,0.2)]" };
+  if (v === "real") return { label: "真实号", cls: "border-yellow-300/40 bg-yellow-500/10 text-yellow-200 shadow-[0_0_12px_rgba(250,204,21,0.2)]" };
+  return { label: "未分类", cls: "border-slate-400/35 bg-slate-500/10 text-slate-300" };
 }
 
 function formatUserRelativeZh(iso, nowMs = Date.now()) {
@@ -561,6 +581,7 @@ const MENU_ICONS = {
   群组互动: MessageCircle,
   代理监控: Network,
   用户采集: UserSearch,
+  用户筛选: Shield,
   "账号生产（测试）": Sparkles,
   账号注册: Rocket,
   消息Copy: Repeat2,
@@ -580,6 +601,7 @@ const TAB_HEADER_ICONS = {
   群组互动: MessageCircle,
   代理监控: Network,
   用户采集: UserSearch,
+  用户筛选: Shield,
   "账号生产（测试）": Sparkles,
   账号注册: Rocket,
   消息Copy: Repeat2,
@@ -1638,6 +1660,7 @@ export default function App() {
   });
   const [proxyTableQuery, setProxyTableQuery] = useState("");
   const [proxyTableStatusFilter, setProxyTableStatusFilter] = useState("all");
+  const [proxyTableUsageFilter, setProxyTableUsageFilter] = useState("all");
   const [proxyTableSort, setProxyTableSort] = useState({ key: "phone", asc: true });
   const [proxyPoolModalOpen, setProxyPoolModalOpen] = useState(false);
   const [proxyMatchModalOpen, setProxyMatchModalOpen] = useState(false);
@@ -1805,6 +1828,34 @@ export default function App() {
   const [scraperDownloadTaskId, setScraperDownloadTaskId] = useState(null);
   const [scraperResultDownloadLoading, setScraperResultDownloadLoading] = useState(false);
   const [scraperAccount, setScraperAccount] = useState(null);
+  const [userFilterSources, setUserFilterSources] = useState([]);
+  const [userFilterTasks, setUserFilterTasks] = useState([]);
+  const [userFilterJobId, setUserFilterJobId] = useState(null);
+  const [userFilterLiveLogs, setUserFilterLiveLogs] = useState([]);
+  const [userFilterResults, setUserFilterResults] = useState([]);
+  const [userFilterAccounts, setUserFilterAccounts] = useState([]);
+  const [userFilterSelectedTaskId, setUserFilterSelectedTaskId] = useState(null);
+  const [userFilterSubmitting, setUserFilterSubmitting] = useState(false);
+  const [userFilterForm, setUserFilterForm] = useState({
+    name: "用户筛选任务",
+    source_task_id: 0,
+    real_verify_enabled: false,
+    real_verify_ratio: 0.1,
+  });
+  const [userFilterAccountForm, setUserFilterAccountForm] = useState({
+    mode: "session",
+    type: "probe",
+    phone: "",
+    session_path: "",
+    code: "",
+    phone_code_hash: "",
+    password: "",
+    need_password: false,
+    status: "active",
+  });
+  const [userFilterSendCodeLoading, setUserFilterSendCodeLoading] = useState(false);
+  const [userFilterLoginLoading, setUserFilterLoginLoading] = useState(false);
+  const [userFilterCodePhase, setUserFilterCodePhase] = useState("idle"); // idle | sending | sent
   const [showScraperAccountModal, setShowScraperAccountModal] = useState(false);
   const [scraperBindPhone, setScraperBindPhone] = useState("");
   const [scraperBindCode, setScraperBindCode] = useState("");
@@ -1921,6 +1972,12 @@ export default function App() {
     return `${base} border-white/[0.12] hover:border-cyan-400/40`;
   }, [proxyTableStatusFilter]);
 
+  const proxyUsageFilterTriggerClass = useMemo(() => {
+    const base =
+      "!rounded-[10px] border bg-[rgba(255,255,255,0.06)] px-3 py-2 text-slate-100 shadow-[0_4px_28px_rgba(0,0,0,0.35)] backdrop-blur-[18px] transition hover:bg-[rgba(255,255,255,0.09)] hover:shadow-[0_6px_32px_rgba(0,0,0,0.4)]";
+    return `${base} border-white/[0.12] hover:border-cyan-400/40`;
+  }, []);
+
   const proxyTableRows = useMemo(() => {
     let rows = Array.isArray(proxyData.items) ? [...proxyData.items] : [];
     const q = proxyTableQuery.trim().toLowerCase();
@@ -1947,6 +2004,9 @@ export default function App() {
     if (proxyTableStatusFilter !== "all") {
       rows = rows.filter((p) => p.status === proxyTableStatusFilter);
     }
+    if (proxyTableUsageFilter !== "all") {
+      rows = rows.filter((p) => String(p.usage_type || "unknown").toLowerCase() === proxyTableUsageFilter);
+    }
     const { key, asc } = proxyTableSort;
     const mul = asc ? 1 : -1;
     rows.sort((a, b) => {
@@ -1957,7 +2017,7 @@ export default function App() {
       return (Number(a.id) - Number(b.id)) * mul;
     });
     return rows;
-  }, [proxyData.items, proxyTableQuery, proxyTableStatusFilter, proxyTableSort]);
+  }, [proxyData.items, proxyTableQuery, proxyTableStatusFilter, proxyTableUsageFilter, proxyTableSort]);
 
   useEffect(() => {
     profileRef.current = profile;
@@ -2640,6 +2700,33 @@ export default function App() {
     }
   }, [profile]);
 
+  const loadUserFilterBase = useCallback(async () => {
+    if (!profileRef.current) return;
+    try {
+      const [src, ts, ac] = await Promise.all([
+        api.listUserFilterSources(),
+        api.listUserFilterTasks(),
+        api.listFilterAccounts(),
+      ]);
+      setUserFilterSources(Array.isArray(src?.sources) ? src.sources : []);
+      setUserFilterTasks(Array.isArray(ts?.tasks) ? ts.tasks : []);
+      setUserFilterAccounts(Array.isArray(ac?.accounts) ? ac.accounts : []);
+    } catch {
+      // ignore; 页面会保留已有缓存
+    }
+  }, []);
+
+  const loadUserFilterResults = useCallback(async (taskId) => {
+    const tid = Number(taskId || 0);
+    if (!tid) return;
+    try {
+      const r = await api.listUserFilterResults(tid);
+      setUserFilterResults(Array.isArray(r?.results) ? r.results : []);
+    } catch {
+      setUserFilterResults([]);
+    }
+  }, []);
+
   const autoRefreshTickFn = useCallback(async () => {
     const t = tabRef.current;
     const prof = profileRef.current;
@@ -2657,6 +2744,10 @@ export default function App() {
       await loadScraperAccount();
       await loadScraperTasks({ quiet: true });
     }
+    if (t === "用户筛选" && prof) {
+      await loadUserFilterBase();
+      if (userFilterSelectedTaskId) await loadUserFilterResults(userFilterSelectedTaskId);
+    }
 
     if (t === "用户管理" && prof?.role === "admin") {
       try {
@@ -2671,7 +2762,7 @@ export default function App() {
     if (baseTabs.has(t)) {
       await refreshBaseRef.current({ skipMetadataSync: true, silent: true });
     }
-  }, [loadScraperAccount, loadScraperTasks, applyUsersListPayload]);
+  }, [loadScraperAccount, loadScraperTasks, applyUsersListPayload, loadUserFilterBase, loadUserFilterResults, userFilterSelectedTaskId]);
 
   const { lastUpdatedAt, isTicking } = useAutoRefresh({
     tickFn: autoRefreshTickFn,
@@ -2684,6 +2775,44 @@ export default function App() {
     loadScraperAccount();
     loadScraperTasks();
   }, [tab, profile, loadScraperAccount, loadScraperTasks]);
+
+  useEffect(() => {
+    if (tab !== "用户筛选" || !profile) return;
+    loadUserFilterBase();
+  }, [tab, profile, loadUserFilterBase]);
+
+  useEffect(() => {
+    if (!userFilterJobId) return undefined;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const data = await api.userFilterLive(userFilterJobId);
+        if (cancelled) return;
+        setUserFilterLiveLogs((data.logs || []).slice(-300));
+        if (["completed", "failed", "stopped"].includes(String(data.status || "").toLowerCase())) {
+          setUserFilterSubmitting(false);
+          if (data.task_id) {
+            setUserFilterSelectedTaskId(Number(data.task_id));
+            await loadUserFilterResults(Number(data.task_id));
+          }
+          await loadUserFilterBase();
+          return;
+        }
+      } catch {
+        /* ignore */
+      }
+      if (!cancelled) window.setTimeout(poll, 1000);
+    };
+    poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadUserFilterBase, loadUserFilterResults, userFilterJobId]);
+
+  useEffect(() => {
+    if (!userFilterSelectedTaskId) return;
+    loadUserFilterResults(userFilterSelectedTaskId);
+  }, [loadUserFilterResults, userFilterSelectedTaskId]);
 
   useEffect(() => {
     if (!engagementJobId) return undefined;
@@ -2787,6 +2916,149 @@ export default function App() {
     }
     runEngagementTask({ validOnly: true });
   };
+
+  const onStartUserFilter = useCallback(async () => {
+    if (!profileRef.current) {
+      pushToast("请先登录");
+      return;
+    }
+    const sourceTaskId = Number(userFilterForm.source_task_id || 0);
+    if (!sourceTaskId) {
+      pushToast("请先选择采集来源");
+      return;
+    }
+    setUserFilterSubmitting(true);
+    setUserFilterLiveLogs([]);
+    try {
+      const r = await api.startUserFilterTask({
+        name: userFilterForm.name,
+        source_task_id: sourceTaskId,
+        real_verify_enabled: Boolean(userFilterForm.real_verify_enabled),
+        real_verify_ratio: Number(userFilterForm.real_verify_ratio ?? 0.1),
+      });
+      if (!r?.job_id) throw new Error("未返回筛选会话");
+      setUserFilterJobId(r.job_id);
+      if (r?.task?.id) setUserFilterSelectedTaskId(Number(r.task.id));
+      await loadUserFilterBase();
+    } catch (e) {
+      pushToast(e.message || "启动失败");
+      setUserFilterSubmitting(false);
+    }
+  }, [loadUserFilterBase, pushToast, userFilterForm]);
+
+  const onStopUserFilter = useCallback(async () => {
+    const tid = Number(userFilterSelectedTaskId || 0);
+    if (!tid) {
+      pushToast("暂无可停止任务");
+      return;
+    }
+    try {
+      await api.stopUserFilterTask(tid);
+      pushToast("已发送停止指令");
+    } catch (e) {
+      pushToast(e.message || "停止失败");
+    }
+  }, [pushToast, userFilterSelectedTaskId]);
+
+  const onCreateFilterAccount = useCallback(async () => {
+    if (!profileRef.current) {
+      pushToast("请先登录");
+      return;
+    }
+    if (!String(userFilterAccountForm.session_path || "").trim()) {
+      pushToast("请填写 session 路径");
+      return;
+    }
+    try {
+      await api.createFilterAccount({
+        ...userFilterAccountForm,
+        phone: String(userFilterAccountForm.phone || "").trim() || null,
+      });
+      setUserFilterAccountForm((f) => ({ ...f, phone: "", session_path: "", code: "", phone_code_hash: "", password: "", need_password: false }));
+      await loadUserFilterBase();
+      pushToast("筛选账号已添加");
+    } catch (e) {
+      pushToast(e.message || "添加失败");
+    }
+  }, [loadUserFilterBase, pushToast, userFilterAccountForm]);
+
+  const onSendFilterAccountCode = useCallback(async () => {
+    if (!profileRef.current) {
+      pushToast("请先登录");
+      return;
+    }
+    if (!String(userFilterAccountForm.phone || "").trim()) {
+      pushToast("请填写手机号");
+      return;
+    }
+    setUserFilterSendCodeLoading(true);
+    setUserFilterCodePhase("sending");
+    try {
+      const r = await api.sendFilterAccountCode(userFilterAccountForm);
+      setUserFilterAccountForm((f) => ({
+        ...f,
+        phone: r.phone || f.phone,
+        phone_code_hash: r.phone_code_hash || "",
+        session_path: r.session_path || f.session_path,
+      }));
+      setUserFilterCodePhase("sent");
+      pushToast("验证码已发送");
+    } catch (e) {
+      setUserFilterCodePhase("idle");
+      pushToast(e.message || "发送验证码失败");
+    } finally {
+      setUserFilterSendCodeLoading(false);
+    }
+  }, [pushToast, userFilterAccountForm]);
+
+  const onLoginFilterAccount = useCallback(async () => {
+    if (!profileRef.current) {
+      pushToast("请先登录");
+      return;
+    }
+    setUserFilterLoginLoading(true);
+    try {
+      const r = await api.loginFilterAccount(userFilterAccountForm);
+      if (r?.need_password) {
+        setUserFilterAccountForm((f) => ({ ...f, need_password: true, code: "" }));
+        pushToast("该账号开启了二步验证，请输入密码");
+        return;
+      }
+      setUserFilterAccountForm((f) => ({ ...f, phone: "", code: "", phone_code_hash: "", password: "", need_password: false }));
+      setUserFilterCodePhase("idle");
+      await loadUserFilterBase();
+      pushToast("账号已登录并加入筛选账号池");
+    } catch (e) {
+      pushToast(e.message || "登录失败");
+    } finally {
+      setUserFilterLoginLoading(false);
+    }
+  }, [loadUserFilterBase, pushToast, userFilterAccountForm]);
+
+  const onCancelFilterAccountCodeFlow = useCallback(() => {
+    setUserFilterCodePhase("idle");
+    setUserFilterAccountForm((f) => ({
+      ...f,
+      phone: "",
+      session_path: "",
+      code: "",
+      phone_code_hash: "",
+      password: "",
+      need_password: false,
+    }));
+  }, []);
+
+  const onDeleteFilterAccount = useCallback(
+    async (id) => {
+      try {
+        await api.deleteFilterAccount(id);
+        await loadUserFilterBase();
+      } catch (e) {
+        pushToast(e.message || "删除失败");
+      }
+    },
+    [loadUserFilterBase, pushToast],
+  );
 
   const onEngagementRegisterUnknown = async () => {
     if (!guardLoggedIn()) return;
@@ -3307,6 +3579,12 @@ export default function App() {
   const onUnbindProxy = async (proxyId) => {
     if (!guardLoggedIn()) return;
     await api.unbindProxy(proxyId);
+    await refreshBase();
+  };
+
+  const onSetProxyUsageType = async (proxyId, usageType) => {
+    if (!guardLoggedIn()) return;
+    await api.setProxyUsageType(proxyId, usageType);
     await refreshBase();
   };
 
@@ -5301,6 +5579,19 @@ export default function App() {
                     className="w-full"
                   />
                 </div>
+                <div className="flex w-full min-w-[14rem] max-w-[18rem] flex-col gap-1">
+                  <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500">功能筛选</span>
+                  <GlassDropdown
+                    value={proxyTableUsageFilter}
+                    onChange={setProxyTableUsageFilter}
+                    options={PROXY_USAGE_FILTER_OPTIONS}
+                    placeholder="全部"
+                    triggerPrefix="用途："
+                    triggerClassName={proxyUsageFilterTriggerClass}
+                    menuClassName="!rounded-[10px]"
+                    className="w-full"
+                  />
+                </div>
               </div>
               <div className={TABLE_WRAP}>
                 <table className="w-full min-w-[1000px] border-separate border-spacing-0 text-sm">
@@ -5343,6 +5634,7 @@ export default function App() {
                           ) : null}
                         </button>
                       </th>
+                      <th className="px-3 py-3 whitespace-nowrap">功能分类</th>
                       <th className="px-3 py-3 whitespace-nowrap">出口 IP</th>
                       <th className="px-3 py-3 whitespace-nowrap">国家 / 城市</th>
                       <th className="px-3 py-3 whitespace-nowrap">检测</th>
@@ -5364,7 +5656,7 @@ export default function App() {
                   <tbody>
                     {proxyTableRows.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="px-3 py-10 text-center text-sm text-slate-500">
+                        <td colSpan={10} className="px-3 py-10 text-center text-sm text-slate-500">
                           没有符合当前筛选/搜索条件的记录
                         </td>
                       </tr>
@@ -5394,6 +5686,26 @@ export default function App() {
                             })()}
                           </td>
                           <td className="max-w-[380px] truncate px-3 py-2.5 font-log text-xs text-slate-500">{p.proxy_value || "-"}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5">
+                            {(() => {
+                              const v = proxyUsageTypeVisual(p.usage_type);
+                              if (String(p.usage_type || "unknown").toLowerCase() === "unknown" && p.proxy_id && isAdmin) {
+                                return (
+                                  <GlassDropdown
+                                    value="unknown"
+                                    onChange={(val) => onSetProxyUsageType(p.proxy_id, String(val || "unknown"))}
+                                    options={PROXY_USAGE_FILTER_OPTIONS.filter((x) => x.value !== "all")}
+                                    placeholder="手动分类"
+                                    triggerPrefix="未分类："
+                                    triggerClassName="!h-8 !min-h-8 !rounded-lg border border-slate-400/35 bg-slate-500/10 px-2 py-0 text-xs font-medium text-slate-200"
+                                    menuClassName="!rounded-[10px]"
+                                    className="min-w-[8.5rem]"
+                                  />
+                                );
+                              }
+                              return <span className={`rounded-lg border px-2 py-0.5 text-xs font-medium ${v.cls}`}>{v.label}</span>;
+                            })()}
+                          </td>
                           <td className="whitespace-nowrap px-3 py-2.5 align-top">
                             {p.check_ip ? (
                               <span className="inline-flex cursor-default items-center gap-1.5 font-mono text-xs font-medium tracking-[0.5px] text-[#60a5fa] [text-shadow:0_0_10px_rgba(96,165,250,0.35)] transition-[color,text-shadow] duration-200 hover:text-sky-300 hover:[text-shadow:0_0_14px_rgba(56,189,248,0.55)]">
@@ -5679,6 +5991,293 @@ export default function App() {
                 )}
               </aside>
             </div>
+          </div>
+        )}
+
+        {tab === "用户筛选" && (
+          <div className={`${SCRAPER_PAGE} mx-auto max-w-7xl space-y-5`}>
+            <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(320px,420px)_minmax(420px,1fr)_minmax(280px,360px)]">
+              <Card title="用户筛选控制台" subtitle="独立模块，不复用现有账号池与任务逻辑">
+                <div className="space-y-3">
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">任务名称</span>
+                    <input
+                      className={INPUT_FIELD}
+                      value={userFilterForm.name}
+                      onChange={(e) => setUserFilterForm((f) => ({ ...f, name: e.target.value }))}
+                    />
+                  </label>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">来源采集任务</span>
+                    <GlassDropdown
+                      value={String(userFilterForm.source_task_id || "")}
+                      onChange={(v) => setUserFilterForm((f) => ({ ...f, source_task_id: Number(v) || 0 }))}
+                      options={(userFilterSources || []).map((s) => ({
+                        value: String(s.id),
+                        label: `${s.group_name || s.group_link || "source"} · ${s.user_count} users`,
+                      }))}
+                      placeholder="选择采集来源"
+                      className="w-full"
+                    />
+                  </div>
+                  <label className="flex items-center justify-between rounded-xl border border-white/[0.1] bg-white/[0.03] px-3 py-2">
+                    <span className="text-sm text-slate-300">真实号二次验证</span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(userFilterForm.real_verify_enabled)}
+                      onChange={(e) => setUserFilterForm((f) => ({ ...f, real_verify_enabled: e.target.checked }))}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">验证比例 (0~1)</span>
+                    <input
+                      className={INPUT_FIELD}
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={userFilterForm.real_verify_ratio}
+                      onChange={(e) =>
+                        setUserFilterForm((f) => ({ ...f, real_verify_ratio: Math.max(0, Math.min(1, Number(e.target.value) || 0)) }))
+                      }
+                    />
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button type="button" className={BTN_PRIMARY} disabled={!op || userFilterSubmitting} onClick={onStartUserFilter}>
+                      🚀 开始筛选
+                    </button>
+                    <button type="button" className={BTN_SECONDARY} disabled={!op} onClick={onStopUserFilter}>
+                      ⛔ 停止任务
+                    </button>
+                  </div>
+                </div>
+              </Card>
+
+              <Card title="筛选账号池" subtitle="账号队列展示">
+                <div className="grid grid-cols-1 gap-3">
+                  <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/5 p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h4 className="text-xs font-semibold tracking-wide text-cyan-200">探测账号队列</h4>
+                      <span className="text-[11px] text-cyan-300/80">
+                        {(userFilterAccounts || []).filter((x) => x.type !== "real").length}
+                      </span>
+                    </div>
+                    <div className="growth-scroll max-h-[220px] space-y-1 overflow-y-auto pr-1 text-xs">
+                      {(userFilterAccounts || []).filter((x) => x.type !== "real").length === 0 ? (
+                        <div className="text-slate-500">暂无探测账号</div>
+                      ) : (
+                        (userFilterAccounts || [])
+                          .filter((x) => x.type !== "real")
+                          .map((a) => (
+                            <div key={`probe-${a.id}`} className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-slate-200">
+                              {a.phone || "—"}
+                            </div>
+                          ))
+                      )}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-violet-400/20 bg-violet-500/5 p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h4 className="text-xs font-semibold tracking-wide text-violet-200">真实账号队列</h4>
+                      <span className="text-[11px] text-violet-300/80">
+                        {(userFilterAccounts || []).filter((x) => x.type === "real").length}
+                      </span>
+                    </div>
+                    <div className="growth-scroll max-h-[220px] space-y-1 overflow-y-auto pr-1 text-xs">
+                      {(userFilterAccounts || []).filter((x) => x.type === "real").length === 0 ? (
+                        <div className="text-slate-500">暂无真实账号</div>
+                      ) : (
+                        (userFilterAccounts || [])
+                          .filter((x) => x.type === "real")
+                          .map((a) => (
+                            <div key={`real-${a.id}`} className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-slate-200">
+                              {a.phone || "—"}
+                            </div>
+                          ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </Card>
+
+              <Card title="账号录入" subtitle="独立筛选账号池录入">
+                <div className="space-y-2">
+                  <div className="grid grid-cols-1 gap-2">
+                    <GlassDropdown
+                      value={String(userFilterAccountForm.mode || "session")}
+                      onChange={(v) =>
+                        (setUserFilterCodePhase("idle"),
+                        setUserFilterAccountForm((f) => ({
+                          ...f,
+                          mode: String(v || "session"),
+                          code: "",
+                          phone_code_hash: "",
+                          password: "",
+                          need_password: false,
+                        })))
+                      }
+                      options={[
+                        { value: "sms", label: "接码添加" },
+                        { value: "session", label: "Session导入" },
+                      ]}
+                      placeholder="选择添加方式"
+                      className="w-full"
+                    />
+                    <GlassDropdown
+                      value={String(userFilterAccountForm.type || "probe")}
+                      onChange={(v) => setUserFilterAccountForm((f) => ({ ...f, type: String(v || "probe") }))}
+                      options={[
+                        { value: "probe", label: "探测号" },
+                        { value: "real", label: "真实号" },
+                      ]}
+                      placeholder="选择账号类型"
+                      className="w-full"
+                    />
+                    {userFilterAccountForm.mode === "sms" ? (
+                      <>
+                        <input
+                          className={INPUT_FIELD}
+                          placeholder="手机号（如 +919xxxx）"
+                          value={userFilterAccountForm.phone}
+                          onChange={(e) => {
+                            setUserFilterCodePhase("idle");
+                            setUserFilterAccountForm((f) => ({ ...f, phone: e.target.value }));
+                          }}
+                        />
+                        <input
+                          className={INPUT_FIELD}
+                          placeholder="session 路径（可选，不填自动生成）"
+                          value={userFilterAccountForm.session_path}
+                          onChange={(e) => setUserFilterAccountForm((f) => ({ ...f, session_path: e.target.value }))}
+                        />
+                        {!userFilterAccountForm.need_password ? (
+                          <input
+                            className={INPUT_FIELD}
+                            placeholder="验证码"
+                            value={userFilterAccountForm.code}
+                            onChange={(e) => setUserFilterAccountForm((f) => ({ ...f, code: e.target.value }))}
+                          />
+                        ) : (
+                          <input
+                            type="password"
+                            className={INPUT_FIELD}
+                            placeholder="二步验证密码"
+                            value={userFilterAccountForm.password}
+                            onChange={(e) => setUserFilterAccountForm((f) => ({ ...f, password: e.target.value }))}
+                          />
+                        )}
+                        <div className="grid grid-cols-2 gap-2">
+                          <button type="button" className={BTN_SECONDARY} disabled={userFilterSendCodeLoading} onClick={onSendFilterAccountCode}>
+                            {userFilterCodePhase === "sending"
+                              ? "正在发送..."
+                              : userFilterCodePhase === "sent"
+                                ? "已发送，请输入验证码"
+                                : "发送验证码"}
+                          </button>
+                          <button type="button" className={BTN_SECONDARY} disabled={userFilterLoginLoading} onClick={onLoginFilterAccount}>
+                            {userFilterLoginLoading ? "登录中..." : "登录并入池"}
+                          </button>
+                        </div>
+                        <button type="button" className={BTN_SECONDARY} onClick={onCancelFilterAccountCodeFlow}>
+                          取消
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <input
+                          className={INPUT_FIELD}
+                          placeholder="session 路径"
+                          value={userFilterAccountForm.session_path}
+                          onChange={(e) => setUserFilterAccountForm((f) => ({ ...f, session_path: e.target.value }))}
+                        />
+                        <button type="button" className={BTN_SECONDARY} onClick={onCreateFilterAccount}>
+                          + 添加筛选账号
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  <div className="growth-scroll max-h-[300px] space-y-2 overflow-y-auto pr-1">
+                    {(userFilterAccounts || []).map((a) => (
+                      <div key={a.id} className="rounded-xl border border-white/[0.1] bg-white/[0.03] p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs text-slate-200">
+                            {a.type === "real" ? "真实号" : "探测号"} · {a.phone}
+                          </p>
+                          <button type="button" className="text-[11px] text-rose-300" onClick={() => onDeleteFilterAccount(a.id)}>
+                            删除
+                          </button>
+                        </div>
+                        <p className="truncate text-[10px] text-slate-500">{a.session_path}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </Card>
+            </div>
+
+            <Card title="筛选结果" subtitle="可拉用户 / 不可拉用户">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <select
+                  className={INPUT_FIELD}
+                  value={userFilterSelectedTaskId || ""}
+                  onChange={(e) => setUserFilterSelectedTaskId(Number(e.target.value) || null)}
+                >
+                  <option value="">选择任务</option>
+                  {(userFilterTasks || []).map((t) => (
+                    <option key={t.id} value={t.id}>
+                      #{t.id} {t.name} ({t.processed_users}/{t.total_users})
+                    </option>
+                  ))}
+                </select>
+                <button type="button" className={BTN_SECONDARY} disabled={!userFilterSelectedTaskId} onClick={() => loadUserFilterResults(userFilterSelectedTaskId)}>
+                  刷新结果
+                </button>
+                <button
+                  type="button"
+                  className={BTN_SECONDARY}
+                  disabled={!userFilterSelectedTaskId}
+                  onClick={() => userFilterSelectedTaskId && api.downloadUserFilterResults(userFilterSelectedTaskId, "invitable")}
+                >
+                  ⬇ 下载可拉用户
+                </button>
+                <button
+                  type="button"
+                  className={BTN_SECONDARY}
+                  disabled={!userFilterSelectedTaskId}
+                  onClick={() => userFilterSelectedTaskId && api.downloadUserFilterResults(userFilterSelectedTaskId, "all")}
+                >
+                  ⬇ 下载全部结果
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/5 p-3">
+                  <h4 className="text-sm font-semibold text-emerald-200">可邀请用户</h4>
+                  <div className="mt-2 max-h-[320px] overflow-y-auto text-xs">
+                    {userFilterResults
+                      .filter((x) => x.can_invite)
+                      .slice(0, 300)
+                      .map((x) => (
+                        <div key={x.id} className="border-b border-emerald-400/10 py-1 text-slate-200">
+                          {x.username || "—"}
+                        </div>
+                      ))}
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-rose-400/20 bg-rose-500/5 p-3">
+                  <h4 className="text-sm font-semibold text-rose-200">不可邀请用户</h4>
+                  <div className="mt-2 max-h-[320px] overflow-y-auto text-xs">
+                    {userFilterResults
+                      .filter((x) => !x.can_invite)
+                      .slice(0, 300)
+                      .map((x) => (
+                        <div key={x.id} className="border-b border-rose-400/10 py-1 text-slate-200">
+                          {x.username || "—"} · {x.fail_reason || "其他"}
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              </div>
+            </Card>
           </div>
         )}
 

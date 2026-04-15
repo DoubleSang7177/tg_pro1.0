@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user_optional, require_admin
 from database import SessionLocal, get_db
 from logger import get_logger
-from models import AccountFile, Proxy, User
+from models import AccountFile, FilterAccount, Proxy, User
 from services.proxy_check_service import (
     CHECK_JOBS,
     RUNNING_TASKS,
@@ -38,9 +38,24 @@ def _proxy_geo_public(p: Proxy) -> dict:
     }
 
 
+def _pick_proxy_usage_type(roles: set[str]) -> str:
+    order = ["unknown", "growth", "scraper", "listener", "probe", "real"]
+    rank = {k: i for i, k in enumerate(order)}
+    best = "unknown"
+    for r in roles:
+        rr = str(r or "unknown").lower()
+        if rank.get(rr, 0) >= rank.get(best, 0):
+            best = rr
+    return best
+
+
 class ProxyMatchBody(BaseModel):
     match_unbound: bool = True
     match_dead_proxy: bool = False
+
+
+class ProxyUsageTypeBody(BaseModel):
+    usage_type: str
 
 
 @router.get("/proxy/pool")
@@ -305,6 +320,15 @@ def list_proxies(
     account_rows = db.query(AccountFile).order_by(AccountFile.id.asc()).all()
     proxy_rows = db.query(Proxy).order_by(Proxy.id.asc()).all()
     proxy_map = {p.id: p for p in proxy_rows}
+    usage_roles: dict[int, set[str]] = {p.id: {str(p.usage_type or "unknown").lower()} for p in proxy_rows}
+    filter_rows = db.query(FilterAccount).filter(FilterAccount.proxy_id.isnot(None)).all()
+    for fa in filter_rows:
+        if not fa.proxy_id:
+            continue
+        usage_roles.setdefault(int(fa.proxy_id), {"unknown"}).add("real" if fa.type == "real" else "probe")
+    for a in account_rows:
+        if a.proxy_id:
+            usage_roles.setdefault(int(a.proxy_id), {"unknown"}).add("growth")
 
     account_total = len(account_rows)
     accounts_with_proxy = 0
@@ -330,9 +354,13 @@ def list_proxies(
             "check_status": "unknown",
         }
         if proxy_obj is not None:
-            proxy_value = f"{proxy_obj.host}:{proxy_obj.port}@{proxy_obj.username}:{proxy_obj.password}"
+            if proxy_obj.username:
+                proxy_value = f"@{proxy_obj.username}:{proxy_obj.password or ''}"
+            else:
+                proxy_value = f"{proxy_obj.host}:{proxy_obj.port}"
             status = proxy_obj.status
             geo = _proxy_geo_public(proxy_obj)
+        usage_type = _pick_proxy_usage_type(usage_roles.get(int(a.proxy_id or 0), {"unknown"})) if a.proxy_id else "unknown"
 
         items.append(
             {
@@ -340,6 +368,7 @@ def list_proxies(
                 "phone": a.phone,
                 "proxy_type": a.proxy_type,
                 "proxy_value": proxy_value,
+                "usage_type": usage_type,
                 "status": status,
                 "proxy_id": a.proxy_id,
                 **geo,
@@ -395,3 +424,23 @@ def unbind_proxy(
     db.add(proxy)
     db.commit()
     return {"ok": True, "id": proxy.id, "status": proxy.status}
+
+
+@router.post("/proxy/{proxy_id}/usage_type")
+def update_proxy_usage_type(
+    proxy_id: int,
+    body: ProxyUsageTypeBody,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    proxy = db.query(Proxy).filter(Proxy.id == proxy_id).first()
+    if proxy is None:
+        raise HTTPException(status_code=404, detail="代理不存在")
+    allowed = {"growth", "scraper", "listener", "probe", "real", "unknown"}
+    usage = str(body.usage_type or "").strip().lower()
+    if usage not in allowed:
+        raise HTTPException(status_code=400, detail="usage_type 非法")
+    proxy.usage_type = usage
+    db.add(proxy)
+    db.commit()
+    return {"ok": True, "id": proxy.id, "usage_type": proxy.usage_type}

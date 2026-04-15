@@ -270,6 +270,11 @@ export const api = {
     request(`/proxy/${proxyId}/unbind`, {
       method: "POST",
     }),
+  setProxyUsageType: (proxyId, usageType) =>
+    request(`/proxy/${proxyId}/usage_type`, {
+      method: "POST",
+      body: JSON.stringify({ usage_type: String(usageType || "unknown") }),
+    }),
   deleteAccount: (phone) =>
     request(`/accounts/${encodeURIComponent(phone)}`, {
       method: "DELETE",
@@ -393,6 +398,67 @@ export const api = {
         force_reset_memory: Boolean(payload.force_reset_memory),
       }),
     }),
+  listUserFilterSources: () => request("/user-filter/sources"),
+  listUserFilterTasks: () => request("/user-filter/tasks"),
+  startUserFilterTask: (payload) =>
+    request("/user-filter/tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        name: String(payload?.name || "用户筛选任务"),
+        source_task_id: Number(payload?.source_task_id || 0),
+        real_verify_enabled: Boolean(payload?.real_verify_enabled),
+        real_verify_ratio: Number(payload?.real_verify_ratio ?? 0.1),
+      }),
+    }),
+  stopUserFilterTask: (taskId) => request(`/user-filter/tasks/${Number(taskId)}/stop`, { method: "POST" }),
+  userFilterLive: (jobId) => request(`/user-filter/live/${encodeURIComponent(jobId)}`),
+  listUserFilterResults: (taskId, canInvite) => {
+    const q = canInvite == null ? "" : `?can_invite=${Number(canInvite ? 1 : 0)}`;
+    return request(`/user-filter/tasks/${Number(taskId)}/results${q}`);
+  },
+  downloadUserFilterResults: (taskId, scope = "all") =>
+    downloadFile(`/user-filter/download/${Number(taskId)}?scope=${encodeURIComponent(scope)}`),
+  listFilterAccounts: () => request("/user-filter/accounts"),
+  createFilterAccount: (payload) =>
+    request("/user-filter/accounts", {
+      method: "POST",
+      body: JSON.stringify({
+        type: String(payload?.type || "probe"),
+        phone: payload?.phone == null ? null : String(payload?.phone || "").trim(),
+        api_id: payload?.api_id == null ? null : Number(payload.api_id),
+        api_hash: String(payload?.api_hash || "").trim(),
+        session_path: String(payload?.session_path || "").trim(),
+        status: String(payload?.status || "active"),
+        proxy_id: payload?.proxy_id == null ? null : Number(payload.proxy_id),
+      }),
+    }),
+  sendFilterAccountCode: (payload) =>
+    request("/user-filter/accounts/send_code", {
+      method: "POST",
+      body: JSON.stringify({
+        type: String(payload?.type || "probe"),
+        phone: String(payload?.phone || "").trim(),
+        api_id: payload?.api_id == null ? null : Number(payload.api_id),
+        api_hash: String(payload?.api_hash || "").trim(),
+        session_path: String(payload?.session_path || "").trim(),
+      }),
+    }),
+  loginFilterAccount: (payload) =>
+    request("/user-filter/accounts/login", {
+      method: "POST",
+      body: JSON.stringify({
+        type: String(payload?.type || "probe"),
+        phone: String(payload?.phone || "").trim(),
+        code: String(payload?.code || "").trim(),
+        phone_code_hash: String(payload?.phone_code_hash || "").trim(),
+        password: String(payload?.password || ""),
+        api_id: payload?.api_id == null ? null : Number(payload.api_id),
+        api_hash: String(payload?.api_hash || "").trim(),
+        session_path: String(payload?.session_path || "").trim(),
+        proxy_id: payload?.proxy_id == null ? null : Number(payload.proxy_id),
+      }),
+    }),
+  deleteFilterAccount: (accountId) => request(`/user-filter/accounts/${Number(accountId)}`, { method: "DELETE" }),
   registerInteractionTargetGroups: (usernames) =>
     request("/interaction/target-groups/register", {
       method: "POST",

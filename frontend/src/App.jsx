@@ -1704,9 +1704,13 @@ export default function App() {
   const [newPath, setNewPath] = useState("");
   const [editingPathId, setEditingPathId] = useState(null);
   const [selectedGroup, setSelectedGroup] = useState("");
-  const [forcedGroups, setForcedGroups] = useState([]);
-  const [removedGroups, setRemovedGroups] = useState([]);
-  const [forceCandidate, setForceCandidate] = useState("");
+  const [growthDispatchMode, setGrowthDispatchMode] = useState("manual"); // manual | auto_dispatch
+  const [growthDispatchRunning, setGrowthDispatchRunning] = useState(false);
+  const growthDispatchAbortRef = useRef(false);
+  const [growthDirectUsersLimit, setGrowthDirectUsersLimit] = useState(20);
+  const growthDirectAutoFetchTaskIdRef = useRef(null);
+  const [growthDirectUsersCache, setGrowthDirectUsersCache] = useState([]);
+  const [growthDirectUsersLoading, setGrowthDirectUsersLoading] = useState(false);
   const logIdRef = useRef(0);
   const [logs, setLogs] = useState(() => {
     const id = logIdRef.current++;
@@ -2221,16 +2225,39 @@ export default function App() {
     };
   }, [accounts.active, accounts.limited, accounts.banned]);
 
-  const hiddenGroups = useMemo(
-    () => groups.filter((g) => !g.available && !removedGroups.includes(g.username)),
-    [groups, removedGroups]
+  // 用户增长页展示：用户筛选模块的「总可用用户（可直接拉群）」：direct_invitable_users
+  const growthDirectInvitableUsersAll = useMemo(() => {
+    // 以增长页专用缓存为准（避免受用户是否进入“用户筛选”页影响，也避免拿到旧的 6 条）。
+    const raw = Array.isArray(growthDirectUsersCache) ? growthDirectUsersCache : [];
+    return raw.map((x) => String(x || "").trim()).filter(Boolean);
+  }, [growthDirectUsersCache]);
+
+  const growthDirectInvitableUsersSlice = useMemo(
+    () => growthDirectInvitableUsersAll.slice(0, growthDirectUsersLimit),
+    [growthDirectInvitableUsersAll, growthDirectUsersLimit],
   );
+
+  useEffect(() => {
+    setGrowthDirectUsersLimit(20);
+  }, [userFilterSelectedTaskId, growthDirectInvitableUsersAll.length]);
+
+  const onGrowthDirectUsersScroll = useCallback(
+    (e) => {
+      const el = e?.currentTarget;
+      if (!el) return;
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distanceFromBottom > 18) return;
+      setGrowthDirectUsersLimit((prev) => Math.min(prev + 20, growthDirectInvitableUsersAll.length));
+    },
+    [growthDirectInvitableUsersAll.length],
+  );
+
   const availableGroups = useMemo(() => {
-    const base = groups
-      .filter((g) => (g.available || forcedGroups.includes(g.username)) && !removedGroups.includes(g.username))
+    const base = (groups || [])
+      .filter((g) => Boolean(g?.available))
       .map((g) => g.username);
     return Array.from(new Set(base));
-  }, [groups, forcedGroups, removedGroups]);
+  }, [groups]);
 
   const selectedGroupDropdownOptions = useMemo(
     () => [
@@ -2248,16 +2275,7 @@ export default function App() {
     [availableGroups, completedGroups, groups],
   );
 
-  const forceCandidateDropdownOptions = useMemo(
-    () => [
-      { value: "", label: "隐藏群组…" },
-      ...hiddenGroups.map((g) => ({
-        value: g.username,
-        label: `${g.title || g.username} (${g.display_handle || g.username})`,
-      })),
-    ],
-    [hiddenGroups],
-  );
+  // 强制加入（强制候选）相关逻辑已移除：目标群组统一由「目标群组」模块管理
 
   const scraperDaysDropdownOptions = useMemo(
     () => [
@@ -2912,6 +2930,57 @@ export default function App() {
     loadUserFilterResults(userFilterSelectedTaskId);
   }, [loadUserFilterResults, userFilterSelectedTaskId]);
 
+  // 在「用户增长」页，展示“用户筛选总览”的可用用户池（direct_invitable_users）：
+  // 从 userFilterTasks（同来源仅保留最新一次）中逐个拉取 can_invite=0，并去重合并。
+  useEffect(() => {
+    if (tab !== "用户增长") return;
+    if (!profileRef.current) return;
+
+    const tasks = Array.isArray(userFilterTasks) ? userFilterTasks : [];
+    const taskIds = tasks
+      .filter((t) => {
+        const st = String(t?.status || "").toLowerCase();
+        return ["finished", "completed", "stopped", "failed"].includes(st);
+      })
+      .map((t) => Number(t?.id ?? 0))
+      .filter((x) => Number.isFinite(x) && x > 0);
+
+    if (!taskIds.length) {
+      setGrowthDirectUsersCache([]);
+      return;
+    }
+
+    const key = taskIds.join(",");
+    if (growthDirectAutoFetchTaskIdRef.current === key) return;
+    growthDirectAutoFetchTaskIdRef.current = key;
+
+    let cancelled = false;
+    (async () => {
+      setGrowthDirectUsersLoading(true);
+      try {
+        const set = new Set();
+        for (const tid of taskIds) {
+          if (cancelled) return;
+          const r = await api.listUserFilterResults(tid, false);
+          const rows = Array.isArray(r?.results) ? r.results : [];
+          for (const row of rows) {
+            const u = String(row?.username || "").trim();
+            if (u) set.add(u);
+          }
+        }
+        if (!cancelled) setGrowthDirectUsersCache(Array.from(set));
+      } catch {
+        // ignore
+      } finally {
+        if (!cancelled) setGrowthDirectUsersLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, userFilterTasks]);
+
   useEffect(() => {
     if (!engagementJobId) return undefined;
     let cancelled = false;
@@ -3401,6 +3470,7 @@ export default function App() {
   const onStopRunningTask = async () => {
     if (!guardLoggedIn()) return;
     if (stopGrowthLoadingRef.current) return;
+    if (growthDispatchRunning) growthDispatchAbortRef.current = true;
     const jid = growthJobIdRef.current;
     stopGrowthLoadingRef.current = true;
     setStopGrowthLoading(true);
@@ -3419,10 +3489,16 @@ export default function App() {
     }
   };
 
-  const onStartTask = async () => {
+  const onStartTask = async (opts = {}) => {
     if (!guardLoggedIn()) return;
-    const parsedUsers = form.users.split("\n").map((x) => x.trim()).filter(Boolean);
-    if (!selectedGroup) {
+    const overrideGroup = opts?.group;
+    const overrideUsers = opts?.users;
+    const group = overrideGroup ?? selectedGroup;
+    const parsedUsers = Array.isArray(overrideUsers)
+      ? overrideUsers.map((x) => String(x).trim()).filter(Boolean)
+      : String(form?.users || "").split("\n").map((x) => x.trim()).filter(Boolean);
+
+    if (!group) {
       const message = "请先选择目标群组";
       pushToast(message);
       appendLog(`task blocked | ${message}`);
@@ -3447,7 +3523,7 @@ export default function App() {
       uiStatus: "WAITING",
       phoneDisplay: "—",
       taskKind: "拉人",
-      groupRaw: selectedGroup,
+      groupRaw: group,
       indeterminate: true,
       progressPct: null,
       success: 0,
@@ -3458,11 +3534,11 @@ export default function App() {
     });
     setMsg("");
     appendLog(
-      `开始执行用户增长 | 群组=${selectedGroup} | 用户数=${parsedUsers.length} | 正在提交后台任务…`,
+      `开始执行用户增长 | 群组=${group} | 用户数=${parsedUsers.length} | 正在提交后台任务…`,
     );
     try {
       const resp = await api.startTask({
-        group: selectedGroup,
+        group,
         users: parsedUsers,
       });
       const jobId = resp?.job_id;
@@ -3506,7 +3582,7 @@ export default function App() {
           uiStatus,
           phoneDisplay: phoneLine,
           taskKind: taskKindLine,
-          groupRaw: st.group || selectedGroup,
+          groupRaw: st.group || group,
           indeterminate: jobLive && !hasQueue,
           progressPct: hasQueue ? parsedProg.progressPct : jobLive ? null : parsedProg.progressPct,
           success: parsedProg.success,
@@ -3542,7 +3618,7 @@ export default function App() {
         uiStatus: wasStopped ? "STOPPED" : "WAITING",
         phoneDisplay: "—",
         taskKind: "拉人",
-        groupRaw: selectedGroup,
+        groupRaw: group,
         indeterminate: false,
         progressPct: wasStopped ? null : 100,
         success: summary.success ?? 0,
@@ -3551,7 +3627,7 @@ export default function App() {
         queueIndex: qEnd,
         queueTotal: qnEnd,
       });
-      appendLog(`task finished | group=${selectedGroup} accounts_auto=${availableAccounts.length}`);
+      appendLog(`task finished | group=${group} accounts_auto=${availableAccounts.length}`);
       appendLog(`result summary | success=${summary.success} skipped=${summary.skipped} failed=${summary.failed}`);
       const h = (data && data.highlight) || {};
       setTaskHighlight({
@@ -3570,10 +3646,16 @@ export default function App() {
       if (taskPanelPhaseTimerRef.current) clearTimeout(taskPanelPhaseTimerRef.current);
       setTaskPanelPhase(wasStopped ? "ready" : "completed");
       if (!wasStopped) {
-        setCompletedGroups((prev) => (selectedGroup && !prev.includes(selectedGroup) ? [...prev, selectedGroup] : prev));
+        setCompletedGroups((prev) => (group && !prev.includes(group) ? [...prev, group] : prev));
         taskPanelPhaseTimerRef.current = window.setTimeout(() => setTaskPanelPhase("ready"), 6000);
       }
       await refreshBase();
+      return {
+        group,
+        stopped: wasStopped,
+        summary,
+        logs: Array.isArray(data?.logs) ? data.logs : [],
+      };
     } catch (e) {
       if (taskPanelPhaseTimerRef.current) clearTimeout(taskPanelPhaseTimerRef.current);
       setTaskPanelPhase("ready");
@@ -3581,7 +3663,7 @@ export default function App() {
         uiStatus: "ERROR",
         phoneDisplay: prev?.phoneDisplay ?? "—",
         taskKind: "拉人",
-        groupRaw: selectedGroup,
+        groupRaw: group,
         indeterminate: false,
         progressPct: prev?.progressPct ?? null,
         success: prev?.success ?? 0,
@@ -3598,6 +3680,128 @@ export default function App() {
       growthJobIdRef.current = null;
       setProcessingUser("");
       setTaskRunning(false);
+    }
+  };
+
+  const parseAccountsFromGrowthLogs = (jobLogs) => {
+    const logsArr = Array.isArray(jobLogs) ? jobLogs : [];
+    const used = new Set();
+    const failed = new Set();
+
+    for (const line of logsArr) {
+      const s = String(line || "");
+
+      // 用于推断该账号是否“参与过该轮任务”
+      const mUse = s.match(/使用账号\s+(\S+)\s+处理用户/);
+      if (mUse?.[1]) used.add(mUse[1]);
+
+      const mLoginOk = s.match(/账号\s+(\S+)\s+登录成功/);
+      if (mLoginOk?.[1]) used.add(mLoginOk[1]);
+
+      // 用于推断“失败”
+      const mFail1 = s.match(/账号\s+(\S+)\s+失败:/);
+      if (mFail1?.[1]) failed.add(mFail1[1]);
+
+      const mFail2 = s.match(/账号\s+(\S+)\s+登录\/入群失败:/);
+      if (mFail2?.[1]) failed.add(mFail2[1]);
+    }
+
+    // 只输出参与过的账号（避免重复输出）
+    const out = new Map();
+    for (const phone of used) {
+      out.set(phone, failed.has(phone) ? "FAILED" : "OK");
+    }
+    return out;
+  };
+
+  const onAutoDispatchGrowth = async () => {
+    if (!guardLoggedIn()) return;
+    if (!op || growthDispatchRunning || taskRunning) return;
+
+    const dispatchGroups = Array.from(
+      new Set(
+        (groups || [])
+          .map((g) => String(g?.username || "").trim())
+          .filter(Boolean),
+      ),
+    );
+
+    if (!dispatchGroups.length) {
+      const message = "目标群组列表为空";
+      pushToast(message);
+      appendLog(`task blocked | ${message}`);
+      return;
+    }
+
+    const directUsersAll = growthDirectInvitableUsersAll || [];
+    if (!directUsersAll.length) {
+      const message = "暂无可用用户（direct_invitable_users）。请先到「用户筛选」完成筛选并选择任务。";
+      pushToast(message);
+      appendLog(`task blocked | ${message}`);
+      return;
+    }
+
+    const accountsCount = availableAccounts.length;
+    const B = 3; // 后端每日单账号阈值逻辑已对应（最多处理 3 个用户）
+    const capacity = accountsCount * B;
+    const groupsCount = dispatchGroups.length;
+    const perGroup = Math.floor(capacity / groupsCount);
+
+    if (accountsCount <= 0 || capacity <= 0) {
+      const message = "账号池为空：没有可用账号可执行自动调度";
+      pushToast(message);
+      appendLog(`task blocked | ${message}`);
+      return;
+    }
+    if (perGroup < 1) {
+      const message = `容量不足：每群分配人数为 0（capacity=${capacity} / groups=${groupsCount}）`;
+      pushToast(message);
+      appendLog(`task blocked | ${message}`);
+      return;
+    }
+
+    setGrowthDispatchMode("auto_dispatch");
+    setGrowthDispatchRunning(true);
+    growthDispatchAbortRef.current = false;
+    setGrowthTaskStoppedUi(false);
+
+    appendLog(`[DISPATCH] accounts=${accountsCount} capacity=${capacity} groups=${groupsCount} per_group=${perGroup}`);
+
+    try {
+      const poolUsers = [...directUsersAll];
+
+      for (const group of dispatchGroups) {
+        if (growthDispatchAbortRef.current) break;
+        if (!poolUsers.length) break;
+
+        const usersForGroup = poolUsers.splice(0, perGroup);
+        if (!usersForGroup.length) break;
+
+        appendLog(`[GROUP_START] group=${group} target=${perGroup}`);
+
+        // 逐群串行执行，复用现有单群执行任务结构
+        const res = await onStartTask({ group, users: usersForGroup });
+
+        const acctMap = parseAccountsFromGrowthLogs(res?.logs || []);
+        for (const [acct, status] of acctMap.entries()) {
+          appendLog(`[ACCOUNT_USE] account=${acct} status=${status}`);
+        }
+
+        const success = Number(res?.summary?.success ?? 0);
+        const failed = Number(res?.summary?.failed ?? 0);
+        appendLog(`[RESULT] group=${group} success=${success} fail=${failed}`);
+
+        // 群组间隔：给后端队列一些喘息
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    } catch (e) {
+      pushToast(e?.message || "自动调度执行失败");
+      appendLog(`dispatch failed | ${e?.message || String(e)}`);
+    } finally {
+      growthDispatchAbortRef.current = false;
+      setGrowthDispatchRunning(false);
+      setGrowthDispatchMode("manual");
+      await refreshBase();
     }
   };
 
@@ -3620,22 +3824,6 @@ export default function App() {
     } catch (e) {
       pushToast(e.message);
     }
-  };
-
-  const onForceAddGroup = () => {
-    if (!guardLoggedIn()) return;
-    if (!forceCandidate) return;
-    setForcedGroups((prev) => Array.from(new Set([...prev, forceCandidate])));
-    setSelectedGroup(forceCandidate);
-    setForceCandidate("");
-  };
-
-  const onRemoveGroup = () => {
-    if (!guardLoggedIn()) return;
-    if (!selectedGroup) return;
-    setRemovedGroups((prev) => Array.from(new Set([...prev, selectedGroup])));
-    setForcedGroups((prev) => prev.filter((x) => x !== selectedGroup));
-    setSelectedGroup("");
   };
 
   const onUpdateDailyLimit = async (groupId, value) => {
@@ -5094,57 +5282,65 @@ export default function App() {
                               className="w-full"
                             />
                           </div>
-                          <div className="flex min-w-[160px] flex-1 flex-col gap-1.5">
+                          <div className="flex min-w-[220px] flex-1 flex-col gap-1.5">
                             <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                              强制加入
+                              自动调度
                             </span>
-                            <GlassDropdown
-                              variant="task"
-                              value={forceCandidate}
-                              onChange={setForceCandidate}
-                              options={forceCandidateDropdownOptions}
-                              placeholder="隐藏群组…"
-                              searchable
-                              disabled={isRunning}
-                              className="w-full"
-                            />
-                          </div>
-                          <div className="flex gap-1.5">
-                            <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
-                              <button
-                                type="button"
-                                disabled={!op || isRunning}
-                                className="rounded-xl border border-[#00AFFF]/35 bg-[rgba(0,175,255,0.1)] px-3 py-2 text-sm font-bold text-sky-200 shadow-[0_0_16px_rgba(0,175,255,0.2)] transition hover:scale-105 hover:border-[#7A5CFF]/40 hover:shadow-[0_0_28px_rgba(122,92,255,0.3)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100"
-                                onClick={onForceAddGroup}
-                              >
-                                +
-                              </button>
-                            </span>
-                            <span title={!op ? guestTitle : undefined} className={!op ? "inline-flex cursor-not-allowed" : "inline-flex"}>
-                              <button
-                                type="button"
-                                disabled={!op || isRunning}
-                                className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-300 shadow-[0_0_12px_rgba(251,113,133,0.15)] transition hover:scale-105 hover:shadow-[0_0_24px_rgba(251,113,133,0.28)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100"
-                                onClick={onRemoveGroup}
-                              >
-                                −
-                              </button>
-                            </span>
+                            <button
+                              type="button"
+                              disabled={!op || isRunning || growthDispatchRunning}
+                              title={!op ? guestTitle : undefined}
+                              onClick={onAutoDispatchGrowth}
+                              className="rounded-xl border border-[#00AFFF]/35 bg-[rgba(0,175,255,0.1)] px-3 py-2 text-sm font-bold text-sky-200 shadow-[0_0_16px_rgba(0,175,255,0.2)] transition hover:scale-105 hover:border-[#7A5CFF]/40 hover:shadow-[0_0_28px_rgba(122,92,255,0.3)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100"
+                            >
+                              自动调度
+                            </button>
                           </div>
                         </div>
-                        <label className="flex flex-col gap-1.5">
-                          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                            用户列表
-                          </span>
-                          <textarea
-                            className="growth-scroll task-control-field max-h-[200px] min-h-[80px] resize-y"
-                            rows={4}
-                            placeholder="每行一个 @username 或用户标识…"
-                            value={form.users}
-                            disabled={isRunning}
-                            onChange={(e) => setForm((v) => ({ ...v, users: e.target.value }))}
-                          />
-                        </label>
+                        <div className="flex gap-3">
+                          <label className="flex min-w-0 flex-1 flex-col gap-1.5">
+                            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                              用户列表
+                            </span>
+                            <textarea
+                              className="growth-scroll task-control-field h-[200px] max-h-[200px] min-h-[200px] resize-none overflow-y-auto"
+                              rows={4}
+                              placeholder="每行一个 @username 或用户标识…"
+                              value={form.users}
+                              disabled={isRunning || growthDispatchRunning || growthDispatchMode === "auto_dispatch"}
+                              onChange={(e) => setForm((v) => ({ ...v, users: e.target.value }))}
+                            />
+                          </label>
+                          <div className="w-[240px] shrink-0 rounded-xl border border-emerald-400/15 bg-[rgba(5,16,28,0.5)] px-3 py-2.5">
+                            <div className="mb-2 flex items-center justify-between gap-3 text-xs">
+                              <span className="text-emerald-200/90 font-semibold">可用用户（可直接拉群）</span>
+                              <span className="font-mono tabular-nums text-slate-400">{growthDirectInvitableUsersAll.length}</span>
+                            </div>
+                            <div
+                              className="max-h-[200px] overflow-y-auto text-xs growth-scroll pr-1"
+                              onScroll={onGrowthDirectUsersScroll}
+                              role="list"
+                              aria-label="可用用户列表（只读）"
+                            >
+                              {growthDirectInvitableUsersSlice.length ? (
+                                growthDirectInvitableUsersSlice.map((u) => (
+                                  <div
+                                    key={u}
+                                    className="border-b border-emerald-400/10 py-1 text-[11px] text-slate-200 break-words"
+                                  >
+                                    {u}
+                                  </div>
+                                ))
+                              ) : growthDirectUsersLoading ? (
+                                <div className="py-4 text-center text-[11px] text-slate-500">加载中…</div>
+                              ) : (
+                                <div className="py-4 text-center text-[11px] text-slate-500">
+                                  暂无可用用户（direct_invitable_users）
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
                         <div className="rounded-xl border border-cyan-400/15 bg-[rgba(5,16,28,0.5)] px-3 py-2.5">
                           <div className="mb-2 flex items-center justify-between gap-3 text-xs">
                             <span className="text-slate-400">已完成 / 总数</span>
@@ -5194,8 +5390,11 @@ export default function App() {
                               return (
                             <button
                               type="button"
-                              disabled={!op || growthIdleStopped || (taskRunning && stopGrowthLoading)}
-                              onClick={taskRunning ? onStopRunningTask : onStartTask}
+                              disabled={!op || growthIdleStopped || growthDispatchRunning || (taskRunning && stopGrowthLoading)}
+                              onClick={taskRunning ? onStopRunningTask : () => {
+                                setGrowthDispatchMode("manual");
+                                onStartTask();
+                              }}
                               className={
                                 growthIdleStopped
                                   ? "inline-flex min-w-[7.5rem] items-center justify-center rounded-xl border border-rose-400/35 bg-rose-500/[0.14] px-6 py-2.5 text-sm font-bold text-rose-200/75 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"

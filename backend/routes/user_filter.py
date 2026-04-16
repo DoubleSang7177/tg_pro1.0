@@ -233,8 +233,11 @@ def create_filter_task(
     task = UserFilterTask(
         owner_id=user.id,
         name=(body.name or "").strip()[:255] or "用户筛选任务",
-        source_group_id=test_group[:255],
+        # 采集来源名称：用于 UI 展示
+        source_group_id=(source.group_link or source.group_name or "")[:255],
         source_task_id=source.id,
+        # 筛选阶段 Invite 的目标群组：用于筛选执行
+        test_group=test_group[:255],
         status="idle",
         total_users=int(source.user_count or 0),
         processed_users=0,
@@ -339,8 +342,18 @@ def download_filter_results(
         raise HTTPException(status_code=404, detail="任务不存在")
     if user.role != "admin" and task.owner_id != user.id:
         raise HTTPException(status_code=403, detail="无权下载")
-    only_invitable = str(scope).lower() in ("invitable", "success", "can_invite")
-    p = export_results_csv(task_id, only_invitable=only_invitable)
+    scope_norm = str(scope).lower()
+    # 语义兼容：
+    # - direct_invitable: 可直接拉群（后端 can_invite=0）
+    # - link_only: 需邀请链接（后端 can_invite=1）
+    # 历史 invitable/success/can_invite 视作 link_only。
+    if scope_norm in ("invitable", "success", "can_invite", "link_only"):
+        filter_mode = "link_only"
+    elif scope_norm in ("direct_invitable", "direct", "usable"):
+        filter_mode = "direct_invitable"
+    else:
+        filter_mode = "all"
+    p = export_results_csv(task_id, filter_mode=filter_mode)
     if not p.is_file():
         raise HTTPException(status_code=404, detail="导出文件不存在")
     return FileResponse(

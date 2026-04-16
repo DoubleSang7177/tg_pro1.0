@@ -218,6 +218,8 @@ class UserFilterTask(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     name = Column(String(255), nullable=False, default="")
     source_group_id = Column(String(255), nullable=False, default="")
+    # 筛选阶段使用的“测试群组”（InviteToChannelRequest 的目标）
+    test_group = Column(String(255), nullable=True)
     source_task_id = Column(Integer, ForeignKey("scraper_tasks.id"), nullable=True, index=True)
     status = Column(String(20), nullable=False, default="idle")  # idle / running / finished / stopped / failed
     total_users = Column(Integer, nullable=False, default=0)

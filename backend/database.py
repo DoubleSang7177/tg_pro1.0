@@ -182,6 +182,16 @@ def _ensure_interaction_tasks_columns() -> None:
             conn.execute(text("ALTER TABLE interaction_tasks ADD COLUMN round_idx INTEGER NOT NULL DEFAULT 0"))
 
 
+def _ensure_user_filter_tasks_columns() -> None:
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(user_filter_tasks)")).fetchall()
+        if not rows:
+            return
+        col_names = {r[1] for r in rows}
+        if "test_group" not in col_names:
+            conn.execute(text("ALTER TABLE user_filter_tasks ADD COLUMN test_group VARCHAR(255)"))
+
+
 def _ensure_scraper_and_listener_proxy_columns() -> None:
     with engine.begin() as conn:
         scraper_rows = conn.execute(text("PRAGMA table_info(scraper_account)")).fetchall()
@@ -211,4 +221,5 @@ def init_db() -> None:
     _ensure_proxies_check_columns()
     _ensure_interaction_target_groups_columns()
     _ensure_interaction_tasks_columns()
+    _ensure_user_filter_tasks_columns()
     _ensure_scraper_and_listener_proxy_columns()

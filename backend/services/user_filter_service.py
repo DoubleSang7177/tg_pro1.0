@@ -193,7 +193,7 @@ async def _build_probe_clients(task: UserFilterTask, db, job_id: str | None) -> 
     if not rows:
         raise ValueError("筛选账号池为空：请先添加至少一个 probe 账号")
 
-    test_group = str(task.source_group_id or "").strip()
+    test_group = str(getattr(task, "test_group", "") or "").strip()
     if not test_group:
         raise ValueError("测试群组不能为空")
 
@@ -259,7 +259,7 @@ async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
         db.commit()
 
         _append_log(job_id, "success", "RUNNER", f"任务启动，待筛选用户 {len(usernames)}")
-        _append_log(job_id, "info", "RUNNER", f"测试群组: {str(task.source_group_id or '').strip()}")
+        _append_log(job_id, "info", "RUNNER", f"测试群组: {str(getattr(task, 'test_group', '') or '').strip()}")
 
         db.query(UserFilterResult).filter(UserFilterResult.task_id == task.id).delete()
         db.commit()
@@ -289,7 +289,7 @@ async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
             try:
                 await client(InviteToChannelRequest(channel=channel, users=[user_ref]))
                 can_invite = True
-                _append_log(job_id, "success", "RESULT", f"[RESULT] user={user_ref} -> 可用")
+                _append_log(job_id, "success", "RESULT", f"[RESULT] user={user_ref} -> LINK_ONLY ❌（不可用）")
             except Exception as exc:
                 can_invite, reason = _classify_invite_error(exc)
                 if reason == "USER_NOT_MUTUAL_CONTACT":
@@ -298,7 +298,12 @@ async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
                     _append_log(job_id, "warn", "ERROR", "[ERROR] USER_PRIVACY_RESTRICTED -> 标记：不可用用户")
                 else:
                     _append_log(job_id, "warn", "ERROR", f"[ERROR] {reason}")
-                _append_log(job_id, "info", "RESULT", f"[RESULT] user={user_ref} -> {'可用' if can_invite else '不可用'}")
+                _append_log(
+                    job_id,
+                    "info",
+                    "RESULT",
+                    f"[RESULT] user={user_ref} -> {'DIRECT_INVITE ✅（可用）' if can_invite else 'LINK_ONLY ❌（不可用）'}",
+                )
 
             db.add(
                 UserFilterResult(
@@ -356,14 +361,17 @@ def spawn_task(task_id: int, job_id: str) -> None:
     t.start()
 
 
-def export_results_csv(task_id: int, *, only_invitable: bool) -> Path:
+def export_results_csv(task_id: int, *, filter_mode: str = "all") -> Path:
     db = SessionLocal()
     try:
+        mode = str(filter_mode or "all").lower()
         q = db.query(UserFilterResult).filter(UserFilterResult.task_id == task_id).order_by(UserFilterResult.id.asc())
-        if only_invitable:
+        if mode == "link_only":
             q = q.filter(UserFilterResult.can_invite == 1)
+        elif mode == "direct_invitable":
+            q = q.filter(UserFilterResult.can_invite == 0)
         rows = q.all()
-        out = RESULTS_DIR / f"user_filter_task_{task_id}_{'invitable' if only_invitable else 'all'}.csv"
+        out = RESULTS_DIR / f"user_filter_task_{task_id}_{mode}.csv"
         with out.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["user_id", "username", "can_invite", "reason"])

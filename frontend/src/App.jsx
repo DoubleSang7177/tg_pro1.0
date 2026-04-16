@@ -1886,12 +1886,16 @@ export default function App() {
   const [registerStatusText, setRegisterStatusText] = useState("等待操作");
   const registerLogIdRef = useRef(0);
   const [registerLogs, setRegisterLogs] = useState([]);
-  const userFilterRunning = useMemo(
-    () =>
-      Boolean(userFilterJobId) ||
-      (userFilterTasks || []).some((t) => String(t?.status || "").toLowerCase() === "running"),
-    [userFilterJobId, userFilterTasks],
-  );
+  const userFilterRunning = Boolean(userFilterJobId);
+  const userFilterSourceNameMap = useMemo(() => {
+    const m = new Map();
+    (userFilterSources || []).forEach((s) => {
+      const key = Number(s?.id || 0);
+      if (!key) return;
+      m.set(key, String(s?.group_name || s?.group_link || "").trim());
+    });
+    return m;
+  }, [userFilterSources]);
   const [factoryCountries, setFactoryCountries] = useState(["ID", "PH", "BR", "IN"]);
   const [factoryStrategy, setFactoryStrategy] = useState("balanced");
   const [factoryMaxRetries, setFactoryMaxRetries] = useState(3);
@@ -2723,7 +2727,16 @@ export default function App() {
         api.listFilterAccounts(),
       ]);
       setUserFilterSources(Array.isArray(src?.sources) ? src.sources : []);
-      setUserFilterTasks(Array.isArray(ts?.tasks) ? ts.tasks : []);
+      const rawTasks = Array.isArray(ts?.tasks) ? ts.tasks : [];
+      // 同一来源采集任务只保留最新一次筛选记录（按接口返回的倒序列表取首条）。
+      const seenSourceTask = new Set();
+      const latestOnlyTasks = rawTasks.filter((t) => {
+        const sourceKey = String(t?.source_task_id ?? "");
+        if (seenSourceTask.has(sourceKey)) return false;
+        seenSourceTask.add(sourceKey);
+        return true;
+      });
+      setUserFilterTasks(latestOnlyTasks);
       setUserFilterAccounts(Array.isArray(ac?.accounts) ? ac.accounts : []);
     } catch {
       // ignore; 页面会保留已有缓存
@@ -6257,7 +6270,7 @@ export default function App() {
               </Card>
             </div>
 
-            <Card title="筛选结果" subtitle="可拉用户 / 不可拉用户">
+            <Card title="筛选结果" subtitle="不可用用户（需邀请链接） / 可用用户（可直接拉群）">
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <GlassDropdown
                   value={String(userFilterSelectedTaskId || "")}
@@ -6266,7 +6279,12 @@ export default function App() {
                     { value: "", label: "选择任务" },
                     ...(userFilterTasks || []).map((t) => ({
                       value: String(t.id),
-                      label: `任务 ${t.id} ${t.name}（已筛选 ${t.processed_users} / ${t.total_users}）`,
+                      label: `${
+                        userFilterSourceNameMap.get(Number(t.source_task_id || 0)) ||
+                        t.source_group_id ||
+                        t.name ||
+                        "来源"
+                      }（已筛选 ${t.processed_users} / ${t.total_users}）`,
                     })),
                   ]}
                   placeholder="选择任务"
@@ -6279,9 +6297,17 @@ export default function App() {
                   type="button"
                   className={BTN_SECONDARY}
                   disabled={!userFilterSelectedTaskId}
-                  onClick={() => userFilterSelectedTaskId && api.downloadUserFilterResults(userFilterSelectedTaskId, "invitable")}
+                  onClick={() => userFilterSelectedTaskId && api.downloadUserFilterResults(userFilterSelectedTaskId, "direct_invitable")}
                 >
-                  ⬇ 下载可拉用户
+                  ⬇ 下载可用用户
+                </button>
+                <button
+                  type="button"
+                  className={BTN_SECONDARY}
+                  disabled={!userFilterSelectedTaskId}
+                  onClick={() => userFilterSelectedTaskId && api.downloadUserFilterResults(userFilterSelectedTaskId, "link_only")}
+                >
+                  ⬇ 下载不可用用户
                 </button>
                 <button
                   type="button"
@@ -6293,32 +6319,38 @@ export default function App() {
                 </button>
               </div>
               <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                {(() => {
+                  const link_only_users = userFilterResults.filter((x) => x.can_invite);
+                  const direct_invitable_users = userFilterResults.filter((x) => !x.can_invite);
+                  return (
+                    <>
                 <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/5 p-3">
-                  <h4 className="text-sm font-semibold text-emerald-200">可邀请用户</h4>
+                  <h4 className="text-sm font-semibold text-emerald-200">可用用户（可直接拉群）</h4>
                   <div className="mt-2 max-h-[320px] overflow-y-auto text-xs">
-                    {userFilterResults
-                      .filter((x) => x.can_invite)
+                    {direct_invitable_users
                       .slice(0, 300)
                       .map((x) => (
                         <div key={x.id} className="border-b border-emerald-400/10 py-1 text-slate-200">
-                          {x.username || "—"}
-                        </div>
-                      ))}
-                  </div>
-                </div>
-                <div className="rounded-2xl border border-rose-400/20 bg-rose-500/5 p-3">
-                  <h4 className="text-sm font-semibold text-rose-200">不可邀请用户</h4>
-                  <div className="mt-2 max-h-[320px] overflow-y-auto text-xs">
-                    {userFilterResults
-                      .filter((x) => !x.can_invite)
-                      .slice(0, 300)
-                      .map((x) => (
-                        <div key={x.id} className="border-b border-rose-400/10 py-1 text-slate-200">
                           {x.username || "—"} · {x.fail_reason || "其他"}
                         </div>
                       ))}
                   </div>
                 </div>
+                <div className="rounded-2xl border border-rose-400/20 bg-rose-500/5 p-3">
+                  <h4 className="text-sm font-semibold text-rose-200">不可用用户（需邀请链接）</h4>
+                  <div className="mt-2 max-h-[320px] overflow-y-auto text-xs">
+                    {link_only_users
+                      .slice(0, 300)
+                      .map((x) => (
+                        <div key={x.id} className="border-b border-rose-400/10 py-1 text-slate-200">
+                          {x.username || "—"}
+                        </div>
+                      ))}
+                  </div>
+                </div>
+                    </>
+                  );
+                })()}
               </div>
             </Card>
           </div>

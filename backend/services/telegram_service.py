@@ -12,12 +12,13 @@ from typing import Any
 
 from pyrogram import Client
 from pyrogram.errors import FloodWait, PhoneNumberBanned, UserDeactivated, UserDeactivatedBan
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from cn_time import cn_hms
 from database import SessionLocal
 from logger import get_logger
-from models import AccountFile, Group, Proxy, ScraperAccount, Setting
+from models import AccountFile, Group, Proxy, ScraperAccount, Setting, UserFilterResult
 from services.account_status import (
     ST_BANNED,
     ST_COOLDOWN,
@@ -49,6 +50,30 @@ def _log_account_act(owner_id: int | None, phone: str | None, *, action: str, st
         _record_account_activity(oid, phone, action=action, status=status, level=level)
     except Exception:
         log.debug("account activity record failed", exc_info=True)
+
+
+def _consume_user_from_filter_pool(db: Session, user_ref: str) -> int:
+    """
+    用户增长成功后，从筛选结果库删除该用户，避免后续重复使用。
+    仅做数据消费，不影响筛选/拉人核心逻辑。
+    """
+    raw = str(user_ref or "").strip()
+    if not raw:
+        return 0
+    alt = raw[1:] if raw.startswith("@") else f"@{raw}"
+    low_raw = raw.lower()
+    low_alt = alt.lower()
+    deleted = (
+        db.query(UserFilterResult)
+        .filter(
+            or_(
+                func.lower(UserFilterResult.username) == low_raw,
+                func.lower(UserFilterResult.username) == low_alt,
+            )
+        )
+        .delete(synchronize_session=False)
+    )
+    return int(deleted or 0)
 
 
 API_ID = int(os.getenv("TELEGRAM_API_ID", "20954937"))
@@ -1141,6 +1166,7 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                         tl(f"群组 {default_group} 达到每日上限，12小时禁用")
                                     db.add(group_row)
 
+                                consumed_count = _consume_user_from_filter_pool(db, str(target_user))
                                 db.add(account)
                                 db.commit()
                                 user_idx += 1
@@ -1152,6 +1178,8 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                     level="success",
                                 )
                                 tl(f"用户 {target_user} 拉入群组 {default_group} 成功，开始执行 60 秒间隔（结束后再处理下一名）")
+                                if consumed_count > 0:
+                                    tl(f"用户 {target_user} 已从筛选可用库移除（删除 {consumed_count} 条）")
                                 if progress_job_id:
                                     progress_event_append(progress_job_id, str(target_user), "done")
                                 t_wait = time.monotonic()

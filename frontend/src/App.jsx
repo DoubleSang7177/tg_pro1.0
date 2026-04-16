@@ -3470,8 +3470,15 @@ export default function App() {
   const onStopRunningTask = async () => {
     if (!guardLoggedIn()) return;
     if (stopGrowthLoadingRef.current) return;
-    if (growthDispatchRunning) growthDispatchAbortRef.current = true;
+    if (growthDispatchRunning) {
+      growthDispatchAbortRef.current = true;
+      appendLog("dispatch-stop | 已发送自动调度中断信号");
+    }
     const jid = growthJobIdRef.current;
+    if (!jid && growthDispatchRunning && !taskRunning) {
+      pushToast("自动调度将在当前阶段结束后停止");
+      return;
+    }
     stopGrowthLoadingRef.current = true;
     setStopGrowthLoading(true);
     try {
@@ -3714,6 +3721,16 @@ export default function App() {
     return out;
   };
 
+  const shuffledUsers = (users) => {
+    const arr = Array.isArray(users) ? [...users] : [];
+    // 仅打乱处理顺序，不改变用户集合与后续执行逻辑
+    for (let i = arr.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  };
+
   const onAutoDispatchGrowth = async () => {
     if (!guardLoggedIn()) return;
     if (!op || growthDispatchRunning || taskRunning) return;
@@ -3768,7 +3785,8 @@ export default function App() {
     appendLog(`[DISPATCH] accounts=${accountsCount} capacity=${capacity} groups=${groupsCount} per_group=${perGroup}`);
 
     try {
-      const poolUsers = [...directUsersAll];
+      const poolUsers = shuffledUsers(directUsersAll);
+      appendLog(`[DISPATCH] direct_users_shuffled=${poolUsers.length}`);
 
       for (const group of dispatchGroups) {
         if (growthDispatchAbortRef.current) break;
@@ -5402,22 +5420,22 @@ export default function App() {
                               return (
                             <button
                               type="button"
-                              disabled={!op || growthIdleStopped || growthDispatchRunning || (taskRunning && stopGrowthLoading)}
-                              onClick={taskRunning ? onStopRunningTask : () => {
+                              disabled={!op || growthIdleStopped || ((taskRunning || growthDispatchRunning) && stopGrowthLoading)}
+                              onClick={taskRunning || growthDispatchRunning ? onStopRunningTask : () => {
                                 setGrowthDispatchMode("manual");
                                 onStartTask();
                               }}
                               className={
                                 growthIdleStopped
                                   ? "inline-flex min-w-[7.5rem] items-center justify-center rounded-xl border border-rose-400/35 bg-rose-500/[0.14] px-6 py-2.5 text-sm font-bold text-rose-200/75 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
-                                  : taskRunning
+                                  : taskRunning || growthDispatchRunning
                                   ? "inline-flex items-center justify-center gap-2 rounded-xl border border-rose-400/40 bg-rose-500/20 px-6 py-2.5 text-sm font-bold text-rose-100 shadow-[0_0_20px_rgba(251,113,133,0.25)] transition-all duration-200 hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-rose-500/20"
                                   : "task-control-start-btn inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-45"
                               }
                             >
                               {growthIdleStopped ? (
                                 "已停止"
-                              ) : taskRunning ? (
+                              ) : taskRunning || growthDispatchRunning ? (
                                 stopGrowthLoading ? (
                                   <>
                                     <UiSpinner tone="primary" />
@@ -5433,10 +5451,10 @@ export default function App() {
                               );
                             })()}
                           </span>
-                          {taskRunning ? (
+                          {taskRunning || growthDispatchRunning ? (
                             <span className="inline-flex items-center gap-2 text-xs font-medium text-cyan-300/90">
                               <UiSpinner tone="primary" />
-                              执行中…
+                              {growthDispatchRunning ? "自动调度执行中…" : "执行中…"}
                             </span>
                           ) : null}
                         </div>

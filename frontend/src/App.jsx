@@ -6290,33 +6290,6 @@ export default function App() {
                   placeholder="选择任务"
                   className="min-w-[16rem] flex-1"
                 />
-                <button type="button" className={BTN_SECONDARY} disabled={!userFilterSelectedTaskId} onClick={() => loadUserFilterResults(userFilterSelectedTaskId)}>
-                  刷新结果
-                </button>
-                <button
-                  type="button"
-                  className={BTN_SECONDARY}
-                  disabled={!userFilterSelectedTaskId}
-                  onClick={() => userFilterSelectedTaskId && api.downloadUserFilterResults(userFilterSelectedTaskId, "direct_invitable")}
-                >
-                  ⬇ 下载可用用户
-                </button>
-                <button
-                  type="button"
-                  className={BTN_SECONDARY}
-                  disabled={!userFilterSelectedTaskId}
-                  onClick={() => userFilterSelectedTaskId && api.downloadUserFilterResults(userFilterSelectedTaskId, "link_only")}
-                >
-                  ⬇ 下载不可用用户
-                </button>
-                <button
-                  type="button"
-                  className={BTN_SECONDARY}
-                  disabled={!userFilterSelectedTaskId}
-                  onClick={() => userFilterSelectedTaskId && api.downloadUserFilterResults(userFilterSelectedTaskId, "all")}
-                >
-                  ⬇ 下载全部结果
-                </button>
               </div>
               <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
                 {(() => {
@@ -6331,7 +6304,7 @@ export default function App() {
                       .slice(0, 300)
                       .map((x) => (
                         <div key={x.id} className="border-b border-emerald-400/10 py-1 text-slate-200">
-                          {x.username || "—"} · {x.fail_reason || "其他"}
+                          {x.username || "—"}
                         </div>
                       ))}
                   </div>

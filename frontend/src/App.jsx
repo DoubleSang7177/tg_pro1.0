@@ -1822,7 +1822,7 @@ export default function App() {
   const pathSubmitRef = useRef(false);
   const [pathSubmitLoading, setPathSubmitLoading] = useState(false);
 
-  const [scraperForm, setScraperForm] = useState({ group_id: "", days: 7, max_messages: 5000 });
+  const [scraperForm, setScraperForm] = useState({ group_id: "", days: 30, max_messages: 5000 });
   const scraperLoadingRef = useRef(false);
   const [scraperLoading, setScraperLoading] = useState(false);
   const [scraperResult, setScraperResult] = useState(null);
@@ -2258,11 +2258,12 @@ export default function App() {
   );
 
   const scraperDaysDropdownOptions = useMemo(
-    () =>
-      [1, 3, 7, 14, 30, 90].map((d) => ({
-        value: String(d),
-        label: `最近 ${d} 天`,
-      })),
+    () => [
+      { value: "30", label: "最近 30 天" },
+      { value: "90", label: "最近 90 天" },
+      { value: "180", label: "最近 180 天" },
+      { value: "365", label: "最近 一年" },
+    ],
     [],
   );
 
@@ -4510,10 +4511,50 @@ export default function App() {
 
   const TabHeaderIcon = TAB_HEADER_ICONS[tab];
 
-  const scraperTasksVisible = useMemo(
-    () => scraperTasks.filter((item) => (Number(item.user_count) || 0) > 0),
-    [scraperTasks],
-  );
+  const scraperTasksVisible = useMemo(() => {
+    const list = (scraperTasks || []).filter((item) => (Number(item.user_count) || 0) > 0);
+
+    const parseDays = (x) => {
+      const n = Number(x);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const parseCreatedAt = (x) => {
+      const t = x ? new Date(x).getTime() : 0;
+      return Number.isFinite(t) ? t : 0;
+    };
+
+    const bestByGroup = new Map();
+    for (const t of list) {
+      const key = String(t?.group_link || t?.group_name || t?.id || "");
+      if (!key) continue;
+
+      const cur = bestByGroup.get(key);
+      if (!cur) {
+        bestByGroup.set(key, t);
+        continue;
+      }
+
+      const nd = parseDays(t?.days);
+      const cd = parseDays(cur?.days);
+
+      let shouldReplace = false;
+      if (nd != null && cd != null) {
+        if (nd > cd) shouldReplace = true;
+        else if (nd === cd && parseCreatedAt(t?.created_at) > parseCreatedAt(cur?.created_at)) shouldReplace = true;
+      } else if (nd != null && cd == null) {
+        shouldReplace = true;
+      } else if (nd == null && cd != null) {
+        shouldReplace = false;
+      } else {
+        // 两个都不知道 days：保持“最新创建”的结果，避免破坏旧数据行为
+        if (parseCreatedAt(t?.created_at) > parseCreatedAt(cur?.created_at)) shouldReplace = true;
+      }
+
+      if (shouldReplace) bestByGroup.set(key, t);
+    }
+
+    return Array.from(bestByGroup.values()).sort((a, b) => parseCreatedAt(b.created_at) - parseCreatedAt(a.created_at));
+  }, [scraperTasks]);
 
   const registerAccounts = useMemo(() => {
     const all = [...(accounts.active || []), ...(accounts.limited || []), ...(accounts.banned || [])];
@@ -5821,7 +5862,7 @@ export default function App() {
                     </span>
                   </div>
                   <p className="mb-4 text-xs leading-relaxed text-slate-500">
-                    Telethon 独立 session，与账号池 / 代理池无关。
+                    Telethon 独立 session；与账号池独立，但可在代理池板块为采集账号匹配代理。
                   </p>
                   {scraperAccount?.status === "not_logged" || scraperAccount == null ? (
                     <p className="text-sm text-slate-500">
@@ -5840,6 +5881,11 @@ export default function App() {
                       <span className="rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
                         active
                       </span>
+                      {scraperLoading || scraperAccount?.busy ? (
+                        <span className="rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-cyan-200">
+                          采集中
+                        </span>
+                      ) : null}
                     </div>
                   ) : (
                     <div className="flex flex-wrap items-center gap-3 text-sm">
@@ -5875,7 +5921,7 @@ export default function App() {
                         <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">时间范围</span>
                         <GlassDropdown
                           value={String(scraperForm.days)}
-                          onChange={(v) => setScraperForm((f) => ({ ...f, days: Number(v) || 7 }))}
+                          onChange={(v) => setScraperForm((f) => ({ ...f, days: Number(v) || 30 }))}
                           options={scraperDaysDropdownOptions}
                           placeholder="选择天数"
                           className="w-full"
@@ -5970,8 +6016,12 @@ export default function App() {
                     {scraperTasksVisible.map((t) => {
                       const done = t.status === "done";
                       const dt = t.created_at
-                        ? new Date(t.created_at).toLocaleString("zh-CN", { hour12: false })
+                        ? new Date(t.created_at).toLocaleString("zh-CN", {
+                            hour12: false,
+                            timeZone: "Asia/Shanghai",
+                          })
                         : "—";
+                      const daysLabel = Number(t?.days) > 0 ? `最近 ${Number(t.days)} 天` : "—";
                       const titleName = (t.group_name && String(t.group_name).trim()) || t.group_link;
                       const subLink =
                         t.group_name && String(t.group_name).trim() && t.group_link !== titleName ? t.group_link : null;
@@ -6001,6 +6051,7 @@ export default function App() {
                               {t.status === "running" ? "未完成" : "失败"}
                             </p>
                           ) : null}
+                          <p className="mt-2 text-[11px] text-slate-400">时间范围：{daysLabel}</p>
                           <button
                             type="button"
                             disabled={!op || !done || scraperDownloadTaskId != null}

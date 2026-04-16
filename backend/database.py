@@ -211,6 +211,68 @@ def _ensure_scraper_and_listener_proxy_columns() -> None:
                 )
 
 
+def _ensure_scraper_task_columns() -> None:
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(scraper_tasks)")).fetchall()
+        if not rows:
+            return
+        col_names = {r[1] for r in rows}
+        if "days" not in col_names:
+            conn.execute(text("ALTER TABLE scraper_tasks ADD COLUMN days INTEGER"))
+        if "max_messages" not in col_names:
+            conn.execute(text("ALTER TABLE scraper_tasks ADD COLUMN max_messages INTEGER"))
+
+
+def _ensure_scraper_tasks_one_per_group_link() -> None:
+    """
+    强制一个群组只保留一条采集记录。
+    做法：
+    1) 将 user_filter_tasks.source_task_id 指向各 group_link 的最新 scraper_tasks.id
+    2) 删除重复的 scraper_tasks（保留每个 group_link 的 MAX(id)）
+    3) 创建 group_link 唯一索引，防止未来再次出现重复
+    """
+    with engine.begin() as conn:
+        # 先把外键引用迁移到“保留的那条记录”
+        conn.execute(
+            text(
+                """
+UPDATE user_filter_tasks
+SET source_task_id = (
+    SELECT max_id
+    FROM (
+        SELECT group_link, MAX(id) AS max_id
+        FROM scraper_tasks
+        GROUP BY group_link
+    ) m
+    WHERE m.group_link = (
+        SELECT group_link FROM scraper_tasks s WHERE s.id = user_filter_tasks.source_task_id
+    )
+)
+WHERE source_task_id IS NOT NULL;
+"""
+            )
+        )
+
+        # 再删除重复的 scraper_tasks（保留 MAX(id)）
+        conn.execute(
+            text(
+                """
+DELETE FROM scraper_tasks
+WHERE id NOT IN (SELECT MAX(id) FROM scraper_tasks GROUP BY group_link);
+"""
+            )
+        )
+
+        # 最后加唯一索引
+        try:
+            conn.execute(
+                text("CREATE UNIQUE INDEX IF NOT EXISTS ix_scraper_tasks_group_link ON scraper_tasks (group_link)")
+            )
+        except Exception:
+            # 如果由于历史数据异常导致失败，不影响主流程；后续插入会在代码 upsert 下避免冲突
+            pass
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_group_columns()
@@ -222,4 +284,6 @@ def init_db() -> None:
     _ensure_interaction_target_groups_columns()
     _ensure_interaction_tasks_columns()
     _ensure_user_filter_tasks_columns()
+    _ensure_scraper_task_columns()
+    _ensure_scraper_tasks_one_per_group_link()
     _ensure_scraper_and_listener_proxy_columns()

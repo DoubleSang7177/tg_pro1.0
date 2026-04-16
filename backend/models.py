@@ -183,6 +183,9 @@ class ScraperTask(Base):
     id = Column(Integer, primary_key=True, index=True)
     group_link = Column(String(512), nullable=False)
     group_name = Column(String(512), nullable=False, default="")
+    # 采集参数：用于同一群组多次采集时做覆盖选择（UI 语义不改变采集逻辑）
+    days = Column(Integer, nullable=True)
+    max_messages = Column(Integer, nullable=True)
     result_file = Column(String(500), nullable=False, default="")
     user_count = Column(Integer, nullable=False, default=0)
     download_count = Column(Integer, nullable=False, default=0)

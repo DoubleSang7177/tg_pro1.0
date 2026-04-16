@@ -21,7 +21,7 @@ from telethon.errors import (
 )
 
 from logger import get_logger
-from models import ScraperAccount
+from models import ScraperAccount, ScraperTask
 
 log = get_logger("scraper_account")
 
@@ -248,6 +248,17 @@ async def get_account_status(db: Session) -> dict[str, Any]:
         return {"phone": row.phone, "status": "invalid"}
     ok = await verify_session_authorized(path_base)
     if not ok:
+        # 采集中可能出现瞬时会话探测失败（例如会话文件被占用），
+        # 避免将本来可用的采集账号误标记为 invalid。
+        has_running_scrape = (
+            db.query(ScraperTask)
+            .filter(ScraperTask.status == "running")
+            .order_by(ScraperTask.id.desc())
+            .first()
+            is not None
+        )
+        if has_running_scrape and str(row.status or "").lower() == "active":
+            return {"phone": row.phone, "status": "active", "busy": True}
         row.status = "invalid"
         row.updated_at = datetime.now(timezone.utc)
         db.commit()

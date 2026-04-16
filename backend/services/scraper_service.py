@@ -127,17 +127,72 @@ async def scrape_group_users(group_id: str, days: int, max_messages: int) -> dic
 
             gname = _entity_display_name(entity) or str(group_id).strip()[:500]
             glink = str(group_id).strip()[:512]
-            task_row = ScraperTask(
-                group_link=glink,
-                group_name=gname,
-                result_file="",
-                user_count=0,
-                download_count=0,
-                status="running",
+            new_days = int(days)
+            new_max_messages = int(max_messages)
+
+            # 同一群组只保留一条采集记录：按“覆盖逻辑”决定是否更新历史结果。
+            existing = (
+                db.query(ScraperTask)
+                .filter(ScraperTask.group_link == glink)
+                .order_by(ScraperTask.id.desc())
+                .first()
             )
-            db.add(task_row)
-            db.commit()
-            db.refresh(task_row)
+
+            should_overwrite = True
+            if existing and existing.status == "done":
+                old_days = getattr(existing, "days", None)
+                old_max_messages = getattr(existing, "max_messages", None)
+                if old_days is not None:
+                    old_days = int(old_days)
+                if old_max_messages is not None:
+                    old_max_messages = int(old_max_messages)
+
+                # 新范围更大才覆盖；范围相同时 max_messages 更大才覆盖
+                if old_days is not None:
+                    if new_days < old_days:
+                        should_overwrite = False
+                    elif new_days == old_days:
+                        if old_max_messages is not None and new_max_messages <= old_max_messages:
+                            should_overwrite = False
+                # old_days 为空时，无法判断“旧比新更大”，这里保守选择覆盖为新参数（以便结果可控）
+
+            if existing and existing.status == "done" and not should_overwrite:
+                # 不覆盖：直接复用旧结果（避免用更短范围抹掉历史）
+                return {
+                    "ok": True,
+                    "task_id": existing.id,
+                    "group": group_id,
+                    "count": existing.user_count,
+                    "file": existing.result_file,
+                }
+
+            # 覆盖/写入：更新 existing 或创建新记录
+            if existing:
+                task_row = existing
+                task_row.group_name = gname
+                task_row.days = new_days
+                task_row.max_messages = new_max_messages
+                task_row.result_file = ""
+                task_row.user_count = 0
+                task_row.status = "running"
+                db.add(task_row)
+                db.commit()
+                db.refresh(task_row)
+            else:
+                task_row = ScraperTask(
+                    group_link=glink,
+                    group_name=gname,
+                    days=new_days,
+                    max_messages=new_max_messages,
+                    result_file="",
+                    user_count=0,
+                    download_count=0,
+                    status="running",
+                )
+                db.add(task_row)
+                db.commit()
+                db.refresh(task_row)
+
             task_id = task_row.id
 
             username_cache: dict[int, str | None] = {}

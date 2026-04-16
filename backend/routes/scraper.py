@@ -115,6 +115,8 @@ def scraper_list_tasks(db: Session = Depends(get_db), _user: User = Depends(requ
                 "id": r.id,
                 "group_link": r.group_link,
                 "group_name": r.group_name,
+                "days": getattr(r, "days", None),
+                "max_messages": getattr(r, "max_messages", None),
                 "user_count": r.user_count,
                 "download_count": r.download_count,
                 "status": r.status,

@@ -406,6 +406,7 @@ export const api = {
       body: JSON.stringify({
         name: String(payload?.name || "用户筛选任务"),
         source_task_id: Number(payload?.source_task_id || 0),
+        test_group: String(payload?.test_group || "").trim(),
         real_verify_enabled: Boolean(payload?.real_verify_enabled),
         real_verify_ratio: Number(payload?.real_verify_ratio ?? 0.1),
       }),

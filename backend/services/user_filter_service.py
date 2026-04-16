@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import csv
-import random
+import re
 import threading
 import time
-from collections import deque
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +12,10 @@ from cn_time import cn_hm
 from database import SessionLocal
 from logger import get_logger
 from models import FilterAccount, ScraperTask, UserFilterResult, UserFilterTask
+from settings import TELEGRAM_API_HASH, TELEGRAM_API_ID
+from telethon import TelegramClient
+from telethon.errors import RPCError
+from telethon.tl.functions.channels import InviteToChannelRequest
 
 log = get_logger("user_filter_service")
 
@@ -109,88 +112,134 @@ def _load_scraper_usernames(source_task_id: int) -> list[str]:
         p = Path(str(row.result_file)).resolve()
         if not p.is_file():
             return []
-        vals = []
+        vals: list[str] = []
         for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
             x = line.strip()
-            if x:
-                vals.append(x)
+            if not x:
+                continue
+            vals.append(x.split(",", 1)[0].strip())
         return vals
     finally:
         db.close()
 
 
-@dataclass
-class _RateLimiter:
-    minute_window: deque[float]
-    hour_window: deque[float]
-
-    def allow(self) -> bool:
-        now = time.time()
-        while self.minute_window and now - self.minute_window[0] > 60:
-            self.minute_window.popleft()
-        while self.hour_window and now - self.hour_window[0] > 3600:
-            self.hour_window.popleft()
-        if len(self.minute_window) >= 10 or len(self.hour_window) >= 100:
-            return False
-        self.minute_window.append(now)
-        self.hour_window.append(now)
-        return True
-
-    def seconds_until_allow(self) -> float:
-        now = time.time()
-        while self.minute_window and now - self.minute_window[0] > 60:
-            self.minute_window.popleft()
-        while self.hour_window and now - self.hour_window[0] > 3600:
-            self.hour_window.popleft()
-
-        wait_min = 0.0
-        wait_hour = 0.0
-        if len(self.minute_window) >= 10:
-            wait_min = max(0.0, 60.0 - (now - self.minute_window[0]))
-        if len(self.hour_window) >= 100:
-            wait_hour = max(0.0, 3600.0 - (now - self.hour_window[0]))
-        return max(wait_min, wait_hour, 0.0)
+def _camel_to_upper_snake(name: str) -> str:
+    s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).upper()
 
 
-def _pick_available_account(accounts: list[FilterAccount], limiters: dict[int, _RateLimiter]) -> FilterAccount | None:
-    random.shuffle(accounts)
-    for a in accounts:
-        if str(a.status or "").lower() == "banned":
-            continue
-        limiter = limiters.setdefault(a.id, _RateLimiter(deque(), deque()))
-        if limiter.allow():
-            return a
-    return None
+def _error_code(exc: Exception) -> str:
+    if isinstance(exc, RPCError):
+        if getattr(exc, "message", None):
+            return str(exc.message).strip().upper()
+        name = exc.__class__.__name__
+        if name.endswith("Error"):
+            name = name[:-5]
+        return _camel_to_upper_snake(name)
+    return exc.__class__.__name__.upper()
 
 
-def _seconds_until_any_available(accounts: list[FilterAccount], limiters: dict[int, _RateLimiter]) -> float:
-    waits: list[float] = []
-    for a in accounts:
-        if str(a.status or "").lower() == "banned":
-            continue
-        limiter = limiters.setdefault(a.id, _RateLimiter(deque(), deque()))
-        waits.append(limiter.seconds_until_allow())
-    if not waits:
-        return 0.0
-    return min(waits)
-
-
-def _evaluate_can_invite(username: str) -> tuple[bool, str | None]:
+def _classify_invite_error(exc: Exception) -> tuple[bool, str]:
     """
-    独立筛选引擎的基础判定策略（可在后续接入真实 Telegram invite/kick 流程）。
+    返回: (can_invite, reason)
+    - True: 归类为可用用户
+    - False: 归类为不可用用户
     """
-    seed = abs(hash(username)) % 100
-    if seed < 72:
-        return True, None
-    if seed < 86:
-        return False, "隐私限制"
-    if seed < 95:
-        return False, "无权限"
-    return False, "其他"
+    code = _error_code(exc)
+    msg = str(exc or "").strip()
+    low = msg.lower()
+
+    # 用户隐私限制：不可用用户
+    if (
+        code == "USER_PRIVACY_RESTRICTED"
+        or "user_privacy_restricted" in low
+        or "restricts adding them to groups" in low
+        or "send invite link instead" in low
+    ):
+        return False, "USER_PRIVACY_RESTRICTED"
+
+    # 账号限制（互关限制）：可用用户
+    if (
+        code == "USER_NOT_MUTUAL_CONTACT"
+        or "user_not_mutual_contact" in low
+        or "you can only add mutual contacts" in low
+    ):
+        return True, "USER_NOT_MUTUAL_CONTACT"
+
+    # 其余错误默认按不可用处理，并保留错误码
+    return False, code
 
 
-def run_task_sync(task_id: int, job_id: str | None = None) -> None:
+def _session_base_from_path(raw: str | None) -> str:
+    p = Path(str(raw or "").strip())
+    if not p.is_absolute():
+        p = (BACKEND_ROOT / p).resolve()
+    if p.suffix == ".session":
+        p = p.with_suffix("")
+    return str(p)
+
+
+async def _build_probe_clients(task: UserFilterTask, db, job_id: str | None) -> list[dict]:
+    rows = (
+        db.query(FilterAccount)
+        .filter(
+            FilterAccount.owner_id == task.owner_id,
+            FilterAccount.type == "probe",
+            FilterAccount.status.in_(["active", "idle"]),
+        )
+        .order_by(FilterAccount.id.asc())
+        .all()
+    )
+    if not rows:
+        raise ValueError("筛选账号池为空：请先添加至少一个 probe 账号")
+
+    test_group = str(task.source_group_id or "").strip()
+    if not test_group:
+        raise ValueError("测试群组不能为空")
+
+    usable: list[dict] = []
+    for row in rows:
+        api_id = int(row.api_id or TELEGRAM_API_ID)
+        api_hash = str(row.api_hash or TELEGRAM_API_HASH).strip()
+        if not api_hash:
+            _append_log(job_id, "warn", "PROBE", f"账号 {_mask_phone(row.phone)} 缺少 API_HASH，已跳过")
+            continue
+        client = TelegramClient(_session_base_from_path(row.session_path), api_id, api_hash)
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                _append_log(job_id, "warn", "PROBE", f"账号 {_mask_phone(row.phone)} 未授权，已跳过")
+                await client.disconnect()
+                continue
+            me = await client.get_me()
+            if bool(getattr(me, "bot", False)):
+                _append_log(job_id, "warn", "PROBE", f"账号 {_mask_phone(row.phone)} 是 bot，已跳过")
+                await client.disconnect()
+                continue
+            channel = await client.get_input_entity(test_group)
+            usable.append({"row": row, "client": client, "channel": channel})
+        except Exception as exc:
+            _append_log(job_id, "warn", "PROBE", f"账号 {_mask_phone(row.phone)} 初始化失败: {_error_code(exc)}")
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+    if not usable:
+        raise ValueError("没有可用的用户会话账号（probe）可执行筛选")
+    return usable
+
+
+async def _disconnect_all(ctx_rows: list[dict]) -> None:
+    for ctx in ctx_rows:
+        try:
+            await ctx["client"].disconnect()
+        except Exception:
+            pass
+
+
+async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
     db = SessionLocal()
+    probe_ctx: list[dict] = []
     try:
         task = db.query(UserFilterTask).filter(UserFilterTask.id == task_id).first()
         if task is None:
@@ -210,35 +259,12 @@ def run_task_sync(task_id: int, job_id: str | None = None) -> None:
         db.commit()
 
         _append_log(job_id, "success", "RUNNER", f"任务启动，待筛选用户 {len(usernames)}")
+        _append_log(job_id, "info", "RUNNER", f"测试群组: {str(task.source_group_id or '').strip()}")
 
-        probe_accounts = (
-            db.query(FilterAccount)
-            .filter(
-                FilterAccount.owner_id == task.owner_id,
-                FilterAccount.type == "probe",
-                FilterAccount.status.in_(["active", "idle"]),
-            )
-            .all()
-        )
-        real_accounts = (
-            db.query(FilterAccount)
-            .filter(
-                FilterAccount.owner_id == task.owner_id,
-                FilterAccount.type == "real",
-                FilterAccount.status.in_(["active", "idle"]),
-            )
-            .all()
-        )
-        if not probe_accounts:
-            raise ValueError("筛选账号池为空：请先添加至少一个 probe 账号")
-
-        # 每次新跑任务都清空旧结果，避免混淆同任务重试数据
         db.query(UserFilterResult).filter(UserFilterResult.task_id == task.id).delete()
         db.commit()
 
-        limiters: dict[int, _RateLimiter] = {}
-        rv_enabled = bool(task.real_verify_enabled)
-        rv_ratio = max(0.0, min(1.0, float(task.real_verify_ratio or 0.0)))
+        probe_ctx = await _build_probe_clients(task, db, job_id)
 
         for idx, username in enumerate(usernames, start=1):
             if _job_should_stop(job_id):
@@ -249,33 +275,41 @@ def run_task_sync(task_id: int, job_id: str | None = None) -> None:
                 _job_finalize(job_id, "stopped")
                 return
 
-            probe = _pick_available_account(probe_accounts, limiters)
-            if probe is None:
-                wait_sec = _seconds_until_any_available(probe_accounts, limiters)
-                wait_sec = max(1.0, min(30.0, float(wait_sec or 1.0)))
-                _append_log(job_id, "warn", "RUNNER", f"probe 账号触发限速，等待 {int(wait_sec)}s 后继续")
-                time.sleep(wait_sec)
-                probe = _pick_available_account(probe_accounts, limiters)
-                if probe is None:
-                    continue
+            ctx = probe_ctx[(idx - 1) % len(probe_ctx)]
+            probe = ctx["row"]
+            client = ctx["client"]
+            channel = ctx["channel"]
+            user_ref = str(username or "").strip()
+            if not user_ref:
+                continue
 
-            can_invite, reason = _evaluate_can_invite(username)
-            verified_by_real = 0
-            if can_invite and rv_enabled and real_accounts and random.random() <= rv_ratio:
-                # 真实号抽样二次验证：当前版本复用同判定模型，后续可替换为真实 invite 流程
-                can_invite, reason = _evaluate_can_invite(f"real:{username}")
-                verified_by_real = 1
+            can_invite = False
+            reason = None
+            _append_log(job_id, "info", "INVITE", f"[INVITE] user={user_ref}")
+            try:
+                await client(InviteToChannelRequest(channel=channel, users=[user_ref]))
+                can_invite = True
+                _append_log(job_id, "success", "RESULT", f"[RESULT] user={user_ref} -> 可用")
+            except Exception as exc:
+                can_invite, reason = _classify_invite_error(exc)
+                if reason == "USER_NOT_MUTUAL_CONTACT":
+                    _append_log(job_id, "warn", "ERROR", "[ERROR] USER_NOT_MUTUAL_CONTACT -> 标记：可用用户（账号限制）")
+                elif reason == "USER_PRIVACY_RESTRICTED":
+                    _append_log(job_id, "warn", "ERROR", "[ERROR] USER_PRIVACY_RESTRICTED -> 标记：不可用用户")
+                else:
+                    _append_log(job_id, "warn", "ERROR", f"[ERROR] {reason}")
+                _append_log(job_id, "info", "RESULT", f"[RESULT] user={user_ref} -> {'可用' if can_invite else '不可用'}")
 
             db.add(
                 UserFilterResult(
                     task_id=task.id,
                     user_id="",
-                    username=username,
+                    username=user_ref,
                     phone="",
                     can_invite=1 if can_invite else 0,
                     fail_reason=reason if not can_invite else None,
                     probe_account_id=probe.id,
-                    verified_by_real=verified_by_real,
+                    verified_by_real=0,
                 )
             )
             probe.last_used_at = datetime.now(timezone.utc)
@@ -284,15 +318,11 @@ def run_task_sync(task_id: int, job_id: str | None = None) -> None:
             task.processed_users = idx
             if can_invite:
                 task.success_count = (task.success_count or 0) + 1
-                _append_log(job_id, "success", "SUCCESS", f"user={username} 可邀请 | {_mask_phone(probe.phone)}")
             else:
                 task.fail_count = (task.fail_count or 0) + 1
-                _append_log(job_id, "warn", "FAIL", f"user={username} {reason} | {_mask_phone(probe.phone)}")
             db.add(task)
             db.commit()
-
-            # 保持节奏，避免本地线程占满 CPU
-            time.sleep(0.03)
+            await asyncio.sleep(1.0)
 
         task.status = "finished"
         db.add(task)
@@ -313,7 +343,12 @@ def run_task_sync(task_id: int, job_id: str | None = None) -> None:
         _append_log(job_id, "error", "RUNNER", f"任务失败: {str(exc)[:180]}")
         _job_finalize(job_id, "failed")
     finally:
+        await _disconnect_all(probe_ctx)
         db.close()
+
+
+def run_task_sync(task_id: int, job_id: str | None = None) -> None:
+    asyncio.run(_run_task_async(task_id, job_id))
 
 
 def spawn_task(task_id: int, job_id: str) -> None:

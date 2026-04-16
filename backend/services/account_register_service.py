@@ -196,6 +196,8 @@ async def complete_register_login(
     row.session_path = str(sess_file)
     row.saved_path = str(sess_file.parent)
     row.filename = sess_file.name
+    if pwd:
+        row.twofa_password = pwd
     row.last_update = now
     db.add(row)
     db.commit()

@@ -39,6 +39,7 @@ router = APIRouter(prefix="/user-filter", tags=["user-filter"])
 class CreateFilterTaskBody(BaseModel):
     name: str = Field("用户筛选任务", max_length=255)
     source_task_id: int = Field(..., ge=1)
+    test_group: str = Field(..., min_length=3, max_length=255)
     real_verify_enabled: bool = Field(False)
     real_verify_ratio: float = Field(0.1, ge=0.0, le=1.0)
 
@@ -225,11 +226,14 @@ def create_filter_task(
     source = db.query(ScraperTask).filter(ScraperTask.id == body.source_task_id).first()
     if source is None or source.status != "done":
         raise HTTPException(status_code=400, detail="来源采集任务不存在或未完成")
+    test_group = str(body.test_group or "").strip()
+    if not test_group:
+        raise HTTPException(status_code=400, detail="测试群组不能为空")
 
     task = UserFilterTask(
         owner_id=user.id,
         name=(body.name or "").strip()[:255] or "用户筛选任务",
-        source_group_id=(source.group_link or source.group_name or "")[:255],
+        source_group_id=test_group[:255],
         source_task_id=source.id,
         status="idle",
         total_users=int(source.user_count or 0),

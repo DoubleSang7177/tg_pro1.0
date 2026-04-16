@@ -57,6 +57,8 @@ class AccountFile(Base):
     ready_at = Column(DateTime(timezone=True), nullable=True)
     # 注册账号的 Telethon session 文件绝对路径；仅保存路径，不保存内容
     session_path = Column(String(500), nullable=True)
+    # 可选：账号二步验证密码（仅在接码注册时用户主动填写后保存）
+    twofa_password = Column(String(256), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

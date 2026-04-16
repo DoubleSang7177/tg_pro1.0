@@ -1600,6 +1600,8 @@ function shouldSuppressVisualMessage(text) {
     s.includes("无法连接后端") ||
     s.includes("failed to fetch") ||
     s.includes("networkerror") ||
+    s.includes("bearer token") ||
+    s.includes("未登录，请携带 bearer token") ||
     s.includes("当前没有可执行的账号") ||
     s.includes("当前没有可用或当日受限的账号")
   );
@@ -1840,6 +1842,7 @@ export default function App() {
   const [userFilterForm, setUserFilterForm] = useState({
     name: "用户筛选任务",
     source_task_id: 0,
+    test_group: "",
     real_verify_enabled: false,
     real_verify_ratio: 0.1,
   });
@@ -1883,6 +1886,12 @@ export default function App() {
   const [registerStatusText, setRegisterStatusText] = useState("等待操作");
   const registerLogIdRef = useRef(0);
   const [registerLogs, setRegisterLogs] = useState([]);
+  const userFilterRunning = useMemo(
+    () =>
+      Boolean(userFilterJobId) ||
+      (userFilterTasks || []).some((t) => String(t?.status || "").toLowerCase() === "running"),
+    [userFilterJobId, userFilterTasks],
+  );
   const [factoryCountries, setFactoryCountries] = useState(["ID", "PH", "BR", "IN"]);
   const [factoryStrategy, setFactoryStrategy] = useState("balanced");
   const [factoryMaxRetries, setFactoryMaxRetries] = useState(3);
@@ -2796,6 +2805,7 @@ export default function App() {
         setUserFilterLiveLogs((data.logs || []).slice(-300));
         if (["completed", "failed", "stopped"].includes(String(data.status || "").toLowerCase())) {
           setUserFilterSubmitting(false);
+          setUserFilterJobId(null);
           if (data.task_id) {
             setUserFilterSelectedTaskId(Number(data.task_id));
             await loadUserFilterResults(Number(data.task_id));
@@ -2928,8 +2938,13 @@ export default function App() {
       return;
     }
     const sourceTaskId = Number(userFilterForm.source_task_id || 0);
+    const testGroup = String(userFilterForm.test_group || "").trim();
     if (!sourceTaskId) {
       pushToast("请先选择采集来源");
+      return;
+    }
+    if (!testGroup) {
+      pushToast("请填写测试群组");
       return;
     }
     setUserFilterSubmitting(true);
@@ -2938,6 +2953,7 @@ export default function App() {
       const r = await api.startUserFilterTask({
         name: userFilterForm.name,
         source_task_id: sourceTaskId,
+        test_group: testGroup,
         real_verify_enabled: Boolean(userFilterForm.real_verify_enabled),
         real_verify_ratio: Number(userFilterForm.real_verify_ratio ?? 0.1),
       });
@@ -2947,6 +2963,8 @@ export default function App() {
       await loadUserFilterBase();
     } catch (e) {
       pushToast(e.message || "启动失败");
+    } finally {
+      // 仅锁定“启动请求”阶段，避免因旧任务状态导致按钮长期不可点击。
       setUserFilterSubmitting(false);
     }
   }, [loadUserFilterBase, pushToast, userFilterForm]);
@@ -6025,6 +6043,15 @@ export default function App() {
                       className="w-full"
                     />
                   </div>
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">测试群组</span>
+                    <input
+                      className={INPUT_FIELD}
+                      placeholder="@username 或 -100xxx"
+                      value={String(userFilterForm.test_group || "")}
+                      onChange={(e) => setUserFilterForm((f) => ({ ...f, test_group: e.target.value }))}
+                    />
+                  </label>
                   <label className="flex items-center justify-between rounded-xl border border-white/[0.1] bg-white/[0.03] px-3 py-2">
                     <span className="text-sm text-slate-300">真实号二次验证</span>
                     <input
@@ -6048,8 +6075,13 @@ export default function App() {
                     />
                   </label>
                   <div className="grid grid-cols-2 gap-2">
-                    <button type="button" className={BTN_PRIMARY} disabled={!op || userFilterSubmitting} onClick={onStartUserFilter}>
-                      🚀 开始筛选
+                    <button
+                      type="button"
+                      className={BTN_PRIMARY}
+                      disabled={!op || userFilterSubmitting || userFilterRunning}
+                      onClick={onStartUserFilter}
+                    >
+                      {userFilterSubmitting || userFilterRunning ? "⏳ 筛选中..." : "🚀 开始筛选"}
                     </button>
                     <button type="button" className={BTN_SECONDARY} disabled={!op} onClick={onStopUserFilter}>
                       ⛔ 停止任务
@@ -6074,8 +6106,18 @@ export default function App() {
                         (userFilterAccounts || [])
                           .filter((x) => x.type !== "real")
                           .map((a) => (
-                            <div key={`probe-${a.id}`} className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-slate-200">
-                              {a.phone || "—"}
+                            <div
+                              key={`probe-${a.id}`}
+                              className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-slate-200"
+                            >
+                              <span className="min-w-0 truncate">{a.phone || "—"}</span>
+                              <button
+                                type="button"
+                                className="shrink-0 text-[11px] text-rose-300 transition hover:text-rose-200"
+                                onClick={() => onDeleteFilterAccount(a.id)}
+                              >
+                                删除
+                              </button>
                             </div>
                           ))
                       )}
@@ -6095,8 +6137,18 @@ export default function App() {
                         (userFilterAccounts || [])
                           .filter((x) => x.type === "real")
                           .map((a) => (
-                            <div key={`real-${a.id}`} className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-slate-200">
-                              {a.phone || "—"}
+                            <div
+                              key={`real-${a.id}`}
+                              className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-slate-200"
+                            >
+                              <span className="min-w-0 truncate">{a.phone || "—"}</span>
+                              <button
+                                type="button"
+                                className="shrink-0 text-[11px] text-rose-300 transition hover:text-rose-200"
+                                onClick={() => onDeleteFilterAccount(a.id)}
+                              >
+                                删除
+                              </button>
                             </div>
                           ))
                       )}
@@ -6200,21 +6252,6 @@ export default function App() {
                         </button>
                       </>
                     )}
-                  </div>
-                  <div className="growth-scroll max-h-[300px] space-y-2 overflow-y-auto pr-1">
-                    {(userFilterAccounts || []).map((a) => (
-                      <div key={a.id} className="rounded-xl border border-white/[0.1] bg-white/[0.03] p-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-xs text-slate-200">
-                            {a.type === "real" ? "真实号" : "探测号"} · {a.phone}
-                          </p>
-                          <button type="button" className="text-[11px] text-rose-300" onClick={() => onDeleteFilterAccount(a.id)}>
-                            删除
-                          </button>
-                        </div>
-                        <p className="truncate text-[10px] text-slate-500">{a.session_path}</p>
-                      </div>
-                    ))}
                   </div>
                 </div>
               </Card>

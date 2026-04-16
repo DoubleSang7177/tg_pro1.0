@@ -78,6 +78,8 @@ def _ensure_account_file_columns() -> None:
             conn.execute(text("ALTER TABLE account_files ADD COLUMN ready_at DATETIME"))
         if "session_path" not in col_names:
             conn.execute(text("ALTER TABLE account_files ADD COLUMN session_path VARCHAR(500)"))
+        if "twofa_password" not in col_names:
+            conn.execute(text("ALTER TABLE account_files ADD COLUMN twofa_password VARCHAR(256)"))
         conn.execute(
             text("UPDATE account_files SET status = 'normal' WHERE status IN ('active', '') OR status IS NULL")
         )

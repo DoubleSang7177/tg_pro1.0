@@ -104,7 +104,8 @@ async def complete_login(
     p = _norm_phone(phone)
     row = _pending.get(p)
     pch = str(phone_code_hash or "").strip() or (row or {}).get("phone_code_hash")
-    pwd = str(password or "").strip()
+    # 二步密码按原文使用；不做 trim，避免合法前后空格被截断导致校验失败
+    pwd = str(password or "")
     cod = str(code or "").strip()
     if not pwd and not pch:
         return {"ok": False, "error": "缺少 phone_code_hash，请先发送验证码"}

@@ -499,8 +499,10 @@ export const api = {
       body: JSON.stringify({
         phone: String(payload.phone || "").trim(),
         code: String(payload.code || "").trim(),
-        phone_code_hash: String(payload.phone_code_hash || "").trim() || null,
-        password: payload.password ? String(payload.password).trim() : null,
+        // 后端字段是 string，不能传 null（否则触发 "Input should be a valid string"）
+        phone_code_hash: String(payload.phone_code_hash || "").trim(),
+        // 二步密码必须原样传递，避免前后空格被 trim 后导致 Telegram 判错
+        password: payload.password != null ? String(payload.password) : null,
       }),
     }),
   enableCopyListener: (id) => request(`/copy/listeners/${Number(id)}/enable`, { method: "POST" }),

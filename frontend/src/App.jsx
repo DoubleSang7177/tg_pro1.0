@@ -4208,6 +4208,18 @@ export default function App() {
     }
   };
 
+  const onDeleteCopyListener = async (listenerId) => {
+    if (!guardLoggedIn()) return;
+    if (!op) return;
+    try {
+      await api.deleteCopyListener(listenerId);
+      pushToast("监听账号已删除");
+      await loadCopyData();
+    } catch (e) {
+      pushToast(e?.message || "删除监听账号失败");
+    }
+  };
+
   const onStartCopyTask = async (id) => {
     if (!guardLoggedIn()) return;
     setCopyStartOptimistic((p) => ({ ...p, [id]: true }));
@@ -7136,10 +7148,21 @@ export default function App() {
                           {copyListeners.map((x) => (
                             <li key={x.id} className="rounded-lg border border-white/[0.1] bg-white/[0.03] px-2.5 py-2 text-[11px] text-slate-300">
                               <div className="flex items-center justify-between gap-2">
-                                <p className="font-log text-slate-200">#{x.id} · {x.phone}</p>
-                                <span className="rounded-md border border-cyan-400/25 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-200">
-                                  {x.session_status || x.status}
-                                </span>
+                                <p className="font-log text-slate-200">{x.phone}</p>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="rounded-md border border-cyan-400/25 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-200">
+                                    {x.session_status || x.status}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    disabled={!op}
+                                    title={!op ? guestTitle : undefined}
+                                    className="rounded-md border border-rose-400/35 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-rose-200 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
+                                    onClick={() => onDeleteCopyListener(x.id)}
+                                  >
+                                    删除
+                                  </button>
+                                </div>
                               </div>
                               <p className="mt-1 text-slate-400">{x.running_tasks ? `运行任务: ${x.running_tasks}` : "当前空闲"}</p>
                             </li>
@@ -7291,9 +7314,9 @@ export default function App() {
                             <th className="px-3 py-2 font-semibold">来源</th>
                             <th className="px-3 py-2 font-semibold">目标</th>
                             <th className="px-3 py-2 font-semibold">Bot</th>
+                            <th className="px-3 py-2 font-semibold">监听账号</th>
                             <th className="px-3 py-2 font-semibold">创建者</th>
                             <th className="px-3 py-2 font-semibold">状态</th>
-                            <th className="px-3 py-2 font-semibold">今日/总计</th>
                             <th className="px-3 py-2 font-semibold">操作</th>
                           </tr>
                         </thead>
@@ -7313,6 +7336,7 @@ export default function App() {
                                   t.owner_id != null &&
                                   Number(profile.id) === Number(t.owner_id));
                               const taskBot = copyBots.find((b) => b.id === t.bot_id);
+                              const taskListener = copyListeners.find((x) => Number(x.id) === Number(t.listener_id));
                               const sessionOk = Boolean(taskBot?.session_ready);
                               const sessionLineOk =
                                 taskBot == null
@@ -7353,25 +7377,26 @@ export default function App() {
                                   <td className="max-w-[140px] truncate px-3 py-2.5 font-log text-xs text-slate-200" title={t.target_channel}>
                                     {t.target_channel}
                                   </td>
-                                  <td className="px-3 py-2.5 font-log text-xs text-violet-200/90">#{t.bot_id}</td>
+                                  <td className="px-3 py-2.5 font-log text-xs text-violet-200/90 whitespace-nowrap">
+                                    {`BOT-${String(t.bot_id).padStart(3, "0")}`}
+                                  </td>
+                                  <td className="max-w-[160px] truncate px-3 py-2.5 font-log text-xs text-cyan-200/90" title={taskListener?.phone || taskListener?.session_name || ""}>
+                                    {taskListener?.phone || taskListener?.session_name || "自动分配"}
+                                  </td>
                                   <td
                                     className="max-w-[120px] truncate px-3 py-2.5 font-log text-xs text-slate-300"
                                     title={
                                       t.owner_username
-                                        ? `user #${t.owner_id} · ${t.owner_username}`
+                                        ? `${t.owner_username}`
                                         : t.owner_id != null
-                                          ? `user #${t.owner_id}`
+                                          ? `用户${t.owner_id}`
                                           : ""
                                     }
                                   >
                                     {t.owner_username ? (
-                                      <>
-                                        <span className="text-slate-500">#</span>
-                                        {t.owner_id}{" "}
-                                        <span className="text-violet-200/80">@{t.owner_username}</span>
-                                      </>
+                                      <span className="text-violet-200/80">@{t.owner_username}</span>
                                     ) : t.owner_id != null ? (
-                                      <>user #{t.owner_id}</>
+                                      <>用户{t.owner_id}</>
                                     ) : (
                                       "—"
                                     )}
@@ -7401,11 +7426,8 @@ export default function App() {
                                       </p>
                                     ) : null}
                                   </td>
-                                  <td className="px-3 py-2.5 tabular-nums text-slate-300">
-                                    {t.today_forwarded ?? 0} / {t.total_forwarded ?? 0}
-                                  </td>
-                                  <td className="px-3 py-2.5">
-                                    <div className="flex flex-wrap gap-1.5">
+                                  <td className="px-3 py-2.5 min-w-[220px]">
+                                    <div className="flex flex-nowrap items-center gap-1.5 overflow-x-auto whitespace-nowrap">
                                       {displaySt === "running" ? (
                                         <span title={!canModCopyTask ? copyTaskNoPermTitle : undefined} className="inline-flex">
                                           <button

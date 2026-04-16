@@ -1836,6 +1836,8 @@ export default function App() {
   const [userFilterJobId, setUserFilterJobId] = useState(null);
   const [userFilterLiveLogs, setUserFilterLiveLogs] = useState([]);
   const [userFilterResults, setUserFilterResults] = useState([]);
+  const [userFilterMergedResults, setUserFilterMergedResults] = useState([]);
+  const [userFilterMergedLoading, setUserFilterMergedLoading] = useState(false);
   const [userFilterAccounts, setUserFilterAccounts] = useState([]);
   const [userFilterSelectedTaskId, setUserFilterSelectedTaskId] = useState(null);
   const [userFilterSubmitting, setUserFilterSubmitting] = useState(false);
@@ -2808,6 +2810,73 @@ export default function App() {
     if (tab !== "用户筛选" || !profile) return;
     loadUserFilterBase();
   }, [tab, profile, loadUserFilterBase]);
+
+  // 当未选择具体筛选任务时，右侧展示合并后的“具体可用/不可用用户列表”（而不是仅显示总数）。
+  useEffect(() => {
+    if (tab !== "用户筛选" || !profileRef.current) return;
+    if (userFilterSelectedTaskId) return;
+
+    const tasks = Array.isArray(userFilterTasks) ? userFilterTasks : [];
+    // 仅取最近的若干次来源采集筛选结果，避免一次性拉取过多数据导致卡顿。
+    const taskIds = tasks
+      .filter((t) => {
+        const st = String(t?.status || "").toLowerCase();
+        return ["finished", "completed", "stopped", "failed"].includes(st);
+      })
+      .map((t) => Number(t.id))
+      .filter(Boolean)
+      .slice(0, 10);
+
+    if (!taskIds.length) {
+      setUserFilterMergedResults([]);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      setUserFilterMergedLoading(true);
+      try {
+        const directMap = new Map(); // key=username -> result record
+        const linkMap = new Map();
+        for (const tid of taskIds) {
+          if (cancelled) return;
+          const r = await api.listUserFilterResults(tid);
+          const results = Array.isArray(r?.results) ? r.results : [];
+          for (const row of results) {
+            const uname = String(row?.username || "").trim();
+            if (!uname) continue;
+            const canInvite = Boolean(Number(row?.can_invite ?? 0));
+            const record = {
+              ...row,
+              id: row?.id ?? `${uname}-${canInvite ? 1 : 0}`,
+              username: uname,
+              can_invite: canInvite ? 1 : 0,
+            };
+            if (canInvite) {
+              // 不可用（需邀请链接）
+              if (!linkMap.has(uname)) linkMap.set(uname, record);
+            } else {
+              // 可用（可直接拉群）
+              if (!directMap.has(uname)) directMap.set(uname, record);
+            }
+            // 已够用：同时满足左右列表长度目标则提前结束
+            if (directMap.size >= 300 && linkMap.size >= 300) break;
+          }
+        }
+        const merged = [
+          ...Array.from(directMap.values()),
+          ...Array.from(linkMap.values()),
+        ].sort((a, b) => String(a.username).localeCompare(String(b.username), "zh-Hans-CN"));
+        if (!cancelled) setUserFilterMergedResults(merged);
+      } finally {
+        if (!cancelled) setUserFilterMergedLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, profile, userFilterSelectedTaskId, userFilterTasks]);
 
   useEffect(() => {
     if (!userFilterJobId) return undefined;
@@ -6344,32 +6413,43 @@ export default function App() {
               </div>
               <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
                 {(() => {
-                  const link_only_users = userFilterResults.filter((x) => x.can_invite);
-                  const direct_invitable_users = userFilterResults.filter((x) => !x.can_invite);
+                  const selected = Boolean(userFilterSelectedTaskId);
+                  const sourceResults = selected ? userFilterResults : userFilterMergedResults;
+                  const link_only_users = sourceResults.filter((x) => x.can_invite);
+                  const direct_invitable_users = sourceResults.filter((x) => !x.can_invite);
+                  const showLoading = !selected && userFilterMergedLoading && sourceResults.length === 0;
                   return (
                     <>
                 <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/5 p-3">
                   <h4 className="text-sm font-semibold text-emerald-200">可用用户（可直接拉群）</h4>
                   <div className="mt-2 max-h-[320px] overflow-y-auto text-xs">
-                    {direct_invitable_users
-                      .slice(0, 300)
-                      .map((x) => (
-                        <div key={x.id} className="border-b border-emerald-400/10 py-1 text-slate-200">
+                    {showLoading ? (
+                      <div className="py-2 text-slate-300">加载中…</div>
+                    ) : direct_invitable_users.length ? (
+                      direct_invitable_users.slice(0, 300).map((x) => (
+                        <div key={`${x.username || "—"}-${x.can_invite || 0}`} className="border-b border-emerald-400/10 py-1 text-slate-200">
                           {x.username || "—"}
                         </div>
-                      ))}
+                      ))
+                    ) : (
+                      <div className="py-2 text-slate-300">暂无结果</div>
+                    )}
                   </div>
                 </div>
                 <div className="rounded-2xl border border-rose-400/20 bg-rose-500/5 p-3">
                   <h4 className="text-sm font-semibold text-rose-200">不可用用户（需邀请链接）</h4>
                   <div className="mt-2 max-h-[320px] overflow-y-auto text-xs">
-                    {link_only_users
-                      .slice(0, 300)
-                      .map((x) => (
-                        <div key={x.id} className="border-b border-rose-400/10 py-1 text-slate-200">
+                    {showLoading ? (
+                      <div className="py-2 text-slate-300">加载中…</div>
+                    ) : link_only_users.length ? (
+                      link_only_users.slice(0, 300).map((x) => (
+                        <div key={`${x.username || "—"}-${x.can_invite || 0}`} className="border-b border-rose-400/10 py-1 text-slate-200">
                           {x.username || "—"}
                         </div>
-                      ))}
+                      ))
+                    ) : (
+                      <div className="py-2 text-slate-300">暂无结果</div>
+                    )}
                   </div>
                 </div>
                     </>

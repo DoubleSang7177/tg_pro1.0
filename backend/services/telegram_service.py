@@ -348,6 +348,8 @@ def _classify_failure_reason(exc: Exception) -> str:
         return "account_auth_failed"
     if "username_not_occupied" in msg or "not occupied" in msg:
         return "user_issue"
+    if "username not found" in msg or "username invalid" in msg:
+        return "user_issue"
     if "chat_member_add_failed" in msg:
         return "user_issue"
     if "peer_flood" in msg or "floodwait" in msg or "limited" in msg:
@@ -1272,6 +1274,7 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                     user_idx += 1
                                 elif reason == "user_issue":
                                     summary["failed"] += 1
+                                    consumed_count = _consume_user_from_filter_pool(db, str(target_user))
                                     _log_account_act(
                                         act_owner,
                                         account.phone,
@@ -1280,6 +1283,8 @@ async def run_task(config: dict[str, Any]) -> dict[str, Any]:
                                         level="info",
                                     )
                                     tl(f"用户 {target_user} 失败: 用户本身问题")
+                                    if consumed_count > 0:
+                                        tl(f"用户 {target_user} 为用户侧问题，已从筛选可用库移除（删除 {consumed_count} 条）")
                                     if progress_job_id:
                                         progress_event_append(progress_job_id, str(target_user), "done")
                                     user_idx += 1

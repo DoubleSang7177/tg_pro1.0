@@ -145,14 +145,16 @@ def startup() -> None:
 
         while True:
             now = datetime.now()
-            next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+            # 每天早上 08:00 固定执行一次群组元数据同步
+            next_run = now.replace(hour=8, minute=0, second=0, microsecond=0)
             if next_run <= now:
                 next_run = next_run + timedelta(days=1)
             sleep_sec = max(1.0, (next_run - now).total_seconds())
             time.sleep(sleep_sec)
             db2 = SessionLocal()
             try:
-                asyncio.run(sync_groups_metadata(None, False, db2))
+                # 定时任务使用 force=True，避免被“24小时内已同步”策略跳过
+                asyncio.run(sync_groups_metadata(None, True, db2))
             except Exception:
                 api_logger.exception("scheduled group metadata sync failed")
             finally:

@@ -183,6 +183,29 @@ function proxyUsageTypeVisual(usageType) {
   return { label: "未分类", cls: "border-slate-400/35 bg-slate-500/10 text-slate-300" };
 }
 
+function filterAccountHealthVisual(account) {
+  const state = String(account?.health_state || "").toLowerCase();
+  if (state === "abnormal") {
+    return {
+      label: String(account?.health_label || "异常"),
+      cls: "border-rose-400/35 bg-rose-500/10 text-rose-200",
+      title: String(account?.health_reason || "账号状态异常"),
+    };
+  }
+  if (state === "warning") {
+    return {
+      label: String(account?.health_label || "待命"),
+      cls: "border-amber-400/35 bg-amber-500/10 text-amber-200",
+      title: String(account?.health_reason || "账号待命"),
+    };
+  }
+  return {
+    label: String(account?.health_label || "健康"),
+    cls: "border-emerald-400/35 bg-emerald-500/10 text-emerald-200",
+    title: String(account?.health_reason || "账号健康"),
+  };
+}
+
 function formatUserRelativeZh(iso, nowMs = Date.now()) {
   if (!iso) return "—";
   const t = new Date(iso).getTime();
@@ -1896,6 +1919,9 @@ export default function App() {
   const scraperLoadingRef = useRef(false);
   const [scraperLoading, setScraperLoading] = useState(false);
   const [scraperResult, setScraperResult] = useState(null);
+  const [scraperProgressStartedAt, setScraperProgressStartedAt] = useState(null);
+  const [scraperProgressNowMs, setScraperProgressNowMs] = useState(() => Date.now());
+  const [scraperProgressLogs, setScraperProgressLogs] = useState([]);
   const [scraperTasks, setScraperTasks] = useState([]);
   const [scraperHistoryLoading, setScraperHistoryLoading] = useState(false);
   const [scraperDownloadTaskId, setScraperDownloadTaskId] = useState(null);
@@ -1958,7 +1984,14 @@ export default function App() {
   const [registerStatusText, setRegisterStatusText] = useState("等待操作");
   const registerLogIdRef = useRef(0);
   const [registerLogs, setRegisterLogs] = useState([]);
-  const userFilterRunning = Boolean(userFilterJobId);
+  const userFilterRunning = useMemo(() => {
+    if (userFilterJobId) return true;
+    const tasks = Array.isArray(userFilterTasks) ? userFilterTasks : [];
+    return tasks.some((t) => {
+      const st = String(t?.status || "").toLowerCase();
+      return st === "running" || st === "pending" || st === "starting";
+    });
+  }, [userFilterJobId, userFilterTasks]);
   const userFilterSourceNameMap = useMemo(() => {
     const m = new Map();
     (userFilterSources || []).forEach((s) => {
@@ -2812,6 +2845,33 @@ export default function App() {
     }
   }, [profile]);
 
+  useEffect(() => {
+    if (!scraperLoading) return undefined;
+    const id = window.setInterval(() => setScraperProgressNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [scraperLoading]);
+
+  const scraperElapsedSec = useMemo(() => {
+    if (!scraperProgressStartedAt) return 0;
+    return Math.max(0, Math.floor((scraperProgressNowMs - scraperProgressStartedAt) / 1000));
+  }, [scraperProgressNowMs, scraperProgressStartedAt]);
+
+  const scraperProgressPct = useMemo(() => {
+    if (!scraperLoading) return scraperResult ? 100 : 0;
+    // 无后端实时进度时，提供保守的时间进度感知（最高停在 95% 等待完成信号）
+    const p = Math.round((1 - Math.exp(-scraperElapsedSec / 45)) * 100);
+    return Math.min(95, Math.max(8, p));
+  }, [scraperElapsedSec, scraperLoading, scraperResult]);
+
+  const appendScraperProgressLog = useCallback((msg) => {
+    const t = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    const line = `[${t}] ${String(msg || "")}`;
+    setScraperProgressLogs((prev) => {
+      const next = [...prev, line];
+      return next.length > 120 ? next.slice(next.length - 120) : next;
+    });
+  }, []);
+
   const loadUserFilterBase = useCallback(async () => {
     if (!profileRef.current) return;
     try {
@@ -3546,6 +3606,7 @@ export default function App() {
     if (!guardLoggedIn()) return;
     const overrideGroup = opts?.group;
     const overrideUsers = opts?.users;
+    const rethrowOnError = Boolean(opts?.rethrowOnError);
     const group = overrideGroup ?? selectedGroup;
     const parsedUsers = Array.isArray(overrideUsers)
       ? overrideUsers.map((x) => String(x).trim()).filter(Boolean)
@@ -3727,6 +3788,9 @@ export default function App() {
       }));
       appendLog(`任务失败 | ${e.message}`);
       pushToast(e.message);
+      if (rethrowOnError) {
+        throw e;
+      }
     } finally {
       stopGrowthLoadingRef.current = false;
       setStopGrowthLoading(false);
@@ -3845,7 +3909,7 @@ export default function App() {
         appendLog(`[GROUP_START] group=${group} target=${perGroup}`);
 
         // 逐群串行执行，复用现有单群执行任务结构
-        const res = await onStartTask({ group, users: usersForGroup });
+        const res = await onStartTask({ group, users: usersForGroup, rethrowOnError: true });
 
         const acctMap = parseAccountsFromGrowthLogs(res?.logs || []);
         for (const [acct, status] of acctMap.entries()) {
@@ -4401,17 +4465,25 @@ export default function App() {
     if (!scraperForm.group_id.trim() || scraperLoadingRef.current) return;
     scraperLoadingRef.current = true;
     setScraperLoading(true);
+    setScraperProgressStartedAt(Date.now());
+    setScraperProgressNowMs(Date.now());
+    setScraperProgressLogs([]);
+    appendScraperProgressLog(`开始采集：${scraperForm.group_id.trim()}`);
+    appendScraperProgressLog(`参数：时间范围 ${scraperForm.days} 天，最多扫描 ${scraperForm.max_messages} 条消息`);
     setMsg("");
     try {
       const data = await api.runScraper(scraperForm);
       setScraperResult(data);
+      appendScraperProgressLog(`采集完成：去重用户 ${Number(data?.count || 0)}，任务ID ${data?.task_id ?? "-"}`);
       await loadScraperTasks();
     } catch (e) {
       setScraperResult(null);
+      appendScraperProgressLog(`采集失败：${e?.message || "未知错误"}`);
       pushToast(e?.message || "采集失败");
     } finally {
       scraperLoadingRef.current = false;
       setScraperLoading(false);
+      setScraperProgressStartedAt(null);
     }
   };
 
@@ -4844,16 +4916,15 @@ export default function App() {
   };
 
   const stats = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-    const parseDay = (x) => (x || "").slice(0, 10);
+    const rows = Array.isArray(groups) ? groups : [];
     return {
-      todayAdd: tasks.filter((t) => parseDay(t.created_at) === today).reduce((n, t) => n + (t.users?.length || 0), 0),
-      yestAdd: tasks.filter((t) => parseDay(t.created_at) === yesterday).reduce((n, t) => n + (t.users?.length || 0), 0),
-      total: tasks.reduce((n, t) => n + (t.users?.length || 0), 0),
+      // 与「目标群组」页口径保持一致：按群组统计字段汇总
+      todayAdd: rows.reduce((n, g) => n + (Number(g?.today_added) || 0), 0),
+      yestAdd: rows.reduce((n, g) => n + (Number(g?.yesterday_added) || 0), 0),
+      total: rows.reduce((n, g) => n + (Number(g?.total_added) || 0), 0),
       accounts: availableAccounts.length,
     };
-  }, [tasks, availableAccounts]);
+  }, [groups, availableAccounts]);
 
   const TabHeaderIcon = TAB_HEADER_ICONS[tab];
 
@@ -6317,41 +6388,37 @@ export default function App() {
                   </div>
                 </div>
 
-                {scraperResult ? (
-                  <div className={SCRAPER_GLASS_CARD}>
-                    <h3 className="text-base font-bold tracking-tight text-slate-100">本次结果</h3>
-                    <p className="mt-1 text-xs text-slate-500">当前任务摘要，可下载 txt 或从历史重复下载。</p>
-                    <div className="mt-5 space-y-3">
-                      <div>
-                        <p className="text-[11px] font-medium text-slate-500">目标群组</p>
-                        <p className="mt-0.5 break-all font-log text-sm font-semibold text-slate-200">{scraperResult.group_id}</p>
-                      </div>
-                      <div>
-                        <p className="text-[11px] font-medium text-slate-500">去重用户</p>
-                        <p className="stat-num-scraper mt-1 text-3xl tabular-nums tracking-tight">{scraperResult.count}</p>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={!op || scraperResultDownloadLoading}
-                        title={!op ? guestTitle : undefined}
-                        className={`${SCRAPER_BTN_GLOW_BLOCK} mt-2`}
-                        onClick={onDownloadScrape}
-                      >
-                        {scraperResultDownloadLoading ? (
-                          <>
-                            <UiSpinner tone="primary" />
-                            下载中…
-                          </>
-                        ) : (
-                          <>
-                            <Download className="h-4 w-4 shrink-0" aria-hidden />
-                            下载结果
-                          </>
-                        )}
-                      </button>
+                <div className={SCRAPER_GLASS_CARD}>
+                  <h3 className="text-base font-bold tracking-tight text-slate-100">采集进度</h3>
+                  <p className="mt-1 text-xs text-slate-500">用于展示当前采集过程状态；最终结果以右侧「采集历史」为准。</p>
+                  <div className="mt-4 space-y-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">{scraperLoading ? "采集中…" : "空闲"}</span>
+                      <span className="font-mono tabular-nums text-cyan-200">{scraperProgressPct}%</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-white/[0.08] ring-1 ring-white/[0.08]">
+                      <div
+                        className="h-full bg-gradient-to-r from-emerald-400/90 via-cyan-300/90 to-violet-400/90 transition-all duration-500"
+                        style={{ width: `${scraperProgressPct}%` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-slate-500">
+                      <span>{scraperLoading ? `已运行 ${scraperElapsedSec}s` : "等待新任务"}</span>
+                      {scraperResult ? <span>最近完成：{Number(scraperResult.count || 0)} 用户</span> : null}
+                    </div>
+                    <div className="growth-scroll max-h-[180px] overflow-y-auto rounded-xl border border-white/[0.08] bg-[rgba(0,0,0,0.2)] px-3 py-2 font-mono text-[11px] text-slate-300">
+                      {scraperProgressLogs.length ? (
+                        scraperProgressLogs.map((line, idx) => (
+                          <p key={`${idx}-${line}`} className="py-0.5 leading-relaxed">
+                            {line}
+                          </p>
+                        ))
+                      ) : (
+                        <p className="py-4 text-center text-slate-500">尚未开始采集</p>
+                      )}
                     </div>
                   </div>
-                ) : null}
+                </div>
               </div>
 
               <aside className="w-full shrink-0 space-y-4 lg:sticky lg:top-24 lg:w-[360px]">
@@ -6508,6 +6575,9 @@ export default function App() {
                       ⛔ 停止任务
                     </button>
                   </div>
+                  <div className="text-[11px] text-slate-400">
+                    开始后将先校验探测号/真实号是否在测试群且具备管理员邀请权限；未满足时会在日志中提示并等待你授权。
+                  </div>
                 </div>
               </Card>
 
@@ -6526,21 +6596,32 @@ export default function App() {
                       ) : (
                         (userFilterAccounts || [])
                           .filter((x) => x.type !== "real")
-                          .map((a) => (
-                            <div
-                              key={`probe-${a.id}`}
-                              className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-slate-200"
-                            >
-                              <span className="min-w-0 truncate">{a.phone || "—"}</span>
-                              <button
-                                type="button"
-                                className="shrink-0 text-[11px] text-rose-300 transition hover:text-rose-200"
-                                onClick={() => onDeleteFilterAccount(a.id)}
+                          .map((a) => {
+                            const hv = filterAccountHealthVisual(a);
+                            return (
+                              <div
+                                key={`probe-${a.id}`}
+                                className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-slate-200"
                               >
-                                删除
-                              </button>
-                            </div>
-                          ))
+                                <div className="min-w-0 flex items-center gap-2">
+                                  <span className="min-w-0 truncate">{a.phone || "—"}</span>
+                                  <span
+                                    title={hv.title}
+                                    className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] leading-none ${hv.cls}`}
+                                  >
+                                    {hv.label}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="shrink-0 text-[11px] text-rose-300 transition hover:text-rose-200"
+                                  onClick={() => onDeleteFilterAccount(a.id)}
+                                >
+                                  删除
+                                </button>
+                              </div>
+                            );
+                          })
                       )}
                     </div>
                   </div>
@@ -6557,21 +6638,32 @@ export default function App() {
                       ) : (
                         (userFilterAccounts || [])
                           .filter((x) => x.type === "real")
-                          .map((a) => (
-                            <div
-                              key={`real-${a.id}`}
-                              className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-slate-200"
-                            >
-                              <span className="min-w-0 truncate">{a.phone || "—"}</span>
-                              <button
-                                type="button"
-                                className="shrink-0 text-[11px] text-rose-300 transition hover:text-rose-200"
-                                onClick={() => onDeleteFilterAccount(a.id)}
+                          .map((a) => {
+                            const hv = filterAccountHealthVisual(a);
+                            return (
+                              <div
+                                key={`real-${a.id}`}
+                                className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-slate-200"
                               >
-                                删除
-                              </button>
-                            </div>
-                          ))
+                                <div className="min-w-0 flex items-center gap-2">
+                                  <span className="min-w-0 truncate">{a.phone || "—"}</span>
+                                  <span
+                                    title={hv.title}
+                                    className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] leading-none ${hv.cls}`}
+                                  >
+                                    {hv.label}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="shrink-0 text-[11px] text-rose-300 transition hover:text-rose-200"
+                                  onClick={() => onDeleteFilterAccount(a.id)}
+                                >
+                                  删除
+                                </button>
+                              </div>
+                            );
+                          })
                       )}
                     </div>
                   </div>

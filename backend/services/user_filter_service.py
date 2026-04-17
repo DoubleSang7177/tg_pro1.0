@@ -15,7 +15,9 @@ from models import FilterAccount, ScraperTask, UserFilterResult, UserFilterTask
 from settings import TELEGRAM_API_HASH, TELEGRAM_API_ID
 from telethon import TelegramClient
 from telethon.errors import RPCError
-from telethon.tl.functions.channels import InviteToChannelRequest
+from telethon.tl.functions.channels import GetParticipantRequest, InviteToChannelRequest, JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 
 log = get_logger("user_filter_service")
 
@@ -180,53 +182,174 @@ def _session_base_from_path(raw: str | None) -> str:
 
 
 async def _build_probe_clients(task: UserFilterTask, db, job_id: str | None) -> list[dict]:
+    return await _build_filter_clients(task, db, job_id, acc_type="probe", required=True)
+
+
+async def _build_filter_clients(
+    task: UserFilterTask,
+    db,
+    job_id: str | None,
+    *,
+    acc_type: str,
+    required: bool,
+) -> list[dict]:
     rows = (
         db.query(FilterAccount)
         .filter(
             FilterAccount.owner_id == task.owner_id,
-            FilterAccount.type == "probe",
+            FilterAccount.type == acc_type,
             FilterAccount.status.in_(["active", "idle"]),
         )
         .order_by(FilterAccount.id.asc())
         .all()
     )
     if not rows:
-        raise ValueError("筛选账号池为空：请先添加至少一个 probe 账号")
-
-    test_group = str(getattr(task, "test_group", "") or "").strip()
-    if not test_group:
-        raise ValueError("测试群组不能为空")
+        if required:
+            raise ValueError(f"筛选账号池为空：请先添加至少一个 {acc_type} 账号")
+        _append_log(job_id, "warn", "RUNNER", f"未配置 {acc_type} 账号，已跳过该账号池登录")
+        return []
 
     usable: list[dict] = []
     for row in rows:
         api_id = int(row.api_id or TELEGRAM_API_ID)
         api_hash = str(row.api_hash or TELEGRAM_API_HASH).strip()
         if not api_hash:
-            _append_log(job_id, "warn", "PROBE", f"账号 {_mask_phone(row.phone)} 缺少 API_HASH，已跳过")
+            _append_log(job_id, "warn", acc_type.upper(), f"账号 {_mask_phone(row.phone)} 缺少 API_HASH，已跳过")
             continue
         client = TelegramClient(_session_base_from_path(row.session_path), api_id, api_hash)
         try:
             await client.connect()
             if not await client.is_user_authorized():
-                _append_log(job_id, "warn", "PROBE", f"账号 {_mask_phone(row.phone)} 未授权，已跳过")
+                _append_log(job_id, "warn", acc_type.upper(), f"账号 {_mask_phone(row.phone)} 未授权，已跳过")
                 await client.disconnect()
                 continue
             me = await client.get_me()
             if bool(getattr(me, "bot", False)):
-                _append_log(job_id, "warn", "PROBE", f"账号 {_mask_phone(row.phone)} 是 bot，已跳过")
+                _append_log(job_id, "warn", acc_type.upper(), f"账号 {_mask_phone(row.phone)} 是 bot，已跳过")
                 await client.disconnect()
                 continue
-            channel = await client.get_input_entity(test_group)
-            usable.append({"row": row, "client": client, "channel": channel})
+            usable.append({"row": row, "client": client, "channel": None, "acc_type": acc_type})
         except Exception as exc:
-            _append_log(job_id, "warn", "PROBE", f"账号 {_mask_phone(row.phone)} 初始化失败: {_error_code(exc)}")
+            _append_log(job_id, "warn", acc_type.upper(), f"账号 {_mask_phone(row.phone)} 初始化失败: {_error_code(exc)}")
             try:
                 await client.disconnect()
             except Exception:
                 pass
     if not usable:
-        raise ValueError("没有可用的用户会话账号（probe）可执行筛选")
+        if required:
+            raise ValueError(f"没有可用的用户会话账号（{acc_type}）可执行筛选")
+        _append_log(job_id, "warn", "RUNNER", f"未找到可用的 {acc_type} 账号会话，已跳过该账号池登录")
     return usable
+
+
+def _extract_invite_hash(source: str) -> str:
+    src = str(source or "").strip()
+    low = src.lower()
+    if "t.me/+" in low:
+        return src.split("t.me/+", 1)[1].split("?", 1)[0].strip().lstrip("+")
+    if "joinchat/" in low:
+        return src.split("joinchat/", 1)[1].split("?", 1)[0].strip().lstrip("+")
+    return ""
+
+
+async def _ensure_joined_test_group(ctx: dict, test_group: str, job_id: str | None) -> None:
+    row = ctx["row"]
+    client = ctx["client"]
+    acc_type = str(ctx.get("acc_type") or "probe").upper()
+    phone_mask = _mask_phone(row.phone)
+
+    try:
+        ent = await client.get_entity(test_group)
+    except Exception as exc:
+        _append_log(job_id, "warn", acc_type, f"账号 {phone_mask} 获取测试群失败，尝试入群: {_error_code(exc)}")
+        ent = None
+
+    if ent is not None:
+        try:
+            await client(JoinChannelRequest(ent))
+            _append_log(job_id, "info", acc_type, f"账号 {phone_mask} 已尝试加入测试群")
+        except Exception:
+            pass
+    else:
+        invite_hash = _extract_invite_hash(test_group)
+        if invite_hash:
+            try:
+                await client(ImportChatInviteRequest(invite_hash))
+                _append_log(job_id, "info", acc_type, f"账号 {phone_mask} 已通过邀请链接加入测试群")
+            except Exception as exc:
+                _append_log(job_id, "warn", acc_type, f"账号 {phone_mask} 通过邀请链接入群失败: {_error_code(exc)}")
+
+    try:
+        ent = await client.get_entity(test_group)
+        await client(GetParticipantRequest(channel=ent, participant="me"))
+    except Exception as exc:
+        raise ValueError(f"账号 {phone_mask} 不在测试群中，请先将账号加入测试群: {_error_code(exc)}") from exc
+    ctx["channel"] = ent
+
+
+async def _has_admin_invite_permission(ctx: dict) -> bool:
+    client = ctx["client"]
+    channel = ctx.get("channel")
+    if channel is None:
+        return False
+    try:
+        perms = await client.get_permissions(channel, "me")
+        is_creator = bool(getattr(perms, "is_creator", False))
+        is_admin = bool(getattr(perms, "is_admin", False))
+        invite_users = getattr(perms, "invite_users", None)
+        if is_creator:
+            return True
+        if is_admin:
+            return True if invite_users is None else bool(invite_users)
+    except Exception:
+        pass
+    try:
+        resp = await client(GetParticipantRequest(channel=channel, participant="me"))
+        p = getattr(resp, "participant", None)
+        if isinstance(p, (ChannelParticipantCreator, ChannelParticipantAdmin)):
+            rights = getattr(p, "admin_rights", None)
+            if rights is None:
+                return True
+            iv = getattr(rights, "invite_users", None)
+            return True if iv is None else bool(iv)
+    except Exception:
+        return False
+    return False
+
+
+async def _ensure_group_ready(
+    all_ctx: list[dict],
+    test_group: str,
+    job_id: str | None,
+) -> None:
+    for ctx in all_ctx:
+        await _ensure_joined_test_group(ctx, test_group, job_id)
+
+    warned = False
+    while True:
+        waiting = []
+        for ctx in all_ctx:
+            ok = await _has_admin_invite_permission(ctx)
+            if not ok:
+                waiting.append(ctx)
+        if not waiting:
+            _append_log(job_id, "success", "RUNNER", "测试群管理员权限检查通过，开始执行筛选")
+            return
+        if _job_should_stop(job_id):
+            raise ValueError("任务在等待测试群管理员权限期间被停止")
+        if not warned:
+            _append_log(
+                job_id,
+                "warn",
+                "RUNNER",
+                "检测到账号缺少测试群管理员邀请权限，请在测试群给探测号/真实号管理员权限后继续",
+            )
+            warned = True
+        wait_desc = ", ".join(
+            f"{str(ctx.get('acc_type') or 'probe')}:{_mask_phone(ctx['row'].phone)}" for ctx in waiting
+        )
+        _append_log(job_id, "info", "RUNNER", f"等待管理员权限中: {wait_desc}")
+        await asyncio.sleep(5.0)
 
 
 async def _disconnect_all(ctx_rows: list[dict]) -> None:
@@ -240,6 +363,7 @@ async def _disconnect_all(ctx_rows: list[dict]) -> None:
 async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
     db = SessionLocal()
     probe_ctx: list[dict] = []
+    real_ctx: list[dict] = []
     try:
         task = db.query(UserFilterTask).filter(UserFilterTask.id == task_id).first()
         if task is None:
@@ -264,7 +388,12 @@ async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
         db.query(UserFilterResult).filter(UserFilterResult.task_id == task.id).delete()
         db.commit()
 
+        test_group = str(getattr(task, "test_group", "") or "").strip()
+        if not test_group:
+            raise ValueError("测试群组不能为空")
         probe_ctx = await _build_probe_clients(task, db, job_id)
+        real_ctx = await _build_filter_clients(task, db, job_id, acc_type="real", required=False)
+        await _ensure_group_ready([*probe_ctx, *real_ctx], test_group, job_id)
 
         for idx, username in enumerate(usernames, start=1):
             if _job_should_stop(job_id):
@@ -348,7 +477,7 @@ async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
         _append_log(job_id, "error", "RUNNER", f"任务失败: {str(exc)[:180]}")
         _job_finalize(job_id, "failed")
     finally:
-        await _disconnect_all(probe_ctx)
+        await _disconnect_all([*probe_ctx, *real_ctx])
         db.close()
 
 

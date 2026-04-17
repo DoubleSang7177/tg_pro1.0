@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 from telethon import TelegramClient
 from telethon.errors import (
@@ -178,7 +179,30 @@ def _task_to_dict(row: UserFilterTask) -> dict:
     }
 
 
-def _account_to_dict(row: FilterAccount) -> dict:
+def _resolve_account_health(row: FilterAccount, stats: dict | None = None) -> dict:
+    st = str(getattr(row, "status", "") or "").lower()
+    stats = stats or {}
+    flood_count = int(stats.get("flood_count", 0) or 0)
+    fail_total = int(stats.get("fail_total", 0) or 0)
+    recent_total = int(stats.get("recent_total", 0) or 0)
+
+    if st == "banned":
+        return {"state": "abnormal", "label": "异常", "reason": "账号已封禁"}
+    if flood_count > 0:
+        return {
+            "state": "abnormal",
+            "label": "异常",
+            "reason": f"近期出现 FLOOD({flood_count})，疑似风控",
+        }
+    if st == "idle":
+        return {"state": "warning", "label": "待命", "reason": "账号当前空闲未激活"}
+    if fail_total > 0 and recent_total > 0 and fail_total >= max(3, int(recent_total * 0.8)):
+        return {"state": "warning", "label": "关注", "reason": "近期失败比例偏高"}
+    return {"state": "healthy", "label": "健康", "reason": "近期状态正常"}
+
+
+def _account_to_dict(row: FilterAccount, stats: dict | None = None) -> dict:
+    health = _resolve_account_health(row, stats)
     return {
         "id": row.id,
         "owner_id": row.owner_id,
@@ -191,6 +215,9 @@ def _account_to_dict(row: FilterAccount) -> dict:
         "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,
         "proxy_id": row.proxy_id,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+        "health_state": health["state"],
+        "health_label": health["label"],
+        "health_reason": health["reason"],
     }
 
 
@@ -429,7 +456,50 @@ def list_filter_accounts(
     if user.role != "admin":
         q = q.filter(FilterAccount.owner_id == user.id)
     rows = q.limit(500).all()
-    return {"ok": True, "accounts": [_account_to_dict(r) for r in rows]}
+
+    account_ids = [int(r.id) for r in rows if getattr(r, "id", None) is not None]
+    stats_map: dict[int, dict] = {}
+    if account_ids:
+        recent_task_q = db.query(UserFilterTask.id).order_by(UserFilterTask.id.desc())
+        if user.role != "admin":
+            recent_task_q = recent_task_q.filter(UserFilterTask.owner_id == user.id)
+        recent_task_ids = [int(x[0]) for x in recent_task_q.limit(20).all() if x and x[0] is not None]
+
+        if recent_task_ids:
+            agg_rows = (
+                db.query(
+                    UserFilterResult.probe_account_id,
+                    func.count(UserFilterResult.id),
+                    func.sum(
+                        case(
+                            (func.upper(func.coalesce(UserFilterResult.fail_reason, "")) == "FLOOD", 1),
+                            else_=0,
+                        )
+                    ),
+                    func.sum(
+                        case(
+                            (func.coalesce(UserFilterResult.fail_reason, "") != "", 1),
+                            else_=0,
+                        )
+                    ),
+                )
+                .filter(
+                    UserFilterResult.probe_account_id.in_(account_ids),
+                    UserFilterResult.task_id.in_(recent_task_ids),
+                )
+                .group_by(UserFilterResult.probe_account_id)
+                .all()
+            )
+            for aid, total_cnt, flood_cnt, fail_cnt in agg_rows:
+                if aid is None:
+                    continue
+                stats_map[int(aid)] = {
+                    "recent_total": int(total_cnt or 0),
+                    "flood_count": int(flood_cnt or 0),
+                    "fail_total": int(fail_cnt or 0),
+                }
+
+    return {"ok": True, "accounts": [_account_to_dict(r, stats_map.get(int(r.id), {})) for r in rows]}
 
 
 @router.post("/accounts")

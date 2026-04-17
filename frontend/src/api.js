@@ -422,6 +422,8 @@ export const api = {
     const q = canInvite == null ? "" : `?can_invite=${Number(canInvite ? 1 : 0)}`;
     return request(`/user-filter/tasks/${Number(taskId)}/results${q}`);
   },
+  listLatestDirectInvitableUsers: (limit = 5000) =>
+    request(`/user-filter/results/direct-invitable/latest?limit=${Number(limit) || 5000}`),
   downloadUserFilterResults: (taskId, scope = "all") =>
     downloadFile(`/user-filter/download/${Number(taskId)}?scope=${encodeURIComponent(scope)}`),
   listFilterAccounts: () => request("/user-filter/accounts"),

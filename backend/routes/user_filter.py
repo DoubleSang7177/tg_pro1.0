@@ -320,6 +320,62 @@ def list_filter_results(
     }
 
 
+@router.get("/results/direct-invitable/latest")
+def list_latest_direct_invitable_users(
+    limit: int = 5000,
+    user: User = Depends(require_user_or_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """用户增长用：口径对齐“用户筛选页未选择具体任务”时的可用用户池。"""
+    lim = max(1, min(int(limit or 5000), 20000))
+    q_task = db.query(UserFilterTask).order_by(UserFilterTask.id.desc())
+    if user.role != "admin":
+        q_task = q_task.filter(UserFilterTask.owner_id == user.id)
+    task_rows = q_task.limit(500).all()
+
+    # 与前端“筛选结果（未选具体任务）”一致：仅保留同来源最新一次筛选记录。
+    seen_source_task: set[str] = set()
+    latest_only_tasks: list[UserFilterTask] = []
+    for t in task_rows:
+        source_key = str(getattr(t, "source_task_id", "") or "")
+        if source_key in seen_source_task:
+            continue
+        seen_source_task.add(source_key)
+        latest_only_tasks.append(t)
+
+    task_ids: list[int] = []
+    for t in latest_only_tasks:
+        st = str(getattr(t, "status", "") or "").lower()
+        if st in {"finished", "completed", "stopped", "failed"}:
+            tid = int(getattr(t, "id", 0) or 0)
+            if tid > 0:
+                task_ids.append(tid)
+        if len(task_ids) >= 10:  # 与前端合并任务上限保持一致
+            break
+
+    if not task_ids:
+        return {"ok": True, "usernames": [], "total": 0}
+
+    q = (
+        db.query(UserFilterResult)
+        .filter(UserFilterResult.task_id.in_(task_ids))
+        .filter(UserFilterResult.can_invite == 0)
+        .order_by(UserFilterResult.id.desc())
+    )
+    rows = q.limit(max(lim * 4, lim)).all()
+    usernames: list[str] = []
+    seen: set[str] = set()
+    for r in rows:
+        u = str(r.username or "").strip()
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        usernames.append(u)
+        if len(usernames) >= lim:
+            break
+    return {"ok": True, "usernames": usernames, "total": len(usernames)}
+
+
 @router.get("/live/{job_id}")
 def get_filter_live(job_id: str, user: User = Depends(require_user_or_admin)) -> dict:
     snap = live_snapshot(job_id)

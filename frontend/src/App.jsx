@@ -1775,7 +1775,6 @@ export default function App() {
   const [growthDispatchRunning, setGrowthDispatchRunning] = useState(false);
   const growthDispatchAbortRef = useRef(false);
   const [growthDirectUsersLimit, setGrowthDirectUsersLimit] = useState(20);
-  const growthDirectAutoFetchTaskIdRef = useRef(null);
   const [growthDirectUsersCache, setGrowthDirectUsersCache] = useState([]);
   const [growthDirectUsersLoading, setGrowthDirectUsersLoading] = useState(false);
   const logIdRef = useRef(0);
@@ -2849,6 +2848,21 @@ export default function App() {
     }
   }, []);
 
+  const loadGrowthDirectUsers = useCallback(async () => {
+    if (!profileRef.current) return;
+    setGrowthDirectUsersLoading(true);
+    try {
+      const r = await api.listLatestDirectInvitableUsers(5000);
+      const rows = Array.isArray(r?.usernames) ? r.usernames : [];
+      const next = rows.map((x) => String(x || "").trim()).filter(Boolean);
+      setGrowthDirectUsersCache(Array.from(new Set(next)));
+    } catch {
+      // ignore
+    } finally {
+      setGrowthDirectUsersLoading(false);
+    }
+  }, []);
+
   const autoRefreshTickFn = useCallback(async () => {
     const t = tabRef.current;
     const prof = profileRef.current;
@@ -2870,6 +2884,9 @@ export default function App() {
       await loadUserFilterBase();
       if (userFilterSelectedTaskId) await loadUserFilterResults(userFilterSelectedTaskId);
     }
+    if (t === "用户增长" && prof) {
+      await loadGrowthDirectUsers();
+    }
 
     if (t === "用户管理" && prof?.role === "admin") {
       try {
@@ -2884,7 +2901,7 @@ export default function App() {
     if (baseTabs.has(t)) {
       await refreshBaseRef.current({ skipMetadataSync: true, silent: true });
     }
-  }, [loadScraperAccount, loadScraperTasks, applyUsersListPayload, loadUserFilterBase, loadUserFilterResults, userFilterSelectedTaskId]);
+  }, [loadScraperAccount, loadScraperTasks, applyUsersListPayload, loadUserFilterBase, loadUserFilterResults, loadGrowthDirectUsers, userFilterSelectedTaskId]);
 
   const { lastUpdatedAt, isTicking } = useAutoRefresh({
     tickFn: autoRefreshTickFn,
@@ -3004,56 +3021,11 @@ export default function App() {
     loadUserFilterResults(userFilterSelectedTaskId);
   }, [loadUserFilterResults, userFilterSelectedTaskId]);
 
-  // 在「用户增长」页，展示“用户筛选总览”的可用用户池（direct_invitable_users）：
-  // 从 userFilterTasks（同来源仅保留最新一次）中逐个拉取 can_invite=0，并去重合并。
+  // 用户增长页进入时立即读一次最新结果池（不依赖任务列表遍历）
   useEffect(() => {
-    if (tab !== "用户增长") return;
-    if (!profileRef.current) return;
-
-    const tasks = Array.isArray(userFilterTasks) ? userFilterTasks : [];
-    const taskIds = tasks
-      .filter((t) => {
-        const st = String(t?.status || "").toLowerCase();
-        return ["finished", "completed", "stopped", "failed"].includes(st);
-      })
-      .map((t) => Number(t?.id ?? 0))
-      .filter((x) => Number.isFinite(x) && x > 0);
-
-    if (!taskIds.length) {
-      setGrowthDirectUsersCache([]);
-      return;
-    }
-
-    const key = taskIds.join(",");
-    if (growthDirectAutoFetchTaskIdRef.current === key) return;
-    growthDirectAutoFetchTaskIdRef.current = key;
-
-    let cancelled = false;
-    (async () => {
-      setGrowthDirectUsersLoading(true);
-      try {
-        const set = new Set();
-        for (const tid of taskIds) {
-          if (cancelled) return;
-          const r = await api.listUserFilterResults(tid, false);
-          const rows = Array.isArray(r?.results) ? r.results : [];
-          for (const row of rows) {
-            const u = String(row?.username || "").trim();
-            if (u) set.add(u);
-          }
-        }
-        if (!cancelled) setGrowthDirectUsersCache(Array.from(set));
-      } catch {
-        // ignore
-      } finally {
-        if (!cancelled) setGrowthDirectUsersLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [tab, userFilterTasks]);
+    if (tab !== "用户增长" || !profileRef.current) return;
+    loadGrowthDirectUsers();
+  }, [tab, loadGrowthDirectUsers]);
 
   useEffect(() => {
     if (!engagementJobId) return undefined;
@@ -3809,13 +3781,14 @@ export default function App() {
     if (!guardLoggedIn()) return;
     if (!op || growthDispatchRunning || taskRunning) return;
 
-    const dispatchGroups = Array.from(
-      new Set(
-        (groups || [])
-          .map((g) => String(g?.username || "").trim())
-          .filter(Boolean),
-      ),
-    );
+    // 自动调度按「目标群组」页当前排序顺序处理（仅改变处理顺序，不改变执行逻辑）
+    const sortedGroupUsernames = (sortedTargetGroups || [])
+      .map((g) => String(g?.username || "").trim())
+      .filter(Boolean);
+    const fallbackUsernames = (groups || [])
+      .map((g) => String(g?.username || "").trim())
+      .filter(Boolean);
+    const dispatchGroups = Array.from(new Set([...sortedGroupUsernames, ...fallbackUsernames]));
 
     if (!dispatchGroups.length) {
       const message = "目标群组列表为空";

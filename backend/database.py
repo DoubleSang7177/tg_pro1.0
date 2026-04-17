@@ -26,6 +26,9 @@ def _ensure_group_columns() -> None:
         col_names = {r[1] for r in rows}
         if "public_username" not in col_names:
             conn.execute(text("ALTER TABLE groups ADD COLUMN public_username VARCHAR(255)"))
+        if "importance" not in col_names:
+            conn.execute(text("ALTER TABLE groups ADD COLUMN importance VARCHAR(16) NOT NULL DEFAULT '中等'"))
+        conn.execute(text("UPDATE groups SET importance = '中等' WHERE importance IS NULL OR importance = ''"))
 
 
 def _ensure_account_file_columns() -> None:

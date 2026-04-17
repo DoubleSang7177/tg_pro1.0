@@ -21,10 +21,15 @@ from services.telegram_service import GROUP_METADATA_SYNC_KEY, sync_groups_metad
 router = APIRouter(tags=["groups"])
 _sync_jobs: dict[str, dict] = {}
 _sync_jobs_lock = Lock()
+_VALID_IMPORTANCE = {"重要", "中等", "次重要"}
 
 
 class UpdateGroupLimitRequest(BaseModel):
     daily_limit: int = Field(..., ge=1, le=10000)
+
+
+class UpdateGroupImportanceRequest(BaseModel):
+    importance: str = Field(..., description="重要性：重要 / 中等 / 次重要")
 
 
 class SyncGroupMetadataRequest(BaseModel):
@@ -155,6 +160,7 @@ def list_groups(_user: User | None = Depends(get_current_user_optional), db: Ses
                 "net_growth": y_add - y_left,
                 "status": g.status,
                 "daily_limit": g.daily_limit,
+                "importance": g.importance if g.importance in _VALID_IMPORTANCE else "中等",
                 "disabled_until": g.disabled_until.isoformat() if g.disabled_until else None,
                 "available": not (disabled_until_utc and now_utc < disabled_until_utc) and g.today_added < g.daily_limit,
             }
@@ -180,3 +186,22 @@ def update_group_limit(
     db.add(row)
     db.commit()
     return {"ok": True, "id": row.id, "daily_limit": row.daily_limit}
+
+
+@router.patch("/groups/{group_id}/importance")
+def update_group_importance(
+    group_id: int,
+    payload: UpdateGroupImportanceRequest,
+    _user: User = Depends(require_user_or_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    row = db.query(Group).filter(Group.id == group_id).first()
+    if row is None:
+        return {"ok": False, "message": "group not found"}
+    importance = str(payload.importance or "").strip()
+    if importance not in _VALID_IMPORTANCE:
+        return {"ok": False, "message": "importance must be one of: 重要, 中等, 次重要"}
+    row.importance = importance
+    db.add(row)
+    db.commit()
+    return {"ok": True, "id": row.id, "importance": row.importance}

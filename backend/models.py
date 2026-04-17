@@ -118,6 +118,7 @@ class Group(Base):
     status = Column(String(20), default="normal", nullable=False)
     failed_streak = Column(Integer, default=0, nullable=False)
     daily_limit = Column(Integer, default=30, nullable=False)
+    importance = Column(String(16), default="中等", nullable=False)
     disabled_until = Column(DateTime(timezone=True), nullable=True)
 
 

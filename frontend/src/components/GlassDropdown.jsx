@@ -3,13 +3,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 const DROPDOWN_Z = 2000;
 
-function computePanelStyle(triggerEl, searchable) {
+function computePanelStyle(triggerEl, searchable, panelMinWidth = 200) {
   if (!triggerEl) return null;
   const r = triggerEl.getBoundingClientRect();
   const gap = 6;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const minW = 200;
+  const minW = Math.max(80, Number(panelMinWidth) || 200);
   const width = Math.min(Math.max(r.width, minW), vw - 16);
   let left = r.left;
   if (left + width > vw - 8) left = vw - width - 8;
@@ -53,6 +53,7 @@ export function GlassDropdown({
   triggerPrefix = "",
   /** 追加到菜单面板容器（如 rounded-[10px]） */
   menuClassName = "",
+  panelMinWidth = 200,
   disabled = false,
   variant = "default",
 }) {
@@ -81,9 +82,9 @@ export function GlassDropdown({
   const updatePosition = useCallback(() => {
     const el = triggerRef.current;
     if (!el || !open) return;
-    const next = computePanelStyle(el, searchable);
+    const next = computePanelStyle(el, searchable, panelMinWidth);
     setPanelStyle(next);
-  }, [open, searchable]);
+  }, [open, searchable, panelMinWidth]);
 
   useLayoutEffect(() => {
     if (!open) {

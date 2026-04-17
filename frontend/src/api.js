@@ -196,6 +196,11 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ daily_limit: Number(dailyLimit) }),
     }),
+  updateGroupImportance: (groupId, importance) =>
+    request(`/groups/${groupId}/importance`, {
+      method: "PATCH",
+      body: JSON.stringify({ importance: String(importance || "").trim() }),
+    }),
   listTasks: () => request("/tasks"),
   startTask: (payload) =>
     request("/start_task", {

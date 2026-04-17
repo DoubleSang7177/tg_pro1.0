@@ -1359,8 +1359,16 @@ function targetGroupAvatarInitial(title) {
   return /[a-zA-Z0-9]/.test(ch) ? ch.toUpperCase() : ch;
 }
 
+const TARGET_GROUP_IMPORTANCE_OPTIONS = ["重要", "中等", "次重要"];
+const TARGET_GROUP_IMPORTANCE_ORDER = { 重要: 0, 中等: 1, 次重要: 2 };
+
+function normalizeTargetGroupImportance(value) {
+  const s = String(value || "").trim();
+  return TARGET_GROUP_IMPORTANCE_ORDER[s] != null ? s : "中等";
+}
+
 /** 目标群组 · Web3 / 金融 Dashboard 风格卡片 */
-function TargetGroupDashboardCard({ group, onUpdateDailyLimit, operationsLocked }) {
+function TargetGroupDashboardCard({ group, onUpdateDailyLimit, onUpdateImportance, operationsLocked }) {
   const g = group;
   const title = g.title || g.username;
   const handleRaw = g.display_handle || g.username;
@@ -1375,21 +1383,80 @@ function TargetGroupDashboardCard({ group, onUpdateDailyLimit, operationsLocked 
   const leaveAnomaly = yesterdayLeave > 30;
   const limited = g.status === "limited";
   const initial = targetGroupAvatarInitial(title);
+  const importance = normalizeTargetGroupImportance(g.importance);
+  const importanceTone =
+    importance === "重要"
+      ? {
+          trigger: "border-emerald-400/35 text-emerald-100 hover:border-emerald-300/50",
+          triggerBg: "bg-emerald-500/[0.12]",
+          itemInactive: "text-emerald-200/95 hover:bg-emerald-500/[0.14]",
+          itemActive: "bg-emerald-500/20 text-emerald-50 border border-emerald-400/30",
+        }
+      : importance === "次重要"
+        ? {
+            trigger: "border-amber-400/35 text-amber-100 hover:border-amber-300/55",
+            triggerBg: "bg-amber-500/[0.12]",
+            itemInactive: "text-amber-200/95 hover:bg-amber-500/[0.14]",
+            itemActive: "bg-amber-500/18 text-amber-50 border border-amber-400/30",
+          }
+        : {
+            trigger: "border-cyan-400/35 text-cyan-100 hover:border-cyan-300/55",
+            triggerBg: "bg-cyan-500/[0.12]",
+            itemInactive: "text-cyan-200/95 hover:bg-cyan-500/[0.14]",
+            itemActive: "bg-cyan-500/18 text-cyan-50 border border-cyan-400/30",
+          };
+  const importanceWidthClass = importance === "次重要" ? "w-[88px]" : "w-[74px]";
+  const importanceOptions = TARGET_GROUP_IMPORTANCE_OPTIONS.map((x) => {
+    const tone =
+      x === "重要"
+        ? {
+            itemInactiveClass: "text-emerald-200/95 hover:bg-emerald-500/[0.14]",
+            itemActiveClass: "bg-emerald-500/20 text-emerald-50 border border-emerald-400/30",
+          }
+        : x === "次重要"
+          ? {
+              itemInactiveClass: "text-amber-200/95 hover:bg-amber-500/[0.14]",
+              itemActiveClass: "bg-amber-500/18 text-amber-50 border border-amber-400/30",
+            }
+          : {
+              itemInactiveClass: "text-cyan-200/95 hover:bg-cyan-500/[0.14]",
+              itemActiveClass: "bg-cyan-500/18 text-cyan-50 border border-cyan-400/30",
+            };
+    return { value: x, label: x, ...tone };
+  });
 
   const netValueClass =
     netGrowth > 0 ? "tg-dash-net-value--pos" : netGrowth < 0 ? "tg-dash-net-value--neg" : "tg-dash-net-value--zero";
 
   return (
     <article className="tg-dash-group-card">
-      <div className="flex gap-3.5">
-        <div className="tg-dash-group-avatar" aria-hidden>
-          <span className="tg-dash-group-avatar-inner">
-            <span className="tg-dash-group-avatar-letter">{initial}</span>
-          </span>
+      <div className="flex items-start justify-between gap-3.5">
+        <div className="flex min-w-0 flex-1 gap-3.5">
+          <div className="tg-dash-group-avatar" aria-hidden>
+            <span className="tg-dash-group-avatar-inner">
+              <span className="tg-dash-group-avatar-letter">{initial}</span>
+            </span>
+          </div>
+          <div className="min-w-0 flex-1 pt-0.5">
+            <h3 className="truncate text-[15px] font-bold tracking-tight text-slate-50">{title}</h3>
+            <p className="mt-0.5 truncate text-[12px] font-medium text-slate-500/75">{handle}</p>
+          </div>
         </div>
-        <div className="min-w-0 flex-1 pt-0.5">
-          <h3 className="truncate text-[15px] font-bold tracking-tight text-slate-50">{title}</h3>
-          <p className="mt-0.5 truncate text-[12px] font-medium text-slate-500/75">{handle}</p>
+        <div className="shrink-0">
+          <GlassDropdown
+            value={importance}
+            disabled={operationsLocked}
+            onChange={(next) => {
+              if (operationsLocked) return;
+              onUpdateImportance(g.id, next);
+            }}
+            options={importanceOptions}
+            placeholder="重要性"
+            className={importanceWidthClass}
+            triggerClassName={`rounded-md px-1.5 py-0 text-[10px] font-semibold ${importanceTone.trigger} ${importanceTone.triggerBg}`}
+            menuClassName="rounded-md"
+            panelMinWidth={98}
+          />
         </div>
       </div>
 
@@ -1959,7 +2026,7 @@ export default function App() {
   const [engagementDeleteSaving, setEngagementDeleteSaving] = useState(false);
   const [engagementDeleteConfirmOpen, setEngagementDeleteConfirmOpen] = useState(false);
   const [sidebarMonitorNow, setSidebarMonitorNow] = useState(() => Date.now());
-  const [targetGroupSortType, setTargetGroupSortType] = useState("today_join");
+  const [targetGroupSortType, setTargetGroupSortType] = useState("importance");
 
   const isAdmin = useMemo(() => profile?.role === "admin", [profile]);
   const availableAccounts = useMemo(() => accounts.active || [], [accounts]);
@@ -2307,6 +2374,7 @@ export default function App() {
 
   const targetGroupSortOptions = useMemo(
     () => [
+      { value: "importance", label: "重要性优先" },
       { value: "today_join", label: "今日增长最多" },
       { value: "total_join", label: "累计增长最多" },
       { value: "today_leave", label: "今日离群最多" },
@@ -2315,7 +2383,7 @@ export default function App() {
   );
 
   const targetGroupSortLabel = useMemo(
-    () => targetGroupSortOptions.find((x) => x.value === targetGroupSortType)?.label || "今日增长最多",
+    () => targetGroupSortOptions.find((x) => x.value === targetGroupSortType)?.label || "重要性优先",
     [targetGroupSortOptions, targetGroupSortType],
   );
 
@@ -2323,7 +2391,13 @@ export default function App() {
     const getTodayJoin = (g) => Number(g?.today_join ?? g?.today_added ?? 0) || 0;
     const getTotalJoin = (g) => Number(g?.total_join ?? g?.total_added ?? 0) || 0;
     const getTodayLeave = (g) => Number(g?.today_leave ?? g?.today_leave_count ?? 0) || 0;
+    const getImportanceRank = (g) => TARGET_GROUP_IMPORTANCE_ORDER[normalizeTargetGroupImportance(g?.importance)] ?? 1;
     return [...(groups || [])].sort((a, b) => {
+      if (targetGroupSortType === "importance") {
+        const rankDiff = getImportanceRank(a) - getImportanceRank(b);
+        if (rankDiff !== 0) return rankDiff;
+        return getTodayJoin(b) - getTodayJoin(a);
+      }
       if (targetGroupSortType === "today_join") return getTodayJoin(b) - getTodayJoin(a);
       if (targetGroupSortType === "total_join") return getTotalJoin(b) - getTotalJoin(a);
       if (targetGroupSortType === "today_leave") return getTodayLeave(b) - getTodayLeave(a);
@@ -3850,6 +3924,18 @@ export default function App() {
     await refreshBase();
   };
 
+  const onUpdateGroupImportance = async (groupId, importance) => {
+    if (!guardLoggedIn()) return;
+    await api.updateGroupImportance(groupId, importance);
+    setGroups((prev) =>
+      (prev || []).map((g) =>
+        Number(g.id) === Number(groupId)
+          ? { ...g, importance: normalizeTargetGroupImportance(importance) }
+          : g,
+      ),
+    );
+  };
+
   const onAddOrUpdatePath = async () => {
     if (!guardLoggedIn()) return;
     if (!newPath.trim()) return;
@@ -4999,7 +5085,6 @@ export default function App() {
                       />
                     </div>
                   </div>
-                  <span className="text-xs text-slate-400">当前：{targetGroupSortLabel}</span>
                 </>
               ) : null}
               <div
@@ -5526,6 +5611,7 @@ export default function App() {
                   <TargetGroupDashboardCard
                     group={g}
                     onUpdateDailyLimit={onUpdateDailyLimit}
+                    onUpdateImportance={onUpdateGroupImportance}
                     operationsLocked={!op}
                   />
                 </div>

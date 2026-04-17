@@ -195,6 +195,76 @@ def _ensure_user_filter_tasks_columns() -> None:
             conn.execute(text("ALTER TABLE user_filter_tasks ADD COLUMN test_group VARCHAR(255)"))
 
 
+def _ensure_user_filter_results_columns() -> None:
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(user_filter_results)")).fetchall()
+        if not rows:
+            return
+        col_names = {r[1] for r in rows}
+        if "second_check_status" not in col_names:
+            conn.execute(
+                text("ALTER TABLE user_filter_results ADD COLUMN second_check_status VARCHAR(20) NOT NULL DEFAULT 'pending'")
+            )
+        if "final_status" not in col_names:
+            conn.execute(
+                text("ALTER TABLE user_filter_results ADD COLUMN final_status VARCHAR(32) NOT NULL DEFAULT 'unknown'")
+            )
+        if "real_check_rounds" not in col_names:
+            conn.execute(
+                text("ALTER TABLE user_filter_results ADD COLUMN real_check_rounds INTEGER NOT NULL DEFAULT 0")
+            )
+        conn.execute(
+            text(
+                "UPDATE user_filter_results "
+                "SET second_check_status = 'pending' "
+                "WHERE second_check_status IS NULL OR second_check_status = ''"
+            )
+        )
+        if "can_invite" in col_names:
+            conn.execute(
+                text(
+                    "UPDATE user_filter_results "
+                    "SET final_status = CASE "
+                    "WHEN COALESCE(fail_reason, '') = 'USER_PRIVACY_RESTRICTED' THEN 'link_only' "
+                    "WHEN can_invite = 1 THEN 'direct_invitable' "
+                    "ELSE 'unknown' END "
+                    "WHERE final_status IS NULL OR final_status = ''"
+                )
+            )
+        else:
+            conn.execute(
+                text(
+                    "UPDATE user_filter_results "
+                    "SET final_status = CASE "
+                    "WHEN COALESCE(fail_reason, '') = 'USER_PRIVACY_RESTRICTED' THEN 'link_only' "
+                    "ELSE 'unknown' END "
+                    "WHERE final_status IS NULL OR final_status = ''"
+                )
+            )
+        conn.execute(
+            text(
+                "UPDATE user_filter_results SET real_check_rounds = 0 "
+                "WHERE real_check_rounds IS NULL"
+            )
+        )
+
+
+def _drop_user_filter_results_can_invite_column() -> None:
+    """final_status 已表达语义，废弃 can_invite 列（需 SQLite 3.35+ 支持 DROP COLUMN）。"""
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(user_filter_results)")).fetchall()
+        if not rows:
+            return
+        col_names = {r[1] for r in rows}
+        if "can_invite" not in col_names:
+            return
+        try:
+            conn.execute(text("ALTER TABLE user_filter_results DROP COLUMN can_invite"))
+        except Exception:
+            # 旧版 SQLite 不支持 DROP COLUMN 时保留列，ORM 已移除映射则后续需手工处理库表
+            pass
+
+
 def _ensure_scraper_and_listener_proxy_columns() -> None:
     with engine.begin() as conn:
         scraper_rows = conn.execute(text("PRAGMA table_info(scraper_account)")).fetchall()
@@ -287,6 +357,8 @@ def init_db() -> None:
     _ensure_interaction_target_groups_columns()
     _ensure_interaction_tasks_columns()
     _ensure_user_filter_tasks_columns()
+    _ensure_user_filter_results_columns()
+    _drop_user_filter_results_can_invite_column()
     _ensure_scraper_task_columns()
     _ensure_scraper_tasks_one_per_group_link()
     _ensure_scraper_and_listener_proxy_columns()

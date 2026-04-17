@@ -206,6 +206,21 @@ function filterAccountHealthVisual(account) {
   };
 }
 
+function normalizeFilterFinalStatus(row) {
+  const fs = String(row?.final_status || "").trim().toLowerCase();
+  if (fs === "direct_invitable" || fs === "link_only" || fs === "unknown") return fs;
+  const reason = String(row?.fail_reason || "").toLowerCase();
+  if (
+    reason.includes("user_privacy_restricted") ||
+    reason.includes("restricts adding them to groups") ||
+    reason.includes("send invite link")
+  ) {
+    return "link_only";
+  }
+  if (reason.includes("user_not_mutual_contact")) return "direct_invitable";
+  return "unknown";
+}
+
 function formatUserRelativeZh(iso, nowMs = Date.now()) {
   if (!iso) return "—";
   const t = new Date(iso).getTime();
@@ -1937,6 +1952,8 @@ export default function App() {
   const [userFilterAccounts, setUserFilterAccounts] = useState([]);
   const [userFilterSelectedTaskId, setUserFilterSelectedTaskId] = useState(null);
   const [userFilterSubmitting, setUserFilterSubmitting] = useState(false);
+  /** 由「仅重筛不确定」启动的会话：用于在结果卡片内展示独立执行条，与全量筛选区分 */
+  const [userFilterUnknownRefilterActive, setUserFilterUnknownRefilterActive] = useState(false);
   const [userFilterForm, setUserFilterForm] = useState({
     name: "用户筛选任务",
     source_task_id: 0,
@@ -1987,11 +2004,166 @@ export default function App() {
   const userFilterRunning = useMemo(() => {
     if (userFilterJobId) return true;
     const tasks = Array.isArray(userFilterTasks) ? userFilterTasks : [];
+    const nowMs = Date.now();
     return tasks.some((t) => {
       const st = String(t?.status || "").toLowerCase();
-      return st === "running" || st === "pending" || st === "starting";
+      if (!(st === "running" || st === "pending" || st === "starting")) return false;
+      const processed = Number(t?.processed_users || 0);
+      const total = Number(t?.total_users || 0);
+      // 避免历史遗留“running”把按钮长期锁死：要求任务最近有心跳且未处理完成。
+      if (total > 0 && processed >= total) return false;
+      const tsRaw = t?.updated_at || t?.created_at;
+      const ts = tsRaw ? new Date(tsRaw).getTime() : Number.NaN;
+      if (Number.isNaN(ts)) return true;
+      return nowMs - ts <= 5 * 60 * 1000;
     });
   }, [userFilterJobId, userFilterTasks]);
+  const userFilterCurrentAccount = useMemo(() => {
+    const logs = Array.isArray(userFilterLiveLogs) ? userFilterLiveLogs : [];
+    for (let i = logs.length - 1; i >= 0; i -= 1) {
+      const msg = String(logs[i]?.message || "");
+      const m = msg.match(/account=([^\s]+)/i);
+      if (m?.[1]) return m[1];
+    }
+    return "";
+  }, [userFilterLiveLogs]);
+  const userFilterActionLogs = useMemo(() => {
+    const logs = Array.isArray(userFilterLiveLogs) ? userFilterLiveLogs : [];
+    return logs
+      .filter((x) => {
+        const msg = String(x?.message || "");
+        return (
+          msg.includes("[ROUND_CHECK]") ||
+          msg.includes("[INVITE]") ||
+          msg.includes("[INVITE_RAW]") ||
+          msg.includes("[RESULT]") ||
+          msg.includes("[SECOND_CHECK]") ||
+          msg.includes("[BOT_FILTER]")
+        );
+      })
+      .slice(-180);
+  }, [userFilterLiveLogs]);
+
+  const userFilterResultBuckets = useMemo(() => {
+    const selected = Boolean(userFilterSelectedTaskId);
+    const sourceResults = selected ? userFilterResults : userFilterMergedResults;
+    const showLoading = !selected && userFilterMergedLoading && sourceResults.length === 0;
+    const normalized = sourceResults.map((x) => ({
+      ...x,
+      final_status: normalizeFilterFinalStatus(x),
+      second_check_status: String(
+        x?.second_check_status || (normalizeFilterFinalStatus(x) === "unknown" ? "pending" : "checked"),
+      ),
+    }));
+    return {
+      selected,
+      showLoading,
+      direct_invitable_users: normalized.filter((x) => x.final_status === "direct_invitable"),
+      link_only_users: normalized.filter((x) => x.final_status === "link_only"),
+      unknown_users: normalized.filter((x) => x.final_status === "unknown"),
+    };
+  }, [userFilterSelectedTaskId, userFilterResults, userFilterMergedResults, userFilterMergedLoading]);
+
+  /**
+   * 不确定区块底部全宽状态条：优先用 live job 解析日志；若无 job_id 但任务列表显示 running，给降级提示（避免 flex 挤压导致「看不见」）。
+   */
+  const userFilterUnknownCardStrip = useMemo(() => {
+    const logs = Array.isArray(userFilterLiveLogs) ? userFilterLiveLogs : [];
+    const parseFromLogs = () => {
+    let account = "";
+    for (let i = logs.length - 1; i >= 0; i -= 1) {
+      const msg = String(logs[i]?.message || "");
+      const am = msg.match(/account=([^\s]+)/i);
+      if (am?.[1]) {
+        account = am[1];
+        break;
+      }
+    }
+    for (let i = logs.length - 1; i >= 0; i -= 1) {
+      const msg = String(logs[i]?.message || "");
+      if (!msg.includes("[RESULT]") || !msg.includes("user=")) continue;
+      const rm = msg.match(/\[RESULT\]\s*user=(\S+)\s*->\s*(.+)/i);
+      if (!rm) continue;
+      const u = rm[1];
+      const tail = String(rm[2] || "").trim();
+      const head = tail.split(/[（\s✅]/)[0].replace(/…/g, "").trim().toLowerCase();
+      let line = "";
+      let tone = "amber";
+      if (head.includes("link_only") || head === "link_only") {
+        line = `${u} → link_only（邀请成功，保守不发直拉）`;
+        tone = "rose";
+      } else if (head.includes("direct_invitable")) {
+        line = `${u} → direct_invitable（可用）`;
+        tone = "emerald";
+      } else if (head.includes("unknown")) {
+        line = `${u} → unknown（仍不确定，如 FLOOD/NULL）`;
+        tone = "amber";
+      } else {
+        line = `${u} → ${head || tail}`;
+        tone = "slate";
+      }
+      return { account, line, tone, user: u, isUnknownOnly: userFilterUnknownRefilterActive };
+    }
+    for (let i = logs.length - 1; i >= 0; i -= 1) {
+      const msg = String(logs[i]?.message || "");
+      if (!msg.includes("[INVITE_RAW]")) continue;
+      const em = msg.match(/\[INVITE_RAW\]\s*user=(\S+)\s+err_code=(\S+)/i);
+      if (em) {
+        const code = String(em[2] || "").toUpperCase();
+        const tone = code.includes("FLOOD") ? "amber" : "rose";
+        return { account, line: `${em[1]} 异常 err_code=${code}`, tone, user: em[1], isUnknownOnly: userFilterUnknownRefilterActive };
+      }
+      if (msg.includes("ok response")) {
+        const um = msg.match(/\[INVITE_RAW\]\s*user=(\S+)/i);
+        const u = um?.[1] || "";
+        return {
+          account,
+          line: u ? `${u} 接口成功（将标 link_only）` : "接口成功（将标 link_only）",
+          tone: "slate",
+          user: u,
+          isUnknownOnly: userFilterUnknownRefilterActive,
+        };
+      }
+    }
+    let batchHint = "";
+    for (let i = logs.length - 1; i >= 0; i -= 1) {
+      const msg = String(logs[i]?.message || "");
+      const bm = msg.match(/──\s*不确定重筛\s*(\d+)\/(\d+)/);
+      if (bm) {
+        batchHint = `多任务 ${bm[1]}/${bm[2]}`;
+        break;
+      }
+    }
+    const joined = logs.map((x) => String(x?.message || "")).join("\n");
+    let line = "";
+    if (joined.includes("仅重筛不确定用户")) {
+      line = `${batchHint ? `${batchHint} · ` : ""}仅不确定重筛：探测号拉群中…`;
+    } else if (joined.includes("任务启动") || joined.includes("待筛选用户")) {
+      line = `${batchHint ? `${batchHint} · ` : ""}全量筛选：探测号拉群中…`;
+    } else if (joined.includes("runner 已启动")) {
+      line = `${batchHint ? `${batchHint} · ` : ""}runner 已启动，正在准备探测/进群…`;
+    } else {
+      line = `${batchHint ? `${batchHint} · ` : ""}已连接任务，等待日志…`;
+    }
+      return { account, line, tone: "amber", user: "", batchHint, isUnknownOnly: userFilterUnknownRefilterActive };
+    };
+
+    if (userFilterJobId) {
+      return parseFromLogs();
+    }
+    if (userFilterRunning) {
+      return {
+        account: "—",
+        line: "后端任务显示「进行中」，但本页未持有实时会话（例如刷新/热重载丢 job_id）。可刷新页面；左侧「筛选用户实时日志」也会滚动更新。",
+        tone: "amber",
+        user: "",
+        isUnknownOnly: false,
+        degraded: true,
+      };
+    }
+    return null;
+  }, [userFilterJobId, userFilterLiveLogs, userFilterUnknownRefilterActive, userFilterRunning]);
+
   const userFilterSourceNameMap = useMemo(() => {
     const m = new Map();
     (userFilterSources || []).forEach((s) => {
@@ -3007,6 +3179,7 @@ export default function App() {
       try {
         const directMap = new Map(); // key=username -> result record
         const linkMap = new Map();
+        const unknownMap = new Map();
         for (const tid of taskIds) {
           if (cancelled) return;
           const r = await api.listUserFilterResults(tid);
@@ -3014,27 +3187,29 @@ export default function App() {
           for (const row of results) {
             const uname = String(row?.username || "").trim();
             if (!uname) continue;
-            const canInvite = Boolean(Number(row?.can_invite ?? 0));
+            const finalStatus = normalizeFilterFinalStatus(row);
             const record = {
               ...row,
-              id: row?.id ?? `${uname}-${canInvite ? 1 : 0}`,
+              id: row?.id ?? `${uname}-${finalStatus}`,
+              task_id: Number(row?.task_id ?? tid) || tid,
               username: uname,
-              can_invite: canInvite ? 1 : 0,
+              final_status: finalStatus,
+              second_check_status: String(row?.second_check_status || (finalStatus === "unknown" ? "pending" : "checked")),
             };
-            if (canInvite) {
-              // 不可用（需邀请链接）
+            if (finalStatus === "link_only") {
               if (!linkMap.has(uname)) linkMap.set(uname, record);
+            } else if (finalStatus === "unknown") {
+              if (!unknownMap.has(uname)) unknownMap.set(uname, record);
             } else {
-              // 可用（可直接拉群）
               if (!directMap.has(uname)) directMap.set(uname, record);
             }
-            // 已够用：同时满足左右列表长度目标则提前结束
-            if (directMap.size >= 300 && linkMap.size >= 300) break;
+            if (directMap.size >= 300 && linkMap.size >= 300 && unknownMap.size >= 300) break;
           }
         }
         const merged = [
           ...Array.from(directMap.values()),
           ...Array.from(linkMap.values()),
+          ...Array.from(unknownMap.values()),
         ].sort((a, b) => String(a.username).localeCompare(String(b.username), "zh-Hans-CN"));
         if (!cancelled) setUserFilterMergedResults(merged);
       } finally {
@@ -3050,13 +3225,16 @@ export default function App() {
   useEffect(() => {
     if (!userFilterJobId) return undefined;
     let cancelled = false;
+    let failStreak = 0;
     const poll = async () => {
       try {
         const data = await api.userFilterLive(userFilterJobId);
         if (cancelled) return;
+        failStreak = 0;
         setUserFilterLiveLogs((data.logs || []).slice(-300));
         if (["completed", "failed", "stopped"].includes(String(data.status || "").toLowerCase())) {
           setUserFilterSubmitting(false);
+          setUserFilterUnknownRefilterActive(false);
           setUserFilterJobId(null);
           if (data.task_id) {
             setUserFilterSelectedTaskId(Number(data.task_id));
@@ -3066,7 +3244,16 @@ export default function App() {
           return;
         }
       } catch {
-        /* ignore */
+        failStreak += 1;
+        // uvicorn reload / 后端重启会导致 in-memory live job 丢失，避免按钮长期卡在“筛选中”。
+        if (failStreak >= 12) {
+          setUserFilterSubmitting(false);
+          setUserFilterUnknownRefilterActive(false);
+          setUserFilterJobId(null);
+          setUserFilterLiveLogs([]);
+          await loadUserFilterBase();
+          return;
+        }
       }
       if (!cancelled) window.setTimeout(poll, 1000);
     };
@@ -3205,6 +3392,7 @@ export default function App() {
       pushToast("请填写测试群组");
       return;
     }
+    setUserFilterUnknownRefilterActive(false);
     setUserFilterSubmitting(true);
     setUserFilterLiveLogs([]);
     try {
@@ -3240,6 +3428,35 @@ export default function App() {
       pushToast(e.message || "停止失败");
     }
   }, [pushToast, userFilterSelectedTaskId]);
+
+  const onRefilterUnknownOnly = useCallback(async () => {
+    if (!profileRef.current) {
+      pushToast("请先登录");
+      return;
+    }
+    const rows = userFilterResultBuckets.unknown_users || [];
+    const ids = [...new Set(rows.map((x) => Number(x.task_id || 0)).filter((x) => x > 0))].sort((a, b) => a - b);
+    if (!ids.length) {
+      pushToast("当前列表里的不确定用户缺少 task_id，请刷新页面后再试");
+      return;
+    }
+    setUserFilterSubmitting(true);
+    setUserFilterLiveLogs([]);
+    try {
+      const r =
+        ids.length === 1
+          ? await api.refilterUserFilterUnknownOnly(ids[0])
+          : await api.refilterUserFilterUnknownBulk({ task_ids: ids });
+      if (!r?.job_id) throw new Error("未返回筛选会话");
+      setUserFilterUnknownRefilterActive(true);
+      setUserFilterJobId(r.job_id);
+      await loadUserFilterBase();
+    } catch (e) {
+      pushToast(e.message || "启动失败");
+    } finally {
+      setUserFilterSubmitting(false);
+    }
+  }, [loadUserFilterBase, pushToast, userFilterResultBuckets]);
 
   const onCreateFilterAccount = useCallback(async () => {
     if (!profileRef.current) {
@@ -6578,6 +6795,11 @@ export default function App() {
                   <div className="text-[11px] text-slate-400">
                     开始后将先校验探测号/真实号是否在测试群且具备管理员邀请权限；未满足时会在日志中提示并等待你授权。
                   </div>
+                  {userFilterRunning ? (
+                    <div className="text-[11px] text-cyan-300/90">
+                      当前筛选账号：{userFilterCurrentAccount || "等待分配..."}
+                    </div>
+                  ) : null}
                 </div>
               </Card>
 
@@ -6770,7 +6992,22 @@ export default function App() {
               </Card>
             </div>
 
-            <Card title="筛选结果" subtitle="不可用用户（需邀请链接） / 可用用户（可直接拉群）">
+            <Card title="筛选结果" subtitle="可用 / 不可用 / 不确定（支持真实号二次复检）">
+              <div className="mb-3 rounded-2xl border border-cyan-400/20 bg-cyan-500/5 p-3">
+                <h4 className="text-sm font-semibold text-cyan-200">筛选用户实时日志（账号 → 用户 → 结果）</h4>
+                <div className="mt-2 growth-scroll max-h-[180px] overflow-y-auto rounded-xl border border-white/[0.08] bg-[rgba(0,0,0,0.2)] px-3 py-2 font-mono text-[11px] text-slate-200">
+                  {userFilterActionLogs.length ? (
+                    userFilterActionLogs.map((l, idx) => (
+                      <div key={`${l?.t || "t"}-${idx}-${l?.message || ""}`} className="border-b border-white/5 py-1 last:border-b-0">
+                        <span className="mr-2 text-slate-400">[{l?.t || "--:--"}]</span>
+                        <span className="text-slate-100">{String(l?.message || "")}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="py-2 text-slate-400">暂无筛选执行日志</div>
+                  )}
+                </div>
+              </div>
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <GlassDropdown
                   value={String(userFilterSelectedTaskId || "")}
@@ -6793,45 +7030,154 @@ export default function App() {
               </div>
               <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
                 {(() => {
-                  const selected = Boolean(userFilterSelectedTaskId);
-                  const sourceResults = selected ? userFilterResults : userFilterMergedResults;
-                  const link_only_users = sourceResults.filter((x) => x.can_invite);
-                  const direct_invitable_users = sourceResults.filter((x) => !x.can_invite);
-                  const showLoading = !selected && userFilterMergedLoading && sourceResults.length === 0;
+                  const {
+                    showLoading,
+                    direct_invitable_users,
+                    link_only_users,
+                    unknown_users,
+                  } = userFilterResultBuckets;
                   return (
                     <>
-                <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/5 p-3">
-                  <h4 className="text-sm font-semibold text-emerald-200">可用用户（可直接拉群）</h4>
-                  <div className="mt-2 max-h-[320px] overflow-y-auto text-xs">
-                    {showLoading ? (
-                      <div className="py-2 text-slate-300">加载中…</div>
-                    ) : direct_invitable_users.length ? (
-                      direct_invitable_users.slice(0, 300).map((x) => (
-                        <div key={`${x.username || "—"}-${x.can_invite || 0}`} className="border-b border-emerald-400/10 py-1 text-slate-200">
-                          {x.username || "—"}
+                      <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/5 p-3">
+                        <h4 className="text-sm font-semibold text-emerald-200">可用用户（direct_invitable）</h4>
+                        <div className="mt-2 max-h-[320px] overflow-y-auto text-xs">
+                          {showLoading ? (
+                            <div className="py-2 text-slate-300">加载中…</div>
+                          ) : direct_invitable_users.length ? (
+                            direct_invitable_users.slice(0, 300).map((x) => {
+                              const checked = String(x.second_check_status || "").toLowerCase() === "checked";
+                              return (
+                                <div
+                                  key={`${x.username || "—"}-${x.id || "na"}`}
+                                  className="flex items-center justify-between border-b border-emerald-400/10 py-1 text-slate-200"
+                                >
+                                  <span className="truncate">{x.username || "—"}</span>
+                                  <span
+                                    className={`ml-2 shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] ${
+                                      checked
+                                        ? "border-cyan-400/35 bg-cyan-500/10 text-cyan-200"
+                                        : "border-emerald-400/35 bg-emerald-500/10 text-emerald-200"
+                                    }`}
+                                  >
+                                    {checked ? "已复检" : "未复检"}
+                                  </span>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div className="py-2 text-slate-300">暂无结果</div>
+                          )}
                         </div>
-                      ))
-                    ) : (
-                      <div className="py-2 text-slate-300">暂无结果</div>
-                    )}
-                  </div>
-                </div>
-                <div className="rounded-2xl border border-rose-400/20 bg-rose-500/5 p-3">
-                  <h4 className="text-sm font-semibold text-rose-200">不可用用户（需邀请链接）</h4>
-                  <div className="mt-2 max-h-[320px] overflow-y-auto text-xs">
-                    {showLoading ? (
-                      <div className="py-2 text-slate-300">加载中…</div>
-                    ) : link_only_users.length ? (
-                      link_only_users.slice(0, 300).map((x) => (
-                        <div key={`${x.username || "—"}-${x.can_invite || 0}`} className="border-b border-rose-400/10 py-1 text-slate-200">
-                          {x.username || "—"}
+                      </div>
+                      <div className="rounded-2xl border border-rose-400/20 bg-rose-500/5 p-3">
+                        <h4 className="text-sm font-semibold text-rose-200">不可用用户（link_only）</h4>
+                        <div className="mt-2 max-h-[320px] overflow-y-auto text-xs">
+                          {showLoading ? (
+                            <div className="py-2 text-slate-300">加载中…</div>
+                          ) : link_only_users.length ? (
+                            link_only_users.slice(0, 300).map((x) => {
+                              const checked = String(x.second_check_status || "").toLowerCase() === "checked";
+                              return (
+                                <div
+                                  key={`${x.username || "—"}-${x.id || "na"}`}
+                                  className="flex items-center justify-between border-b border-rose-400/10 py-1 text-slate-200"
+                                >
+                                  <span className="truncate">{x.username || "—"}</span>
+                                  <span
+                                    className={`ml-2 shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] ${
+                                      checked
+                                        ? "border-cyan-400/35 bg-cyan-500/10 text-cyan-200"
+                                        : "border-slate-400/35 bg-slate-500/10 text-slate-300"
+                                    }`}
+                                  >
+                                    {checked ? "已复检" : "未复检"}
+                                  </span>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div className="py-2 text-slate-300">暂无结果</div>
+                          )}
                         </div>
-                      ))
-                    ) : (
-                      <div className="py-2 text-slate-300">暂无结果</div>
-                    )}
-                  </div>
-                </div>
+                      </div>
+                      <div className="rounded-2xl border border-amber-400/20 bg-amber-500/5 p-3 xl:col-span-2">
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <h4 className="shrink-0 text-sm font-semibold text-amber-200">不确定用户（unknown）</h4>
+                          {unknown_users.length > 0 ? (
+                            <button
+                              type="button"
+                              className={`${BTN_SECONDARY} shrink-0 border-amber-400/25 px-3 py-1.5 text-xs text-amber-100 hover:border-amber-300/40`}
+                              disabled={!op || userFilterRunning || userFilterSubmitting}
+                              title="对当前列表中所有不确定用户所在任务重跑探测（合并视图含多任务时会依次执行）"
+                              onClick={onRefilterUnknownOnly}
+                            >
+                              {userFilterUnknownRefilterActive && userFilterJobId
+                                ? "⏳ 执行中…"
+                                : (userFilterJobId || userFilterRunning) && !userFilterUnknownRefilterActive
+                                  ? "⏳ 全量筛选中"
+                                  : userFilterSubmitting
+                                    ? "⏳ 启动中…"
+                                    : "↻ 仅重筛不确定"}
+                            </button>
+                          ) : null}
+                        </div>
+                        {userFilterUnknownCardStrip ? (
+                          <div
+                            className={`mb-2 w-full rounded-lg border px-2 py-2 font-mono text-[11px] leading-snug ${
+                              userFilterUnknownCardStrip.tone === "emerald"
+                                ? "border-emerald-400/45 bg-emerald-950/35 text-emerald-100/95"
+                                : userFilterUnknownCardStrip.tone === "rose"
+                                  ? "border-rose-400/55 bg-rose-950/40 text-rose-100/95"
+                                  : userFilterUnknownCardStrip.tone === "slate"
+                                    ? "border-slate-400/35 bg-slate-950/40 text-slate-100/90"
+                                    : "border-rose-400/50 bg-rose-950/35 text-rose-50/95"
+                            }`}
+                            aria-live="polite"
+                          >
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-white/45">
+                              执行状态
+                              {userFilterUnknownCardStrip.degraded
+                                ? "（降级·无 live）"
+                                : userFilterUnknownRefilterActive
+                                  ? "（仅不确定）"
+                                  : "（全量）"}
+                            </span>
+                            <div className="mt-0.5 break-all text-white/90">
+                              探测号：
+                              <span className="text-cyan-200/95">{userFilterUnknownCardStrip.account || "—"}</span>
+                            </div>
+                            <div className="mt-0.5 break-all text-white/88">{userFilterUnknownCardStrip.line}</div>
+                          </div>
+                        ) : null}
+                        <div className="mt-2 max-h-[220px] overflow-y-auto text-xs">
+                          {showLoading ? (
+                            <div className="py-2 text-slate-300">加载中…</div>
+                          ) : unknown_users.length ? (
+                            unknown_users.slice(0, 300).map((x) => {
+                              const checked = String(x.second_check_status || "").toLowerCase() === "checked";
+                              return (
+                                <div
+                                  key={`${x.username || "—"}-${x.id || "na"}`}
+                                  className="flex items-center justify-between border-b border-amber-400/10 py-1 text-slate-200"
+                                >
+                                  <span className="truncate">{x.username || "—"}</span>
+                                  <span
+                                    className={`ml-2 shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] ${
+                                      checked
+                                        ? "border-cyan-400/35 bg-cyan-500/10 text-cyan-200"
+                                        : "border-amber-400/35 bg-amber-500/10 text-amber-200"
+                                    }`}
+                                  >
+                                    {checked ? "已复检" : "未复检"}
+                                  </span>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div className="py-2 text-slate-300">暂无结果</div>
+                          )}
+                        </div>
+                      </div>
                     </>
                   );
                 })()}

@@ -32,6 +32,7 @@ from services.user_filter_service import (
     live_snapshot,
     request_stop,
     spawn_task,
+    spawn_unknown_refilter_chain,
 )
 
 router = APIRouter(prefix="/user-filter", tags=["user-filter"])
@@ -43,6 +44,10 @@ class CreateFilterTaskBody(BaseModel):
     test_group: str = Field(..., min_length=3, max_length=255)
     real_verify_enabled: bool = Field(False)
     real_verify_ratio: float = Field(0.1, ge=0.0, le=1.0)
+
+
+class RefilterUnknownBulkBody(BaseModel):
+    task_ids: list[int] = Field(..., min_length=1)
 
 
 class CreateFilterAccountBody(BaseModel):
@@ -298,6 +303,73 @@ def stop_filter_task(
     return {"ok": True}
 
 
+@router.post("/tasks/{task_id}/refilter-unknown")
+def refilter_unknown_users(
+    task_id: int,
+    user: User = Depends(require_user_or_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """仅对当前任务中 final_status=unknown 的用户重新走探测号筛选（保留其余结果行）。"""
+    row = db.query(UserFilterTask).filter(UserFilterTask.id == task_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if user.role != "admin" and row.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="无权操作该任务")
+    st = str(row.status or "").lower()
+    if st in ("running", "pending", "starting"):
+        raise HTTPException(status_code=400, detail="任务正在运行，请稍后再试")
+    if not str(row.test_group or "").strip():
+        raise HTTPException(status_code=400, detail="任务未配置测试群组，无法重筛")
+    n_unknown = (
+        db.query(UserFilterResult)
+        .filter(UserFilterResult.task_id == row.id, UserFilterResult.final_status == "unknown")
+        .count()
+    )
+    if int(n_unknown or 0) < 1:
+        raise HTTPException(status_code=400, detail="当前任务没有不确定用户")
+    job_id = uuid.uuid4().hex
+    init_live(job_id, user.id, row.id)
+    spawn_task(row.id, job_id, run_scope="unknown_only")
+    return {"ok": True, "job_id": job_id, "task": _task_to_dict(row)}
+
+
+@router.post("/tasks/refilter-unknown-bulk")
+def refilter_unknown_users_bulk(
+    body: RefilterUnknownBulkBody,
+    user: User = Depends(require_user_or_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """对多个筛选任务依次执行 unknown_only（同一 job 日志会话）。"""
+    ids = sorted({int(x) for x in (body.task_ids or []) if int(x) > 0})
+    if not ids:
+        raise HTTPException(status_code=400, detail="task_ids 无效")
+    for tid in ids:
+        row = db.query(UserFilterTask).filter(UserFilterTask.id == tid).first()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {tid}")
+        if user.role != "admin" and row.owner_id != user.id:
+            raise HTTPException(status_code=403, detail="无权操作该任务")
+        st = str(row.status or "").lower()
+        if st in ("running", "pending", "starting"):
+            raise HTTPException(status_code=400, detail=f"任务正在运行 task_id={tid}")
+        if not str(row.test_group or "").strip():
+            raise HTTPException(status_code=400, detail=f"任务未配置测试群组 task_id={tid}")
+    total_unknown = 0
+    for tid in ids:
+        total_unknown += int(
+            db.query(UserFilterResult)
+            .filter(UserFilterResult.task_id == tid, UserFilterResult.final_status == "unknown")
+            .count()
+            or 0
+        )
+    if total_unknown < 1:
+        raise HTTPException(status_code=400, detail="所选任务中均无不确定用户")
+    job_id = uuid.uuid4().hex
+    init_live(job_id, user.id, ids[0])
+    spawn_unknown_refilter_chain(ids, job_id)
+    return {"ok": True, "job_id": job_id, "task_ids": ids}
+
+
 @router.get("/tasks")
 def list_filter_tasks(
     user: User = Depends(require_user_or_admin),
@@ -313,7 +385,7 @@ def list_filter_tasks(
 @router.get("/tasks/{task_id}/results")
 def list_filter_results(
     task_id: int,
-    can_invite: int | None = None,
+    final_status: str | None = None,
     user: User = Depends(require_user_or_admin),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -324,8 +396,9 @@ def list_filter_results(
         raise HTTPException(status_code=403, detail="无权查看该任务")
 
     q = db.query(UserFilterResult).filter(UserFilterResult.task_id == task_id).order_by(UserFilterResult.id.desc())
-    if can_invite in (0, 1):
-        q = q.filter(UserFilterResult.can_invite == int(can_invite))
+    final_norm = str(final_status or "").strip().lower()
+    if final_norm in {"direct_invitable", "link_only", "unknown"}:
+        q = q.filter(UserFilterResult.final_status == final_norm)
     rows = q.limit(5000).all()
     return {
         "ok": True,
@@ -336,10 +409,11 @@ def list_filter_results(
                 "user_id": r.user_id,
                 "username": r.username,
                 "phone": r.phone,
-                "can_invite": bool(r.can_invite),
                 "fail_reason": r.fail_reason,
                 "probe_account_id": r.probe_account_id,
                 "verified_by_real": bool(r.verified_by_real),
+                "second_check_status": str(r.second_check_status or "pending"),
+                "final_status": str(r.final_status or "unknown"),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in rows
@@ -386,7 +460,7 @@ def list_latest_direct_invitable_users(
     q = (
         db.query(UserFilterResult)
         .filter(UserFilterResult.task_id.in_(task_ids))
-        .filter(UserFilterResult.can_invite == 0)
+        .filter(UserFilterResult.final_status == "direct_invitable")
         .order_by(UserFilterResult.id.desc())
     )
     rows = q.limit(max(lim * 4, lim)).all()
@@ -426,10 +500,7 @@ def download_filter_results(
     if user.role != "admin" and task.owner_id != user.id:
         raise HTTPException(status_code=403, detail="无权下载")
     scope_norm = str(scope).lower()
-    # 语义兼容：
-    # - direct_invitable: 可直接拉群（后端 can_invite=0）
-    # - link_only: 需邀请链接（后端 can_invite=1）
-    # 历史 invitable/success/can_invite 视作 link_only。
+    # 语义兼容：历史 scope 名 invitable/success/can_invite 视作 link_only。
     if scope_norm in ("invitable", "success", "can_invite", "link_only"):
         filter_mode = "link_only"
     elif scope_norm in ("direct_invitable", "direct", "usable"):

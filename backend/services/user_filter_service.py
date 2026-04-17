@@ -28,6 +28,12 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 _MAX_LIVE_LINES = 300
 _job_lock = threading.Lock()
 _jobs: dict[str, dict] = {}
+_LINK_ONLY_TEXT_HINTS = (
+    "restricts adding them to groups",
+    "send invite link instead",
+    "send invite link",
+    "send an invite link",
+)
 
 
 def _append_log(job_id: str | None, level: str, module: str, message: str) -> None:
@@ -141,35 +147,56 @@ def _error_code(exc: Exception) -> str:
     return exc.__class__.__name__.upper()
 
 
-def _classify_invite_error(exc: Exception) -> tuple[bool, str]:
+def _normalize_reason(reason: str | None) -> str:
+    return str(reason or "").strip().upper()
+
+
+def _is_bot_username(username: str | None) -> bool:
+    u = str(username or "").strip().lstrip("@").lower()
+    if not u:
+        return False
+    return u.endswith("bot") or u.endswith("_bot")
+
+
+def _resolve_second_check_status(final_status: str, checked: bool) -> str:
+    if checked:
+        return "checked"
+    return "pending" if final_status == "unknown" else "checked"
+
+
+def _resolve_final_status_from_invite(exc: Exception | None, response_text: str | None) -> tuple[str, str | None]:
     """
-    返回: (can_invite, reason)
-    - True: 归类为可用用户
-    - False: 归类为不可用用户
+    邀请判定统一入口：隐私/互关语义优先；仅 NULL（无有效错误码）与 FLOOD 归为 unknown 以便换号复检；
+    其余异常按「可用用户」处理为 direct_invitable。
+    返回: (final_status, reason)
     """
-    code = _error_code(exc)
-    msg = str(exc or "").strip()
-    low = msg.lower()
+    text = str(response_text or "").lower()
+    err = str(exc or "").lower()
+    combined = f"{text} {err}"
 
-    # 用户隐私限制：不可用用户
-    if (
-        code == "USER_PRIVACY_RESTRICTED"
-        or "user_privacy_restricted" in low
-        or "restricts adding them to groups" in low
-        or "send invite link instead" in low
-    ):
-        return False, "USER_PRIVACY_RESTRICTED"
+    # 唯一不可用（用户隐私限制）
+    if any(x in combined for x in _LINK_ONLY_TEXT_HINTS) or "user_privacy_restricted" in combined:
+        return "link_only", "USER_PRIVACY_RESTRICTED"
 
-    # 账号限制（互关限制）：可用用户
-    if (
-        code == "USER_NOT_MUTUAL_CONTACT"
-        or "user_not_mutual_contact" in low
-        or "you can only add mutual contacts" in low
-    ):
-        return True, "USER_NOT_MUTUAL_CONTACT"
+    # 可用（账号限制）
+    if "user_not_mutual_contact" in combined or "you can only add mutual contacts" in combined:
+        return "direct_invitable", "USER_NOT_MUTUAL_CONTACT"
 
-    # 其余错误默认按不可用处理，并保留错误码
-    return False, code
+    # 按保守口径：Invite 成功但无法精确区分时，统一按 link_only 处理
+    if exc is None:
+        return "link_only", "INVITE_SUCCESS_UNCERTAIN"
+
+    code_n = _normalize_reason(_error_code(exc))
+    # FLOOD：不确定，换账号复检
+    if code_n.startswith("FLOOD") or "FLOOD" in code_n or "flood" in err:
+        return "unknown", code_n or "FLOOD"
+
+    # NULL / 无有效错误码：不确定
+    if not code_n or code_n in ("NULL", "NONE") or "null" in err:
+        return "unknown", code_n or "NULL"
+
+    # 其它异常：标记为可用用户
+    return "direct_invitable", code_n
 
 
 def _session_base_from_path(raw: str | None) -> str:
@@ -360,7 +387,129 @@ async def _disconnect_all(ctx_rows: list[dict]) -> None:
             pass
 
 
-async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
+async def _run_secondary_filter(
+    *,
+    task: UserFilterTask,
+    db,
+    job_id: str | None,
+    real_ctx: list[dict],
+) -> None:
+    enabled = bool(getattr(task, "real_verify_enabled", 0))
+    if not enabled:
+        return
+    unknown_rows = (
+        db.query(UserFilterResult)
+        .filter(UserFilterResult.task_id == task.id, UserFilterResult.final_status == "unknown")
+        .order_by(UserFilterResult.id.asc())
+        .all()
+    )
+    if not unknown_rows:
+        _append_log(job_id, "info", "SECOND_CHECK", "无 unknown 用户，跳过二次复检")
+        return
+    if not real_ctx:
+        _append_log(job_id, "warn", "SECOND_CHECK", "未配置可用真实账号，unknown 用户保留为未复检")
+        return
+
+    # 按需求：unknown 永远全量复检（忽略 real_verify_ratio）
+    sample_count = len(unknown_rows)
+    sample_rows = unknown_rows
+    _append_log(
+        job_id,
+        "info",
+        "SECOND_CHECK",
+        f"启动二次复检：unknown={len(unknown_rows)}，抽样={len(sample_rows)}，ratio=1.00（强制全量）",
+    )
+
+    for idx, row in enumerate(sample_rows, start=1):
+        if _job_should_stop(job_id):
+            _append_log(job_id, "warn", "SECOND_CHECK", "收到停止指令，二次复检中止")
+            return
+        user_ref = str(row.username or "").strip()
+        if not user_ref:
+            row.second_check_status = "checked"
+            db.add(row)
+            db.commit()
+            continue
+        final_status = "unknown"
+        reason = row.fail_reason
+        used_rounds = 0
+        start_idx = (idx - 1) % len(real_ctx)
+        ordered_ctx = [real_ctx[(start_idx + i) % len(real_ctx)] for i in range(len(real_ctx))]
+        for ctx in ordered_ctx:
+            if _job_should_stop(job_id):
+                _append_log(job_id, "warn", "SECOND_CHECK", "收到停止指令，二次复检中止")
+                return
+            client = ctx["client"]
+            channel = ctx["channel"]
+            real_acc = ctx["row"]
+            used_rounds += 1
+            _append_log(
+                job_id,
+                "info",
+                "SECOND_CHECK",
+                f"[ROUND_CHECK] user={user_ref} account={_mask_phone(getattr(real_acc, 'phone', None))}",
+            )
+            try:
+                resp = await client(InviteToChannelRequest(channel=channel, users=[user_ref]))
+                _append_log(
+                    job_id,
+                    "info",
+                    "SECOND_CHECK",
+                    f"[INVITE_RAW] user={user_ref} ok response={str(resp)[:180]}",
+                )
+                final_status, reason = _resolve_final_status_from_invite(None, None)
+            except Exception as exc:
+                _append_log(
+                    job_id,
+                    "warn",
+                    "SECOND_CHECK",
+                    f"[INVITE_RAW] user={user_ref} err_code={_error_code(exc)} err={str(exc)[:220]}",
+                )
+                final_status, reason = _resolve_final_status_from_invite(exc, None)
+
+            real_acc.last_used_at = datetime.now(timezone.utc)
+            db.add(real_acc)
+            await asyncio.sleep(1.5)
+
+            if final_status == "unknown":
+                _append_log(
+                    job_id,
+                    "warn",
+                    "SECOND_CHECK",
+                    f"[RESULT] unknown（NULL/FLOOD，换真实号重试） account_round={used_rounds}",
+                )
+                continue
+            break
+
+        row.final_status = final_status
+        row.fail_reason = reason
+        row.verified_by_real = 1
+        row.real_check_rounds = used_rounds
+        row.second_check_status = _resolve_second_check_status(final_status, checked=True)
+        db.add(row)
+        if final_status == "direct_invitable":
+            _append_log(job_id, "success", "SECOND_CHECK", f"[RESULT] direct_invitable（第{used_rounds}个账号命中）")
+        elif final_status == "link_only":
+            _append_log(job_id, "warn", "SECOND_CHECK", "[RESULT] link_only（隐私限制）")
+        else:
+            _append_log(job_id, "warn", "SECOND_CHECK", "[RESULT] unknown（全部真实账号复检后仍不确定）")
+        db.commit()
+
+    # 未进入抽样的 unknown 用户保留 pending
+    for row in unknown_rows[sample_count:]:
+        row.second_check_status = "pending"
+        row.real_check_rounds = 0
+        db.add(row)
+    db.commit()
+
+
+async def _run_task_async(
+    task_id: int,
+    job_id: str | None = None,
+    *,
+    run_scope: str = "full",
+    defer_job_finalize: bool = False,
+) -> None:
     db = SessionLocal()
     probe_ctx: list[dict] = []
     real_ctx: list[dict] = []
@@ -369,12 +518,54 @@ async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
         if task is None:
             _job_finalize(job_id, "failed")
             return
+        scope = str(run_scope or "full").strip().lower()
+        if scope not in ("full", "unknown_only"):
+            scope = "full"
+
         task.status = "running"
         task.last_error = None
         db.add(task)
         db.commit()
+        _append_log(job_id, "info", "RUNNER", f"runner 已启动 task_id={task.id} scope={scope}")
 
-        usernames = _load_scraper_usernames(int(task.source_task_id or 0))
+        if scope == "unknown_only":
+            res_rows = (
+                db.query(UserFilterResult)
+                .filter(UserFilterResult.task_id == task.id, UserFilterResult.final_status == "unknown")
+                .order_by(UserFilterResult.id.asc())
+                .all()
+            )
+            seen_u: set[str] = set()
+            usernames: list[str] = []
+            for r in res_rows:
+                u = str(r.username or "").strip()
+                if not u or u in seen_u:
+                    continue
+                seen_u.add(u)
+                usernames.append(u)
+            if not usernames:
+                if defer_job_finalize:
+                    _append_log(job_id, "warn", "RUNNER", f"task_id={task.id} 无不确定用户，已跳过")
+                    task.status = "finished"
+                    db.add(task)
+                    db.commit()
+                    return
+                _append_log(job_id, "warn", "RUNNER", f"task_id={task.id} 无不确定用户，已结束")
+                task.status = "finished"
+                db.add(task)
+                db.commit()
+                _job_finalize(job_id, "completed")
+                return
+            db.query(UserFilterResult).filter(
+                UserFilterResult.task_id == task.id,
+                UserFilterResult.final_status == "unknown",
+            ).delete(synchronize_session=False)
+            db.commit()
+        else:
+            usernames = _load_scraper_usernames(int(task.source_task_id or 0))
+            db.query(UserFilterResult).filter(UserFilterResult.task_id == task.id).delete()
+            db.commit()
+
         task.total_users = len(usernames)
         task.processed_users = 0
         task.success_count = 0
@@ -382,11 +573,11 @@ async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
         db.add(task)
         db.commit()
 
-        _append_log(job_id, "success", "RUNNER", f"任务启动，待筛选用户 {len(usernames)}")
+        if scope == "unknown_only":
+            _append_log(job_id, "success", "RUNNER", f"仅重筛不确定用户，待处理 {len(usernames)} 人")
+        else:
+            _append_log(job_id, "success", "RUNNER", f"任务启动，待筛选用户 {len(usernames)}")
         _append_log(job_id, "info", "RUNNER", f"测试群组: {str(getattr(task, 'test_group', '') or '').strip()}")
-
-        db.query(UserFilterResult).filter(UserFilterResult.task_id == task.id).delete()
-        db.commit()
 
         test_group = str(getattr(task, "test_group", "") or "").strip()
         if not test_group:
@@ -412,45 +603,98 @@ async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
             if not user_ref:
                 continue
 
-            can_invite = False
+            if _is_bot_username(user_ref):
+                _append_log(job_id, "warn", "RUNNER", f"[BOT_FILTER] user={user_ref} 命中 bot 后缀，已直接过滤")
+                db.add(
+                    UserFilterResult(
+                        task_id=task.id,
+                        user_id="",
+                        username=user_ref,
+                        phone="",
+                        fail_reason="BOT_USERNAME_FILTERED",
+                        probe_account_id=probe.id,
+                        verified_by_real=0,
+                        second_check_status="checked",
+                        final_status="link_only",
+                        real_check_rounds=0,
+                    )
+                )
+                task.processed_users = idx
+                task.fail_count = (task.fail_count or 0) + 1
+                db.add(task)
+                db.commit()
+                continue
+
             reason = None
+            final_status = "unknown"
+            _append_log(job_id, "info", "RUNNER", f"[ROUND_CHECK] user={user_ref} account={_mask_phone(getattr(probe, 'phone', None))}")
             _append_log(job_id, "info", "INVITE", f"[INVITE] user={user_ref}")
             try:
-                await client(InviteToChannelRequest(channel=channel, users=[user_ref]))
-                can_invite = True
-                _append_log(job_id, "success", "RESULT", f"[RESULT] user={user_ref} -> LINK_ONLY ❌（不可用）")
+                resp = await client(InviteToChannelRequest(channel=channel, users=[user_ref]))
+                _append_log(
+                    job_id,
+                    "info",
+                    "INVITE",
+                    f"[INVITE_RAW] user={user_ref} ok response={str(resp)[:180]}",
+                )
+                final_status, reason = _resolve_final_status_from_invite(None, None)
+                if final_status == "link_only":
+                    _append_log(job_id, "warn", "RESULT", f"[RESULT] user={user_ref} -> LINK_ONLY（success但按保守策略）")
+                else:
+                    _append_log(job_id, "success", "RESULT", f"[RESULT] user={user_ref} -> DIRECT_INVITABLE ✅")
             except Exception as exc:
-                can_invite, reason = _classify_invite_error(exc)
-                if reason == "USER_NOT_MUTUAL_CONTACT":
-                    _append_log(job_id, "warn", "ERROR", "[ERROR] USER_NOT_MUTUAL_CONTACT -> 标记：可用用户（账号限制）")
-                elif reason == "USER_PRIVACY_RESTRICTED":
+                _append_log(
+                    job_id,
+                    "warn",
+                    "INVITE",
+                    f"[INVITE_RAW] user={user_ref} err_code={_error_code(exc)} err={str(exc)[:220]}",
+                )
+                final_status, reason = _resolve_final_status_from_invite(exc, None)
+                if final_status == "direct_invitable":
+                    if reason == "USER_NOT_MUTUAL_CONTACT":
+                        _append_log(
+                            job_id,
+                            "warn",
+                            "ERROR",
+                            "[ERROR] USER_NOT_MUTUAL_CONTACT -> 标记：可用用户（账号限制）",
+                        )
+                    else:
+                        _append_log(
+                            job_id,
+                            "info",
+                            "ERROR",
+                            f"[ERROR] {reason or _error_code(exc)} -> 标记：可用用户（非 NULL/FLOOD）",
+                        )
+                elif final_status == "link_only":
                     _append_log(job_id, "warn", "ERROR", "[ERROR] USER_PRIVACY_RESTRICTED -> 标记：不可用用户")
                 else:
-                    _append_log(job_id, "warn", "ERROR", f"[ERROR] {reason}")
+                    _append_log(job_id, "warn", "ERROR", f"[ERROR] {reason or _error_code(exc)}")
                 _append_log(
                     job_id,
                     "info",
                     "RESULT",
-                    f"[RESULT] user={user_ref} -> {'DIRECT_INVITE ✅（可用）' if can_invite else 'LINK_ONLY ❌（不可用）'}",
+                    f"[RESULT] user={user_ref} -> {final_status}",
                 )
 
+            second_check_status = _resolve_second_check_status(final_status, checked=False)
             db.add(
                 UserFilterResult(
                     task_id=task.id,
                     user_id="",
                     username=user_ref,
                     phone="",
-                    can_invite=1 if can_invite else 0,
-                    fail_reason=reason if not can_invite else None,
+                    fail_reason=reason,
                     probe_account_id=probe.id,
                     verified_by_real=0,
+                    second_check_status=second_check_status,
+                    final_status=final_status,
                 )
             )
             probe.last_used_at = datetime.now(timezone.utc)
             db.add(probe)
 
             task.processed_users = idx
-            if can_invite:
+            if final_status == "direct_invitable":
                 task.success_count = (task.success_count or 0) + 1
             else:
                 task.fail_count = (task.fail_count or 0) + 1
@@ -458,11 +702,13 @@ async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
             db.commit()
             await asyncio.sleep(1.0)
 
+        await _run_secondary_filter(task=task, db=db, job_id=job_id, real_ctx=real_ctx)
         task.status = "finished"
         db.add(task)
         db.commit()
         _append_log(job_id, "success", "RUNNER", "任务完成")
-        _job_finalize(job_id, "completed")
+        if not defer_job_finalize:
+            _job_finalize(job_id, "completed")
     except Exception as exc:
         log.exception("run user filter task failed task_id=%s", task_id)
         try:
@@ -481,12 +727,48 @@ async def _run_task_async(task_id: int, job_id: str | None = None) -> None:
         db.close()
 
 
-def run_task_sync(task_id: int, job_id: str | None = None) -> None:
-    asyncio.run(_run_task_async(task_id, job_id))
+def run_task_sync(
+    task_id: int,
+    job_id: str | None = None,
+    *,
+    run_scope: str = "full",
+    defer_job_finalize: bool = False,
+) -> None:
+    asyncio.run(_run_task_async(task_id, job_id, run_scope=run_scope, defer_job_finalize=defer_job_finalize))
 
 
-def spawn_task(task_id: int, job_id: str) -> None:
-    t = threading.Thread(target=run_task_sync, args=(task_id, job_id), daemon=True, name=f"user-filter-{task_id}")
+def spawn_task(task_id: int, job_id: str, *, run_scope: str = "full") -> None:
+    t = threading.Thread(
+        target=run_task_sync,
+        args=(task_id, job_id),
+        kwargs={"run_scope": run_scope},
+        daemon=True,
+        name=f"user-filter-{task_id}",
+    )
+    t.start()
+
+
+def run_unknown_refilter_chain_sync(task_ids: list[int], job_id: str | None) -> None:
+    """同一 live 会话内依次对多个任务执行 unknown_only（由最后一个任务在内层 finalize）。"""
+    ids = [int(x) for x in task_ids if int(x) > 0]
+    if not ids:
+        _job_finalize(job_id, "failed")
+        return
+    n = len(ids)
+    for i, tid in enumerate(ids):
+        defer = i < n - 1
+        if n > 1:
+            _append_log(job_id, "info", "RUNNER", f"── 不确定重筛 {i + 1}/{n}：task_id={tid} ──")
+        asyncio.run(_run_task_async(tid, job_id, run_scope="unknown_only", defer_job_finalize=defer))
+
+
+def spawn_unknown_refilter_chain(task_ids: list[int], job_id: str) -> None:
+    t = threading.Thread(
+        target=run_unknown_refilter_chain_sync,
+        args=(task_ids, job_id),
+        daemon=True,
+        name="user-filter-unknown-chain",
+    )
     t.start()
 
 
@@ -496,16 +778,26 @@ def export_results_csv(task_id: int, *, filter_mode: str = "all") -> Path:
         mode = str(filter_mode or "all").lower()
         q = db.query(UserFilterResult).filter(UserFilterResult.task_id == task_id).order_by(UserFilterResult.id.asc())
         if mode == "link_only":
-            q = q.filter(UserFilterResult.can_invite == 1)
+            q = q.filter(UserFilterResult.final_status == "link_only")
         elif mode == "direct_invitable":
-            q = q.filter(UserFilterResult.can_invite == 0)
+            q = q.filter(UserFilterResult.final_status == "direct_invitable")
+        elif mode == "unknown":
+            q = q.filter(UserFilterResult.final_status == "unknown")
         rows = q.all()
         out = RESULTS_DIR / f"user_filter_task_{task_id}_{mode}.csv"
         with out.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["user_id", "username", "can_invite", "reason"])
+            writer.writerow(["user_id", "username", "reason", "final_status", "second_check_status"])
             for r in rows:
-                writer.writerow([r.user_id or "", r.username or "", 1 if r.can_invite else 0, r.fail_reason or ""])
+                writer.writerow(
+                    [
+                        r.user_id or "",
+                        r.username or "",
+                        r.fail_reason or "",
+                        r.final_status or "",
+                        r.second_check_status or "",
+                    ]
+                )
         return out
     finally:
         db.close()

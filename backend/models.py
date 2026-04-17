@@ -245,10 +245,12 @@ class UserFilterResult(Base):
     user_id = Column(String(64), nullable=False, default="")
     username = Column(String(255), nullable=True)
     phone = Column(String(64), nullable=True)
-    can_invite = Column(Integer, nullable=False, default=0)
     fail_reason = Column(String(255), nullable=True)
     probe_account_id = Column(Integer, ForeignKey("filter_accounts.id"), nullable=True, index=True)
     verified_by_real = Column(Integer, nullable=False, default=0)
+    second_check_status = Column(String(20), nullable=False, default="pending")  # pending / checked
+    final_status = Column(String(32), nullable=False, default="unknown")  # direct_invitable / link_only / unknown
+    real_check_rounds = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

@@ -417,11 +417,15 @@ export const api = {
       }),
     }),
   stopUserFilterTask: (taskId) => request(`/user-filter/tasks/${Number(taskId)}/stop`, { method: "POST" }),
+  refilterUserFilterUnknownOnly: (taskId) =>
+    request(`/user-filter/tasks/${Number(taskId)}/refilter-unknown`, { method: "POST" }),
+  refilterUserFilterUnknownBulk: (payload) =>
+    request("/user-filter/tasks/refilter-unknown-bulk", {
+      method: "POST",
+      body: JSON.stringify({ task_ids: Array.isArray(payload?.task_ids) ? payload.task_ids : [] }),
+    }),
   userFilterLive: (jobId) => request(`/user-filter/live/${encodeURIComponent(jobId)}`),
-  listUserFilterResults: (taskId, canInvite) => {
-    const q = canInvite == null ? "" : `?can_invite=${Number(canInvite ? 1 : 0)}`;
-    return request(`/user-filter/tasks/${Number(taskId)}/results${q}`);
-  },
+  listUserFilterResults: (taskId) => request(`/user-filter/tasks/${Number(taskId)}/results`),
   listLatestDirectInvitableUsers: (limit = 5000) =>
     request(`/user-filter/results/direct-invitable/latest?limit=${Number(limit) || 5000}`),
   downloadUserFilterResults: (taskId, scope = "all") =>
